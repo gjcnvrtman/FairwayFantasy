@@ -37,7 +37,7 @@ interface ESPNRankingsResponse {
  */
 export async function fetchWorldRankings(): Promise<ESPNRankingEntry[]> {
   const res = await fetch(ESPN_RANKINGS_URL, {
-    next: { revalidate: 86400 }, // cache 24 hrs
+    cache: "force-cache",
   });
 
   if (!res.ok) {

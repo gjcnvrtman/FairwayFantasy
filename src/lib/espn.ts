@@ -11,7 +11,7 @@ const ESPN_WEB  = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
 // ── Schedule ────────────────────────────────────────────────
 export async function fetchPGASchedule() {
   const res = await fetch(`${ESPN_BASE}/pga/scoreboard`, {
-    next: { revalidate: 3600 } // cache 1 hour
+    cache: "force-cache",
   });
   if (!res.ok) throw new Error('ESPN schedule fetch failed');
   const data = await res.json();
@@ -44,7 +44,7 @@ export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
 }> {
   const res = await fetch(
     `${ESPN_WEB}/pga/leaderboard?event=${espnEventId}`,
-    { cache: 'no-store' } // always fresh during tournament
+    { cache: 'no-store' } as RequestInit // always fresh during tournament
   );
 
   if (!res.ok) throw new Error(`ESPN leaderboard fetch failed for event ${espnEventId}`);
@@ -74,7 +74,7 @@ export async function fetchEventField(espnEventId: string): Promise<Array<{
 }>> {
   const res = await fetch(
     `${ESPN_WEB}/pga/leaderboard?event=${espnEventId}`,
-    { next: { revalidate: 300 } }
+    { cache: 'force-cache' } as RequestInit
   );
   if (!res.ok) return [];
   const data: ESPNLeaderboard = await res.json();
