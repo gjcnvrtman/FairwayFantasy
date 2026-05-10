@@ -174,7 +174,60 @@ npm run build
 * Backups: `pg_dump fairway | gzip > /backups/fairway-$(date +%F).sql.gz`
   on a daily cron. Off-machine copy is your call.
 
-### Phase 5 cutover — full runbook
+### Phase 5 — starting fresh (no Supabase migration)
+
+If you don't care about preserving Supabase Cloud data and just want
+a clean local install: skip the migration entirely, seed yourself a
+user directly, sign in. ~10 minutes.
+
+```bash
+# 1. Stand up local Postgres (same as Step 1 of the full runbook).
+cd /opt/fairway-fantasy/infra/postgres
+cp .env.example .env
+nano .env                                  # set POSTGRES_PASSWORD (hex)
+docker compose up -d
+docker compose ps                          # wait for "(healthy)"
+
+# 2. Verify schema applied — should list 12 tables.
+source .env
+PGPASSWORD="$POSTGRES_PASSWORD" \
+  psql -h 127.0.0.1 -p "${POSTGRES_HOST_PORT:-5432}" -U fairway -d fairway -c '\dt'
+
+# 3. Seed yourself a user.
+cd /opt/fairway-fantasy
+export DATABASE_URL="postgresql://fairway:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5432}/fairway"
+
+DATABASE_URL="$DATABASE_URL" \
+SEED_EMAIL='you@example.com' \
+SEED_NAME='Your Display Name' \
+SEED_PASSWORD='choose-something-strong' \
+  npx tsx scripts/seed-user.ts
+
+# 4. Configure Fairway env. nano .env.local with:
+#      DATABASE_URL=postgresql://fairway:<pgpass>@127.0.0.1:<port>/fairway
+#      NEXTAUTH_SECRET=$(openssl rand -base64 32)   # set ahead of time
+#      NEXTAUTH_URL=http://fairway.golf-czar.com
+#      CRON_SECRET=$(openssl rand -hex 32)
+#      NEXT_PUBLIC_SITE_URL=http://fairway.golf-czar.com
+
+# 5. Build + restart.
+npm ci
+npm run build
+sudo systemctl restart fairway-fantasy
+
+# 6. Sign in at http://fairway.golf-czar.com/auth/signin with your
+#    seeded email + password. You land on /dashboard. Click
+#    "Create League" — you're commissioner of every league you create.
+```
+
+Re-running step 3 with the same `SEED_EMAIL` updates the password
+(useful if you forget yours). To create more users, either run
+seed-user.ts again with a different email, OR sign up through the
+UI normally.
+
+---
+
+### Phase 5 — full migration runbook (preserve Supabase data)
 
 This is the actual flip from Supabase Cloud to local Postgres + the
 new NextAuth Credentials provider. Plan for ~30 minutes of downtime
