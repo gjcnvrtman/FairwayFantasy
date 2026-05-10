@@ -147,12 +147,45 @@ export function computeLeagueResults(
 
 // ── Pick Validation ──────────────────────────────────────────
 /**
+ * Helper: is this golfer eligible for a top-tier slot?
+ *
+ * Top tier means OWGR rank 1–24. The schema computes
+ * ``is_dark_horse`` as ``GENERATED ALWAYS AS (owgr_rank > 24) STORED``,
+ * which evaluates to NULL when ``owgr_rank`` is NULL — and JS treats
+ * that null as falsy, so the previous ``if (golfer.is_dark_horse)``
+ * incorrectly let UNRANKED golfers slide into top-tier slots.
+ *
+ * Source-of-truth alignment with ``data/datagolf.ts:isDarkHorse``
+ * which says "Unranked counts as dark horse" → unranked is NOT
+ * top-tier eligible.
+ */
+function isTopTierEligible(golfer: { is_dark_horse: boolean | null; owgr_rank: number | null }): boolean {
+  // Only golfers with is_dark_horse === false (i.e., explicitly top tier
+  // per the schema's owgr_rank > 24 generated column) qualify.
+  return golfer.is_dark_horse === false;
+}
+
+/**
+ * Helper: is this golfer eligible for a dark-horse slot?
+ * Unranked (is_dark_horse === null) is accepted as dark horse —
+ * matches ``data/datagolf.ts:isDarkHorse(null) === true``.
+ */
+function isDarkHorseEligible(golfer: { is_dark_horse: boolean | null }): boolean {
+  return golfer.is_dark_horse === true || golfer.is_dark_horse === null;
+}
+
+/**
  * Validate a pick submission against all rules.
  * Returns array of error messages (empty = valid).
+ *
+ * Note that ``existingPicks`` is the list of OTHER players' picks in
+ * the same league + tournament. The caller is responsible for
+ * filtering out the current user's own previous pick so editing
+ * doesn't trigger the no-copycats rule against your own old foursome.
  */
 export function validatePick(params: {
   golferIds: (string | null)[];
-  golfers: Array<{ id: string; owgr_rank: number | null; is_dark_horse: boolean; name: string }>;
+  golfers: Array<{ id: string; owgr_rank: number | null; is_dark_horse: boolean | null; name: string }>;
   existingPicks: Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
 }): string[] {
   const { golferIds, golfers, existingPicks } = params;
@@ -160,37 +193,46 @@ export function validatePick(params: {
 
   const [g1, g2, g3, g4] = golferIds;
 
-  // All 4 must be selected
+  // ── All 4 must be selected ──
   if (!g1 || !g2 || !g3 || !g4) {
     errors.push('You must select all 4 golfers.');
     return errors;
   }
 
-  // No duplicates within pick
+  // ── No duplicates within pick ──
   const unique = new Set([g1, g2, g3, g4]);
   if (unique.size < 4) {
     errors.push('You cannot pick the same golfer more than once.');
   }
 
-  // Slots 1-2 must be top tier (OWGR rank 1-24)
+  // ── Slots 1-2 must be top tier (OWGR rank 1-24) ──
   const topTierSlots = [g1, g2];
   topTierSlots.forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
-    if (golfer && golfer.is_dark_horse) {
-      errors.push(`Slot ${i + 1} must be a top-tier golfer (ranked 1–24). ${golfer.name} is ranked ${golfer.owgr_rank}.`);
+    if (!golfer) return;
+    if (!isTopTierEligible(golfer)) {
+      const rankNote = golfer.owgr_rank
+        ? `ranked ${golfer.owgr_rank}`
+        : 'unranked';
+      errors.push(
+        `Slot ${i + 1} must be a top-tier golfer (ranked 1–24). ${golfer.name} is ${rankNote}.`
+      );
     }
   });
 
-  // Slots 3-4 must be dark horses (OWGR rank 25+)
+  // ── Slots 3-4 must be dark horses (OWGR rank 25+ or unranked) ──
   const darkHorseSlots = [g3, g4];
   darkHorseSlots.forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
-    if (golfer && !golfer.is_dark_horse) {
-      errors.push(`Slot ${i + 3} must be a dark horse (ranked 25+). ${golfer.name} is ranked ${golfer.owgr_rank}.`);
+    if (!golfer) return;
+    if (!isDarkHorseEligible(golfer)) {
+      errors.push(
+        `Slot ${i + 3} must be a dark horse (ranked 25+ or unranked). ${golfer.name} is ranked ${golfer.owgr_rank}.`
+      );
     }
   });
 
-  // No two players in the league can pick the identical set of 4
+  // ── No two players in the league can pick the identical set of 4 ──
   const newSet = new Set([g1, g2, g3, g4]);
   for (const existing of existingPicks) {
     const existingSet = new Set([
@@ -203,7 +245,10 @@ export function validatePick(params: {
       newSet.size === existingSet.size &&
       [...newSet].every(id => existingSet.has(id))
     ) {
-      errors.push('Another player in your league has already picked this exact combination of 4 golfers. Please choose a different lineup.');
+      errors.push(
+        'Another player in your league has already picked this exact ' +
+        'combination of 4 golfers. Please choose a different lineup.'
+      );
     }
   }
 
