@@ -124,11 +124,18 @@ git clone https://github.com/gjcnvrtman/FairwayFantasy.git .
 # 3. Install deps
 npm ci
 
-# 4. Provision local Postgres (Phase 3 — replaces Supabase Cloud at cutover)
-sudo apt-get install -y docker.io docker-compose-v2
+# 4. Provision local Postgres (Phase 3 — replaces Supabase Cloud at cutover).
+#    Use Docker's official convenience script — works on Debian /
+#    Ubuntu / Raspberry Pi OS, handles ARM64, installs Engine +
+#    Compose v2 plugin in one shot. (The Debian apt packages don't
+#    ship Compose v2.)
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker                              # take effect now, no re-login needed
+docker --version && docker compose version # confirm both
 cd /opt/fairway-fantasy/infra/postgres
 cp .env.example .env
-$EDITOR .env                         # set POSTGRES_PASSWORD
+nano .env                                 # or your editor of choice                         # set POSTGRES_PASSWORD
 docker compose up -d
 docker compose ps                    # confirm healthy
 docker compose logs -f               # watch first-time schema apply
@@ -136,7 +143,7 @@ docker compose logs -f               # watch first-time schema apply
 # 5. Configure env
 cd /opt/fairway-fantasy
 cp .env.local.example .env.local
-$EDITOR .env.local                   # set:
+nano .env                                 # or your editor of choice.local                   # set:
 #   DATABASE_URL=postgresql://fairway:<pgpass>@127.0.0.1:5432/fairway
 #   NEXT_PUBLIC_SUPABASE_URL          (legacy, until Phase 4 — auth flow only)
 #   NEXT_PUBLIC_SUPABASE_ANON_KEY     (legacy)
@@ -187,7 +194,7 @@ export NEXTAUTH_SECRET='replace-with-output-of-openssl-rand-base64-32'
 ```bash
 cd /opt/fairway-fantasy/infra/postgres
 cp .env.example .env
-$EDITOR .env                              # set POSTGRES_PASSWORD (and DB port if needed)
+nano .env                                 # or your editor of choice                              # set POSTGRES_PASSWORD (and DB port if needed)
 docker compose up -d
 docker compose ps                         # wait for "(healthy)"
 docker compose logs postgres | tail -40   # confirm schema applied — look for
@@ -248,7 +255,7 @@ rows) — review, but it's usually fine. Any ✗ → DO NOT cutover yet.
 
 ```bash
 cd /opt/fairway-fantasy
-$EDITOR .env.local
+nano .env                                 # or your editor of choice.local
 ```
 Update:
 ```
