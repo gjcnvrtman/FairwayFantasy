@@ -1,0 +1,30 @@
+{
+  "_comment": "Hand-maintained OWGR top-N. Used by scripts/seed-golfers.ts to mark which golfers are top-tier (rank 1..24). Update by visiting https://www.owgr.com/ranking and matching names exactly to how ESPN spells them in the upcoming event field. Names should match `golfers.name` after `seed-golfers --from-event` populates the table; mismatches are reported by the script so you can correct spelling.",
+  "_updated": "2026-05-10",
+  "rankings": [
+    { "name": "Scottie Scheffler",  "rank": 1  },
+    { "name": "Rory McIlroy",       "rank": 2  },
+    { "name": "Xander Schauffele",  "rank": 3  },
+    { "name": "Collin Morikawa",    "rank": 4  },
+    { "name": "Ludvig Aberg",       "rank": 5  },
+    { "name": "Bryson DeChambeau",  "rank": 6  },
+    { "name": "Hideki Matsuyama",   "rank": 7  },
+    { "name": "Wyndham Clark",      "rank": 8  },
+    { "name": "Patrick Cantlay",    "rank": 9  },
+    { "name": "Viktor Hovland",     "rank": 10 },
+    { "name": "Justin Thomas",      "rank": 11 },
+    { "name": "Sahith Theegala",    "rank": 12 },
+    { "name": "Russell Henley",     "rank": 13 },
+    { "name": "Jon Rahm",           "rank": 14 },
+    { "name": "Tony Finau",         "rank": 15 },
+    { "name": "Sungjae Im",         "rank": 16 },
+    { "name": "Tom Kim",            "rank": 17 },
+    { "name": "Sam Burns",          "rank": 18 },
+    { "name": "Tommy Fleetwood",    "rank": 19 },
+    { "name": "Robert MacIntyre",   "rank": 20 },
+    { "name": "Akshay Bhatia",      "rank": 21 },
+    { "name": "Min Woo Lee",        "rank": 22 },
+    { "name": "Adam Scott",         "rank": 23 },
+    { "name": "Cameron Smith",      "rank": 24 }
+  ]
+}

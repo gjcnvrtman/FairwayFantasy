@@ -8,6 +8,10 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
+### ESPN rankings endpoint is dead — find a replacement source
+- [ ] **ESPN's `/pga/rankings` returns 500 across every URL variant tested in May 2026.** Body: `{"code":2404,"detail":"http error: not found"}`. ESPN removed/moved this endpoint. The schedule endpoint (`/pga/scoreboard`) still works — only rankings is gone. Workaround landed in `scripts/seed-golfers.ts` + `data/owgr-top.json` (manually-maintained top-24). Long-term: find a real source. Candidates: official OWGR site (no public API; they have a paid feed), DataGolf paid API, scrape pgatour.com leaderboard. Decision pending.
+- [ ] Update `src/lib/datagolf.ts` once a working source lands. The function name is already misleading (originally DataGolf, then ESPN, now broken); rename to `rankings.ts` while you're in there.
+
 ### ESPN data + sync timers (action: run install.sh on .160)
 - [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:
   ```bash
