@@ -97,8 +97,23 @@ Assumes Linux server at `192.168.1.160`, user `greg`, app at
 ### One-time setup
 
 ```bash
-# 1. Install Node 20 (or matching LTS) via nvm or distro package
-sudo apt-get install -y nodejs npm
+# 1. Install Node 20 (or matching LTS).
+#    DO NOT install Debian's `nodejs npm` packages together — Debian's
+#    `npm` conflicts with NodeSource's bundled npm (you'll get
+#    "Conflicts npm" / "held broken packages" errors). Pick ONE
+#    of these paths:
+#
+#    Path A — NodeSource (recommended for production):
+sudo apt-get install -y curl
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs            # NOT `npm` — bundled with nodejs
+node --version                            # confirm v20.x
+npm --version                             # confirm 10.x (came with nodejs)
+#
+#    Path B — nvm (better for dev, fine for prod):
+# curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+# source ~/.bashrc
+# nvm install 20 && nvm use 20
 
 # 2. Clone the repo
 sudo mkdir -p /opt/fairway-fantasy
