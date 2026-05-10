@@ -298,9 +298,17 @@ a { color: inherit; }
 }
 
 /* ── Responsive ──────────────────────────────────────────── */
+/* Helper: shown only on mobile (the inverse of .hide-mobile). Used
+   for things like inlining a member's email under their name when
+   the dedicated Email column is hidden. */
+.show-mobile { display: none; }
+
 @media (max-width: 768px) {
   .nav-links { display: none; }
   .hide-mobile { display: none !important; }
-  .lb-table th:nth-child(n+5),
-  .lb-table td:nth-child(n+5) { display: none; }
+  .show-mobile { display: revert; }
+  /* NOTE: Previous CSS hid every `.lb-table` column past the 4th on
+     mobile via `nth-child(n+5)`. That accidentally hid the admin
+     members table's Remove button column. Removed — every table now
+     manages its own hide-mobile columns explicitly via the class. */
 }

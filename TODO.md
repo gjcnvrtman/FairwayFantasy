@@ -14,7 +14,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [ ] **Add the missing score-sync cron** *(P1 #3)* — `/api/sync-scores` exists but `vercel.json` only schedules `/api/sync-scores/rankings` (Mondays 06:00). The headline "every 10 min during play" feature has no schedule. Replace with a systemd timer firing Thu–Sun in market hours.
 
 ### Security
-- [ ] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — `src/app/league/[slug]/admin/AdminPanel.tsx:23` puts the cron secret in a `NEXT_PUBLIC_*` env var, which Next bundles into the client JS at build. Replace manual sync with a commissioner-authed endpoint that uses the user's session, not the cron secret.
+- [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — fixed in P8. New `/api/admin/sync-scores` endpoint is commissioner-authed via session cookie (no shared secret). Sync engine extracted to `src/lib/sync.ts`; the cron-secret-authed `/api/sync-scores` still exists for the systemd timer but no client code references it. ✓
 - [x] **Server Component onClick at `src/app/league/[slug]/page.tsx:267`** *(P1 #4.9, B-series #B4)* — fixed in P7. Extracted to `<InviteCard>` client component with proper `'use client'` + `navigator.clipboard.writeText` + `execCommand('copy')` fallback for non-HTTPS LAN. ✓
 
 ### Correctness
@@ -77,6 +77,17 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-10 — Prompt 8: commissioner tools + #4.1 fix + 18 new tests
+- [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client (P0 #4.1)** — fixed. AdminPanel "Sync Now" button now POSTs to a new `/api/admin/sync-scores` endpoint that authenticates via session cookie + commissioner role check. Sync engine extracted to `src/lib/sync.ts`. Cron-secret-authed `/api/sync-scores` still exists for systemd timer; no client code references the secret anymore.
+- [x] **Centralized auth helper** at `src/lib/auth-league.ts` — `requireCommissioner({slug?, leagueId?})` returns a tagged-union `{ ok, user, league, role }` or `{ ok: false, response }`. Status code matrix: 400 missing-id / 401 no-session / 403 not-commissioner / 404 not-found-or-not-member (collapsed for privacy). All commissioner endpoints now use the same helper.
+- [x] **Last-commissioner guard** — `wouldOrphanLeague` blocks DELETE that would leave the league with zero commissioners. The DB schema only allows one commissioner today, but the guard is future-proof for co-commissioners.
+- [x] **Hardened `DELETE /api/leagues/members`** — explicit 400 on missing userId, last-commissioner guard, error surfacing on caller side.
+- [x] **Hardened `POST /api/leagues/invite`** — uses `requireCommissioner`, surfaces DB errors, no silent failures.
+- [x] **AdminPanel rewrite** — uses shared `<InviteCard>` (P7) for clipboard with execCommand fallback. New "League Settings" read-only summary card (name, slug, max players, created date, "league full" warning). Confirm dialog before regenerating invite + before removing member. Per-row + global error surfaces for failed actions. Loading states on all buttons via `aria-busy`.
+- [x] **Mobile responsiveness on members table** — email + joined columns are `hide-mobile`; email folds inline under the name on phones via new `.show-mobile` utility. Removed dead `nth-child(n+5)` CSS rule that was hiding the Remove-button column on mobile (silent admin breakage).
+- [x] **Loading + error boundaries** for `/league/[slug]/admin` — Next 14 App Router pattern, skeleton matches the panel's section layout.
+- [x] **`tests/auth-league.test.ts`** — 18 unit tests covering `decideCommissionerAuth` (every status code branch), `decideMemberAuth` (member acceptance, non-member rejection), `wouldOrphanLeague` (last-commissioner, multi-commissioner future-proofing, stale-userId no-op).
 
 ### 2026-05-10 — Prompt 7: league dashboard improvements + #4.9 fix + 23 new tests
 - [x] **`<InviteCard>` client component** at `src/components/league/InviteCard.tsx` — fixes P0 bug #4.9 (server-component `onClick` would 500 at runtime). `navigator.clipboard.writeText` with `document.execCommand('copy')` fallback for non-HTTPS LAN deployment. Flashes "Copied!" feedback for 2.5s.

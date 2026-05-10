@@ -55,6 +55,7 @@ export default async function AdminPage({ params }: Props) {
             members={members}
             tournaments={tournaments ?? []}
             activeTournament={activeTournament ?? null}
+            inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />
         </div>
       </div>
