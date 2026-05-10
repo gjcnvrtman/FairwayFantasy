@@ -5,11 +5,21 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // ── Browser client (use in Client Components) ────────────────
+// Throws a clear, actionable error instead of the SDK's opaque "Your
+// project's URL and Key are required" when env isn't configured —
+// makes the bisect easy when running against a fresh clone before the
+// .env.local has been populated.
 export function createBrowserSupabaseClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    throw new Error(
+      'Supabase browser client called without env. ' +
+      'Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local. ' +
+      '(The public landing page does NOT require these — only auth-gated pages do.)'
+    );
+  }
+  return createClient(url, key);
 }
 
 // ── Admin client — service role, bypasses RLS ────────────────
