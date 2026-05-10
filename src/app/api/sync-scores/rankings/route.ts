@@ -9,14 +9,26 @@ export async function GET(req: NextRequest) {
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`)
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+  // Partial-success: rankings and schedule sync are independent. If
+  // ESPN's rankings endpoint is down (it returned 500 in May 2026)
+  // we still want the schedule to populate so the dashboard works.
+  // Each step's failure is captured but doesn't abort the other.
+
+  // ── 1. OWGR rankings ──
+  let rankingResult: Awaited<ReturnType<typeof syncRankingsToDatabase>> | null = null;
+  let rankingError: string | null = null;
   try {
-    // 1. Sync OWGR rankings from DataGolf
-    const rankingResult = await syncRankingsToDatabase();
+    rankingResult = await syncRankingsToDatabase();
+  } catch (err) {
+    rankingError = err instanceof Error ? err.message : String(err);
+    console.error('Rankings sync failed:', err);
+  }
 
-    // 2. Sync PGA Tour schedule from ESPN
+  // ── 2. PGA Tour schedule ──
+  let tournamentsSynced  = 0;
+  let scheduleError: string | null = null;
+  try {
     const schedule = await fetchPGASchedule();
-    let tournamentsSynced = 0;
-
     for (const event of schedule) {
       try {
         // Pick deadline = Thursday 7am ET (roughly first tee time —
@@ -53,13 +65,25 @@ export async function GET(req: NextRequest) {
         );
       }
     }
-
-    return NextResponse.json({
-      success: true,
-      rankings: rankingResult,
-      tournaments: tournamentsSynced,
-    });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    scheduleError = err instanceof Error ? err.message : String(err);
+    console.error('Schedule sync failed:', err);
   }
+
+  // ── Decide HTTP status ──
+  // - 200 if at least one of the two sub-syncs produced data.
+  // - 500 only if BOTH failed (genuinely no progress).
+  const anyProgress = (rankingResult && rankingResult.updated + rankingResult.inserted > 0)
+                   || tournamentsSynced > 0;
+
+  return NextResponse.json(
+    {
+      success:           anyProgress || (!rankingError && !scheduleError),
+      rankings:          rankingResult,
+      rankingError,
+      tournaments:       tournamentsSynced,
+      scheduleError,
+    },
+    { status: anyProgress || (!rankingError && !scheduleError) ? 200 : 500 },
+  );
 }
