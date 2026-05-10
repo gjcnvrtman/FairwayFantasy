@@ -11,6 +11,9 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [x] **ESPN rankings dead → balldontlie integration landed.** ESPN's `/pga/rankings` returned 500 (`{"code":2404,"detail":"http error: not found"}`) in May 2026. Swapped rankings source to balldontlie's `/pga/v1/players` endpoint (free tier, 5 req/min). New file `src/lib/balldontlie.ts`. `src/lib/datagolf.ts` refactored — keeps the name + `syncRankingsToDatabase()` signature, now UPDATE-only (balldontlie has no ESPN ID, so we can't insert new golfers; ESPN's leaderboard / `scripts/seed-golfers.ts --from-event` is the source for new rows). Hand-maintained `data/owgr-top.json` + the `--apply-ranks` flag of seed-golfers remain as emergency fallback. ✓
 - [ ] **(P2) Rename `src/lib/datagolf.ts` → `src/lib/rankings.ts`** — has been misleading since the DataGolf days; balldontlie is the third source. Cosmetic.
 
+### Live-scoring risk for PGA Championship (Thu May 14) — high P0
+- [ ] **`fetchLiveLeaderboard` in `src/lib/espn.ts` has the SAME bugs as the old `seed-golfers.ts`** — uses the broken `/pga/leaderboard?event=` endpoint (404s) AND reads `c.displayName` which ESPN now returns null. Apply the same fixes: fall back to `/pga/scoreboard?event=`, read name from `c.athlete?.displayName ?? c.athlete?.fullName`. Without this, the score-sync timer fires faithfully every 10 min Thu-Sun starting May 14 but updates no live scores. Verify Thursday morning by manually triggering `sudo systemctl start fairway-scores.service` and watching journalctl.
+
 ### ESPN data + sync timers (action: run install.sh on .160)
 - [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:
   ```bash
@@ -98,6 +101,31 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-10 — Data plumbing complete: 48 tournaments + 195 golfers + 155 ranked
+End-to-end ESPN + balldontlie integration shipped. Picks page is functional. Currently showing Truist Championship (in final round) as "current event."
+
+**API source map after today:**
+| Source | Endpoint | Status |
+|---|---|---|
+| Tournament schedule | ESPN `/pga/scoreboard` calendar | ✓ works, 48 events Jan-Dec 2026 |
+| Player field | ESPN `/pga/scoreboard?event=` (with athlete.displayName parsing) | ✓ works, 195 unique players landed today |
+| OWGR rankings | balldontlie `/pga/v1/players` (free tier, 5 req/min) | ✓ works, 155 ranked |
+| Live scores | ESPN `/pga/leaderboard?event=` | ⚠ NOT verified — likely needs same fixes as seed-golfers (see below) |
+
+**Patches landed today (in order):**
+- `e2b1496` — sync-scores/rankings route partial-success (rankings + schedule independent)
+- `c3949c7` — seed-golfers.ts + owgr-top.json fallback
+- `d70d836` — balldontlie integration replaces ESPN /pga/rankings (dead)
+- `61850d9` — seed-golfers falls back from leaderboard to scoreboard endpoint on 404
+- `32a1c18` — seed-golfers parses `c.athlete.displayName` (scoreboard's null `c.displayName`)
+- `65f78f9` — rankings route self-heals stale tournament statuses (was showing The Sentry as "next")
+
+**Final state confirmed:**
+- 48 tournaments, status correctly distributed (past = complete, current = active, future = upcoming)
+- 195 golfers in DB, 155 ranked from balldontlie, 20 top-tier (rank 1-24)
+- Dashboard + picks page show Truist Championship (correct)
+- Self-healing: weekly rankings cron + status maintenance keeps things fresh
 
 ### 2026-05-10 — Production deployment: Fairway live at https://fairway.golf-czar.com
 End-to-end deployment finished. App running with HTTPS, signed in successfully, all routes work.
