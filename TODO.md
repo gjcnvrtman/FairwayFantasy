@@ -8,8 +8,22 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
-### Score sync (still missing in prod)
-- [ ] **Wire the score-sync systemd timer** *(P1 #3)* — `/api/sync-scores` exists, the engine works. Without a timer firing it Thu–Sun every 10 min, scores never update during a tournament. Template in `DEPLOYMENT.md` ("Score-sync timer (P0 — wire after deploy)" section). ~10 min.
+### ESPN data is missing — app has no tournaments or golfers (TOP P0)
+- [ ] **Run the rankings + schedule sync ONCE to populate the empty DB.** When we did "starting fresh," we only seeded one user — the `tournaments` and `golfers` tables are empty. Until the rankings sync runs, the picks page has zero golfers to choose from and the dashboard has no upcoming events. The endpoint that fixes this is `GET /api/sync-scores/rankings` (already authed via `Bearer CRON_SECRET`). It pulls OWGR rankings from ESPN's free API into `golfers` AND imports the PGA schedule from ESPN into `tournaments`. Single curl from the LAN box:
+  ```bash
+  source /opt/fairway-fantasy/.env.local
+  curl -fsS -X GET -H "Authorization: Bearer $CRON_SECRET" \
+    https://fairway.golf-czar.com/api/sync-scores/rankings | jq
+  ```
+  Should return `{success: true, rankings: {updated, inserted, errors}, tournaments: <n>}`. Then verify in psql:
+  ```sql
+  SELECT COUNT(*) FROM golfers;       -- should be ~200+
+  SELECT COUNT(*) FROM tournaments;   -- should be ~40 (one PGA season)
+  ```
+
+### Score sync timers (after the one-shot above)
+- [ ] **Wire the WEEKLY rankings/schedule timer** — `/api/sync-scores/rankings` should run Mondays ~6am ET so OWGR rankings stay current and any newly-announced tournaments land in the DB before pick time. systemd timer firing weekly.
+- [ ] **Wire the IN-TOURNAMENT score timer** *(P1 #3)* — `/api/sync-scores` (POST) every ~10 min Thu–Sun during play so live scores update on the leaderboard. Without it, scores never update during a tournament. Template in `DEPLOYMENT.md` ("Score-sync timer (P0 — wire after deploy)" section).
 
 ### Open signup since deployment went public
 - [ ] **Public-internet exposure now real, not LAN** — these were P3 ("LAN-only mitigates") but the mitigation no longer applies:
