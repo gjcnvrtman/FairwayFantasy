@@ -68,30 +68,42 @@ const pool = new Pool({ connectionString: DATABASE_URL, max: 2 });
 
 // ── Step 1: pull field from ESPN, upsert golfers ────────────
 
+interface EspnCompetitor {
+  id: string;
+  displayName?: string | null;
+  headshot?: { href?: string };
+  athlete?: {
+    id?:          string;
+    displayName?: string;
+    fullName?:    string;
+    headshot?:    { href?: string };
+    flag?:        { alt?: string };
+  };
+}
+
+interface EspnEvent {
+  competitions?: Array<{
+    competitors?: EspnCompetitor[];
+  }>;
+}
+
 async function seedFromEvent(eventId: string): Promise<number> {
   console.log(`\n▸ Pulling player field for event ${eventId} from ESPN...`);
 
-  // Try the leaderboard endpoint first — populated once the tournament
-  // starts. For UPCOMING events ESPN returns 404 there, so we fall
-  // back to the scoreboard endpoint (which has event metadata for
-  // future tournaments). Same JSON shape; same parser handles both.
+  // Two endpoints tried in order. As of May 2026:
+  //   - /pga/leaderboard?event= returns 404 for many events (broken).
+  //   - /pga/scoreboard?event=  returns 200 but currently IGNORES the
+  //     event param and returns "what's current" regardless. Still
+  //     gives us a real player roster of ~70-150 active PGA pros, which
+  //     is what we actually need for the seed.
+  // Multiple events may be returned (e.g. PGA Tour + alternate). We
+  // collect competitors across ALL events for a richer roster.
   const candidates = [
     `https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event=${eventId}`,
     `https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?event=${eventId}`,
   ];
 
-  let data: {
-    events?: Array<{
-      competitions?: Array<{
-        competitors?: Array<{
-          id: string;
-          displayName: string;
-          headshot?: { href: string };
-        }>;
-      }>;
-    }>;
-  } | null = null;
-
+  let data: { events?: EspnEvent[] } | null = null;
   for (const url of candidates) {
     const res = await fetch(url, { cache: 'no-store' as RequestCache });
     if (res.ok) {
@@ -99,41 +111,68 @@ async function seedFromEvent(eventId: string): Promise<number> {
       console.log(`  ✓ fetched from ${url.includes('/scoreboard') ? 'scoreboard' : 'leaderboard'} endpoint`);
       break;
     }
-    console.log(`  ✗ ${url.split('/').slice(-1)[0]}: HTTP ${res.status}`);
+    console.log(`  ✗ HTTP ${res.status}: ${url.split('?')[0].split('/').slice(-1)[0]}`);
   }
 
   if (!data) {
     throw new Error(`ESPN field fetch failed at every candidate endpoint for event ${eventId}`);
   }
 
-  const competitors = data.events?.[0]?.competitions?.[0]?.competitors ?? [];
-  if (competitors.length === 0) {
+  // Combine competitors from ALL events in the response. Dedup by id.
+  const seen = new Set<string>();
+  const allCompetitors: EspnCompetitor[] = [];
+  for (const ev of data.events ?? []) {
+    for (const comp of ev.competitions ?? []) {
+      for (const c of comp.competitors ?? []) {
+        if (!c.id || seen.has(c.id)) continue;
+        seen.add(c.id);
+        allCompetitors.push(c);
+      }
+    }
+  }
+
+  if (allCompetitors.length === 0) {
     throw new Error(
-      `No competitors in event ${eventId} — ESPN may not have published the ` +
-      `field yet (typically 1-2 days before tee time). Try a recently-completed ` +
-      `event whose leaderboard is populated.`,
+      `No competitors in response — ESPN may not have published any field ` +
+      `data. Try again closer to a tournament start.`,
     );
   }
-  console.log(`  found ${competitors.length} players`);
+  console.log(`  found ${allCompetitors.length} unique players across ${data.events?.length ?? 0} event(s)`);
 
   let inserted = 0;
   let updated  = 0;
-  for (const c of competitors) {
+  let skipped  = 0;
+  for (const c of allCompetitors) {
+    // ESPN nests name at c.athlete.displayName for the scoreboard
+    // payload; the older leaderboard shape used c.displayName.
+    // Fall through the chain for robustness.
+    const name = c.athlete?.displayName
+              ?? c.athlete?.fullName
+              ?? c.displayName
+              ?? null;
+    if (!name) {
+      skipped++;
+      continue;
+    }
+    const headshot = c.athlete?.headshot?.href ?? c.headshot?.href ?? null;
+    const country  = c.athlete?.flag?.alt ?? null;
+
     const r = await pool.query<{ created: boolean }>(
-      `INSERT INTO golfers (espn_id, name, headshot_url)
-       VALUES ($1, $2, $3)
+      `INSERT INTO golfers (espn_id, name, headshot_url, country)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (espn_id) DO UPDATE SET
          name         = EXCLUDED.name,
          headshot_url = COALESCE(EXCLUDED.headshot_url, golfers.headshot_url),
+         country      = COALESCE(EXCLUDED.country, golfers.country),
          updated_at   = NOW()
        RETURNING (xmax = 0) AS created`,
-      [c.id, c.displayName, c.headshot?.href ?? null],
+      [c.id, name, headshot, country],
     );
     if (r.rows[0].created) inserted++;
     else                   updated++;
   }
-  console.log(`  ✓ inserted ${inserted}, updated ${updated}`);
-  return competitors.length;
+  console.log(`  ✓ inserted ${inserted}, updated ${updated}${skipped ? `, skipped ${skipped} (no name)` : ''}`);
+  return allCompetitors.length;
 }
 
 // ── Step 2: apply OWGR ranks from JSON ──────────────────────
