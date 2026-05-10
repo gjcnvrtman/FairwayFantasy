@@ -6,12 +6,20 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ---
 
-## P0 — blocks LAN deployment / security / data corruption
+## P0 — blocks production / security / data corruption
 
-### Deployment migration
-- [ ] **Replace Supabase Cloud with self-hosted Postgres + new auth** *(P1 #1)* — entire stack assumes Supabase Cloud + Vercel; LAN deployment on `192.168.1.160` requires a different DB + auth. Options: NextAuth + email magic-link via local SMTP, OR shore-jones-style SSO matching the DayTrader/MultiDayTrader pattern.
-- [ ] **Replace Vercel hosting with Node + nginx + systemd** *(P1 #2)* — `next build` + `next start` on port 3000 behind nginx. Document `multidaytrader-style` systemd unit. Bind to `0.0.0.0`, document firewall rule (`ufw allow from 192.168.1.0/24 to any port 3000`).
-- [ ] **Add the missing score-sync cron** *(P1 #3)* — `/api/sync-scores` exists but `vercel.json` only schedules `/api/sync-scores/rankings` (Mondays 06:00). The headline "every 10 min during play" feature has no schedule. Replace with a systemd timer firing Thu–Sun in market hours.
+### Score sync (still missing in prod)
+- [ ] **Wire the score-sync systemd timer** *(P1 #3)* — `/api/sync-scores` exists, the engine works. Without a timer firing it Thu–Sun every 10 min, scores never update during a tournament. Template in `DEPLOYMENT.md` ("Score-sync timer (P0 — wire after deploy)" section). ~10 min.
+
+### Open signup since deployment went public
+- [ ] **Public-internet exposure now real, not LAN** — these were P3 ("LAN-only mitigates") but the mitigation no longer applies:
+  - Anyone with the URL can register at `/auth/signup`. Lock down with invite-only signup (require an `inviteCode` in the register POST body that maps to a real league).
+  - No rate limiting on `/api/auth/register` or `/api/picks`. Mitigated by SameSite cookies, not eliminated. Add per-IP throttle.
+  - No password complexity beyond 8-char min — anyone could pick "12345678".
+  - Email verification non-blocking — anyone can register with someone else's email.
+
+### Backups
+- [ ] **Daily `pg_dump` cron + off-machine copy** — no automated backup. The moment real picks land, the data is irreplaceable. One-line cron ships ~5 minutes of work.
 
 ### Security
 - [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — fixed in P8. New `/api/admin/sync-scores` endpoint is commissioner-authed via session cookie (no shared secret). Sync engine extracted to `src/lib/sync.ts`; the cron-secret-authed `/api/sync-scores` still exists for the systemd timer but no client code references it. ✓
@@ -31,8 +39,8 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [ ] **No withdrawal-replacement UI** *(P1 - Main user flows)* — API exists at `src/app/api/picks/route.ts:57-84` but no page calls it.
 - [ ] **No demo route originally; resolved in P3** ✓ — moved to Done.
 - [ ] **`pick_deadline` uses tournament `start_date - 1h`** *(P1 #3.6)* — set in `sync-scores/rankings/route.ts:31`. Real first-tee-time can differ by 6+ hours from ESPN's reported `start_date`. Either use a per-tournament tee-time source or expose a commissioner override.
-- [ ] **Profile insert from browser anon client** *(P1 #3.5, #4.7)* — `src/app/auth/signup/page.tsx:38-43` uses the browser anon client to insert into `profiles`. Fragile: depends on Supabase auto-grants for anon. Standard fix is a Postgres trigger on `auth.users` insert (Supabase native pattern) or a server-side API route with the service role.
-- [ ] **`profiles` table has no RLS enabled** *(P1 #3.5)* — schema enables RLS on leagues/league_members/picks/fantasy_results/season_standings but NOT profiles. Should add RLS policies for profile reads/writes.
+- [x] **Profile insert from browser anon client** *(P1 #3.5, #4.7)* — obsolete in P4. Signup now goes through `/api/auth/register` (server-side), which inserts profile + auth_credentials atomically in a kysely transaction. No browser-side DB writes anywhere. ✓
+- [x] **`profiles` table has no RLS enabled** *(P1 #3.5)* — obsolete in self-host. We explicitly dropped RLS in `infra/postgres/init/00-schema.sql` because `auth.uid()` doesn't exist outside Supabase. App-level enforcement via `requireCommissioner` etc. is the model. Adding RLS back later is fine; would be belt-and-suspenders, not a primary defense. ✓
 
 ---
 
@@ -52,9 +60,9 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## P3 — research / tuning / docs
 
 - [ ] **Stale README / SETUP** *(P1 #20)* — README references DataGolf (now ESPN), `DATAGOLF_API_KEY` env var (unused), Vercel Quick Start (replacing). SETUP.md likely similar. Rewrite for LAN deployment + actual stack.
-- [ ] **No CSRF protection** *(P1 #4.12)* — state-changing endpoints have no CSRF token. Mitigated by SameSite=Lax cookies + same-origin SPA. Standard hygiene to add.
-- [ ] **No rate limiting** *(P1 #4.13)* — `/api/picks`, `/api/leagues/join` have no per-IP / per-user limits. LAN-only mitigates; revisit for any future public exposure.
-- [ ] **Unauthenticated public endpoints** *(P1 #4.4)* — `/api/players` and `/api/leagues/verify` have no auth. LAN-only fine; if ever exposed publicly, add nginx-level basic auth or move to authed.
+- [ ] **No CSRF protection** *(P1 #4.12)* — state-changing endpoints have no CSRF token. NextAuth mitigates `/api/auth/*` automatically; other POST endpoints rely on SameSite=Lax cookies + same-origin checks. Standard hygiene to add.
+- [ ] *(moved to P0)* — rate limiting now real since public-internet exposure.
+- [ ] **Unauthenticated public endpoints** *(P1 #4.4)* — `/api/players` and `/api/leagues/verify` have no auth. Public exposure now real; consider rate-limiting at minimum.
 - [ ] **`GET /api/sync-scores` reuses `POST`** *(P1, sync-scores:133)* — works but unusual. Fine for now.
 - [ ] **Schema has no `pick_locked_at` audit column** *(P1 #3.8)* — `is_locked` boolean alone doesn't capture WHEN it locked.
 - [ ] **`picks.golfer_N_id` columns nullable** *(P1 #3.9)* — schema allows partial picks; should be `NOT NULL` after submission. Add CHECK constraint.
