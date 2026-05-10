@@ -1,12 +1,23 @@
 'use client';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn } from 'next-auth/react';
 import { AUTH_LIMITS } from '@/lib/auth-validation';
 
-export default function SignUpPage() {
+// `useSearchParams()` must be wrapped in a `<Suspense>` boundary or
+// `next build` errors the static-export of this page (same constraint
+// the signin page already obeys). Splitting the form into an inner
+// client component lets the page itself render without reading the
+// URL until the inner component hydrates.
+function SignUpForm() {
   const router = useRouter();
+  const params = useSearchParams();
+  // Honour `?redirect=…` so an invitee who clicks Create Account
+  // from a `/join/<slug>/<code>` page lands back on the invite,
+  // not on the dashboard. signin/page.tsx does the same thing.
+  const redirect = params.get('redirect') || '/dashboard';
+
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail]             = useState('');
   const [password, setPassword]       = useState('');
@@ -46,18 +57,31 @@ export default function SignUpPage() {
       setLoading(false);
       if (!signInRes || signInRes.error) {
         // Account exists but login failed — surface and let them retry.
+        // Pass the redirect along so the signin page sends them back
+        // to the invite once they sort out the password.
         setTopError(
-          'Account created, but sign-in failed. Please go to the sign-in page.',
+          `Account created, but sign-in failed. Try the sign-in page${
+            redirect !== '/dashboard' ? ' — your invite is waiting' : ''
+          }.`,
         );
         return;
       }
-      router.push('/dashboard');
+      router.push(redirect);
       router.refresh();
     } catch (err) {
       setLoading(false);
       setTopError(err instanceof Error ? err.message : String(err));
     }
   }
+
+  // If we came from an invite link, surface that context so the
+  // user understands why they're signing up before they get to do it.
+  const fromInvite = redirect.startsWith('/join/');
+
+  // Build the signin URL preserving any redirect.
+  const signInHref = redirect !== '/dashboard'
+    ? `/auth/signin?redirect=${encodeURIComponent(redirect)}`
+    : '/auth/signin';
 
   return (
     <div className="page-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
@@ -75,7 +99,11 @@ export default function SignUpPage() {
           <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: '2rem', fontWeight: 900, marginBottom: '0.4rem' }}>
             Create Your Account
           </h1>
-          <p style={{ color: 'var(--slate-mid)' }}>Free forever. No credit card required.</p>
+          <p style={{ color: 'var(--slate-mid)' }}>
+            {fromInvite
+              ? 'You’ve been invited to a private golf league.'
+              : 'Free forever. No credit card required.'}
+          </p>
         </div>
 
         <div className="card">
@@ -147,11 +175,23 @@ export default function SignUpPage() {
 
         <p style={{ textAlign: 'center', color: 'var(--slate-mid)', fontSize: '0.875rem', marginTop: '1.25rem' }}>
           Already have an account?{' '}
-          <Link href="/auth/signin" style={{ color: 'var(--green-mid)', fontWeight: 700, textDecoration: 'none' }}>
+          <Link href={signInHref} style={{ color: 'var(--green-mid)', fontWeight: 700, textDecoration: 'none' }}>
             Sign in →
           </Link>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense fallback={
+      <div className="page-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <p style={{ color: 'var(--slate-mid)' }}>Loading…</p>
+      </div>
+    }>
+      <SignUpForm />
+    </Suspense>
   );
 }
