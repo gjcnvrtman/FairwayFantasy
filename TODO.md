@@ -15,7 +15,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ### Security
 - [ ] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — `src/app/league/[slug]/admin/AdminPanel.tsx:23` puts the cron secret in a `NEXT_PUBLIC_*` env var, which Next bundles into the client JS at build. Replace manual sync with a commissioner-authed endpoint that uses the user's session, not the cron secret.
-- [ ] **Server Component onClick at `src/app/league/[slug]/page.tsx:267`** *(P1 #4.9, B-series #B4)* — file has no `'use client'` but uses `onClick={() => navigator.clipboard...}`. Build doesn't catch it but it likely 500s at runtime when the button is clicked. Fold into Prompt 7 work.
+- [x] **Server Component onClick at `src/app/league/[slug]/page.tsx:267`** *(P1 #4.9, B-series #B4)* — fixed in P7. Extracted to `<InviteCard>` client component with proper `'use client'` + `navigator.clipboard.writeText` + `execCommand('copy')` fallback for non-HTTPS LAN. ✓
 
 ### Correctness
 - [ ] **Season standings cross-tournament/season bleed** *(P1 #3.3)* — `src/app/api/sync-scores/route.ts:112-129` `recomputeResults` updates `season_standings` from `from('fantasy_results').select(...)` with NO `tournament_id`/`season` filter. Pulls ALL rows globally, so standings accumulate across seasons. Add the proper filters before the next score sync runs.
@@ -27,10 +27,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## P1 — broken UX / latent build issues / structural
 
 - [ ] **Build fails on `/dashboard` and `/api/picks/setup` prerender without env vars** *(P3 / dev experience)* — `createServerSupabaseClient` is called at module level on those routes. Either mark them `dynamic = 'force-dynamic'` or extend the lazy-Proxy pattern from `supabaseAdmin` to the server client. Currently mitigated by `.env.local.example` placeholder pattern. Revisit during de-Supabase migration.
-- [ ] **Mobile-broken layouts on remaining pages** *(P1 #6.1-6.10)* — picks page was fixed in P5 (flex-wrap). Still hardcoded `gridTemplateColumns: '1fr 300px'`:
-  - `src/app/league/[slug]/page.tsx:93` (league dashboard)
-  - `src/app/dashboard/page.tsx:52` (user dashboard)
-  Same `flex-wrap` pattern from P5 should apply.
+- [x] **Mobile-broken layouts on remaining pages** *(P1 #6.1-6.10)* — fixed in P7. Both `src/app/league/[slug]/page.tsx` and `src/app/dashboard/page.tsx` now use the same flex-wrap pattern as the picks page (P5). ✓
 - [ ] **No withdrawal-replacement UI** *(P1 - Main user flows)* — API exists at `src/app/api/picks/route.ts:57-84` but no page calls it.
 - [ ] **No demo route originally; resolved in P3** ✓ — moved to Done.
 - [ ] **`pick_deadline` uses tournament `start_date - 1h`** *(P1 #3.6)* — set in `sync-scores/rankings/route.ts:31`. Real first-tee-time can differ by 6+ hours from ESPN's reported `start_date`. Either use a per-tournament tee-time source or expose a commissioner override.
@@ -80,6 +77,17 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-10 — Prompt 7: league dashboard improvements + #4.9 fix + 23 new tests
+- [x] **`<InviteCard>` client component** at `src/components/league/InviteCard.tsx` — fixes P0 bug #4.9 (server-component `onClick` would 500 at runtime). `navigator.clipboard.writeText` with `document.execCommand('copy')` fallback for non-HTTPS LAN deployment. Flashes "Copied!" feedback for 2.5s.
+- [x] **Mobile-first layout fix** for `/league/[slug]` and `/dashboard` — replaced `gridTemplateColumns: '1fr 300px'` with flex-wrap (`flex: 1 1 480px` main column + `flex: 0 1 300px` sidebar). Sidebar now wraps below on phones. Closes TODO P1 #6.1.
+- [x] **Lock-status banner** at top of league dashboard — directly answers "are picks open?" with deadline countdown when known. Hidden when no tournament data so the empty-state messaging takes priority.
+- [x] **Post-lock pick reveal** — leaderboard rows expand to show each user's foursome via native `<details>`/`<summary>` (no JS dependency). Privacy gate: `shouldRevealOtherPicks` returns false unless the tournament status is locked. Current user always sees their own pick. Trailing reminder line "🔒 Other players' foursomes will appear once picks lock" when reveal is gated.
+- [x] **Smarter empty states** — `deriveLeagueEmptyState` returns one of `solo-commissioner`, `no-tournament-no-upcoming`, `no-tournament-but-upcoming`, or `null` (real content). Page picks copy + CTA per state. Solo-commissioner case nudges to share invite link.
+- [x] **Hero CTA labels match state** — `deriveHeroCTA` picks between `submit-picks`, `edit-picks`, `view-picks`, `submit-next`, or hides the button. No more "View My Picks" pre-pick.
+- [x] **`loading.tsx` + `error.tsx` boundaries** for `/league/[slug]` and `/dashboard` — proper Next 14 App Router patterns. Skeletons mirror real layout to avoid jump on hydration; error boundaries surface a `digest` reference + try-again + back-out CTAs.
+- [x] **`tests/league-dashboard.test.ts`** — 23 unit tests covering all four pure helpers. Pinned: 1-member league always wins solo-commissioner regardless of tournament state; locked-state + unsubmitted-pick still shows view-picks CTA (defensive); reveal gate stays false on every non-locked state.
+- [x] **`.sr-only` utility** added to `globals.css` for screen-reader-only loading announcements.
 
 ### 2026-05-10 — Prompt 6: scoring engine review + 2 bug fixes + 27 new tests
 - [x] **Named constants** in `src/lib/scoring.ts` — `MISSED_CUT_PENALTY_STROKES`, `MISSED_CUT_FALLBACK_SCORE`, `PICK_GOLFER_COUNT`, `COUNTING_GOLFER_COUNT`, `TOP_TIER_MAX_OWGR_RANK`. Hoisted from magic numbers; surfaced through tests.

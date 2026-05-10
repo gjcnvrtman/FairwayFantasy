@@ -49,10 +49,16 @@ export default async function DashboardPage() {
 
       <div className="page-content">
         <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '2rem', alignItems: 'start' }}>
+          {/* Mobile-first: flex-wrap so the sidebar stacks under the leagues
+              column on narrow viewports. Was a fixed `1fr 300px` grid that
+              broke on phones. (TODO P1 #6.1) */}
+          <div style={{
+            display: 'flex', flexFlow: 'row wrap', gap: '2rem',
+            alignItems: 'flex-start',
+          }}>
 
             {/* Leagues */}
-            <div>
+            <div style={{ flex: '1 1 360px', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
                 <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.4rem', fontWeight: 700 }}>My Leagues</h2>
                 <Link href="/create" className="btn btn-primary btn-sm">+ New League</Link>
@@ -104,7 +110,7 @@ export default async function DashboardPage() {
             </div>
 
             {/* Sidebar */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <aside style={{ flex: '0 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               {upcoming && upcoming.length > 0 && (
                 <div className="card">
                   <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>
@@ -142,7 +148,7 @@ export default async function DashboardPage() {
                   Create League →
                 </Link>
               </div>
-            </div>
+            </aside>
           </div>
         </div>
       </div>

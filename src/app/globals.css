@@ -289,6 +289,14 @@ a { color: inherit; }
   border-radius: var(--radius-sm);
 }
 
+/* Visually-hidden text for screen readers (loading-state announcements,
+   etc.). Standard a11y pattern. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0;
+  margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 768px) {
   .nav-links { display: none; }
