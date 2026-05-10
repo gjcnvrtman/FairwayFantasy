@@ -1,6 +1,12 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
+// Note: this middleware reads Supabase Auth directly rather than going
+// through `@/lib/current-user` because middleware does provider-specific
+// session-refresh cookie work (refresh tokens land here on rotation).
+// The Phase-4 golf-czar swap will rewrite this file end-to-end —
+// different cookie name, no refresh dance, same protected-route logic.
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 

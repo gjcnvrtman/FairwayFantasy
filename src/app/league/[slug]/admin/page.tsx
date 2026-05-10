@@ -1,6 +1,6 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin, getLeagueBySlug, getLeagueMembers } from '@/lib/supabase';
 import Nav from '@/components/layout/Nav';
 import AdminPanel from './AdminPanel';
@@ -10,8 +10,7 @@ interface Props { params: { slug: string } }
 export const metadata: Metadata = { title: 'Admin' };
 
 export default async function AdminPage({ params }: Props) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) redirect(`/auth/signin`);
 
   const league = await getLeagueBySlug(params.slug);

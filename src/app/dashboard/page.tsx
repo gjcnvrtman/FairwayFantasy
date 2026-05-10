@@ -1,6 +1,6 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin } from '@/lib/supabase';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -13,8 +13,7 @@ export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'My Leagues' };
 
 export default async function DashboardPage() {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) redirect('/auth/signin');
 
   const { data: profile } = await supabaseAdmin

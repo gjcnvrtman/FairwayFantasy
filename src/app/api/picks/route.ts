@@ -1,11 +1,10 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin } from '@/lib/supabase';
 import { validatePick } from '@/lib/scoring';
 
 export async function POST(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const { leagueId, tournamentId, golferIds } = await req.json();
@@ -55,8 +54,7 @@ export async function POST(req: NextRequest) {
 
 // Withdrawal replacement
 export async function PUT(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const { pickId, withdrawnGolferId, replacementGolferId } = await req.json();

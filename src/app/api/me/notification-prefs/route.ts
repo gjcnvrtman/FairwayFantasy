@@ -6,7 +6,7 @@
 //        ignore any user_id in the body and use the session's user.id.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin } from '@/lib/supabase';
 
 // Auth-gated; reads/writes per-user data. Never prerender.
@@ -17,8 +17,7 @@ const MIN_HOURS_BEFORE     = 1;
 const MAX_HOURS_BEFORE     = 168;  // 1 week — schema CHECK constraint
 
 export async function GET() {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const { data } = await supabaseAdmin
@@ -47,8 +46,7 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const body = await req.json().catch(() => ({} as Record<string, unknown>));

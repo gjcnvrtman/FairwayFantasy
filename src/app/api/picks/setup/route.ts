@@ -1,16 +1,15 @@
 // GET /api/picks/setup?slug=the-boys
 // Returns everything the picks page needs in one call
 
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin, getLeagueBySlug } from '@/lib/supabase';
 
 // Auth-gated, per-user — opt out of static analysis during build.
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const slug = req.nextUrl.searchParams.get('slug');

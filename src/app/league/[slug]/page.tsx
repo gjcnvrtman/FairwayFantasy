@@ -1,6 +1,6 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
+import { getCurrentUser } from '@/lib/current-user';
 import {
   supabaseAdmin,
   getLeagueBySlug,
@@ -30,8 +30,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function LeaguePage({ params }: Props) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) redirect(`/auth/signin?redirect=/league/${params.slug}`);
 
   const league = await getLeagueBySlug(params.slug);

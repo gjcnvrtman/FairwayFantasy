@@ -1,5 +1,5 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin } from '@/lib/supabase';
 import Nav from '@/components/layout/Nav';
 import NotificationPrefsForm from './NotificationPrefsForm';
@@ -11,8 +11,7 @@ export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Settings' };
 
 export default async function SettingsPage() {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) redirect('/auth/signin?redirect=/settings');
 
   const { data: profile } = await supabaseAdmin

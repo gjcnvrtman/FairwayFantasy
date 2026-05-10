@@ -9,7 +9,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server';
-import { createServerSupabaseClient } from './supabase-server';
+import { getCurrentUser } from './current-user';
 import { supabaseAdmin } from './supabase';
 
 export type Role = 'commissioner' | 'member';
@@ -69,8 +69,9 @@ export async function requireCommissioner(args: {
   }
 
   // ── Auth check ──
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  // Goes through the central boundary so the golf-czar swap (Phase 4)
+  // touches one file. Returns null when no session.
+  const user = await getCurrentUser();
   if (!user) {
     return {
       ok: false,

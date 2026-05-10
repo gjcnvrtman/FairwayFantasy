@@ -1,11 +1,10 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/current-user';
 import { supabaseAdmin, generateInviteCode } from '@/lib/supabase';
 import { validateCreateLeague, LEAGUE_LIMITS } from '@/lib/validation';
 
 export async function POST(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
@@ -54,8 +53,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const { data: memberships } = await supabaseAdmin
