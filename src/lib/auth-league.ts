@@ -12,7 +12,18 @@ import { NextResponse } from 'next/server';
 import { getCurrentUser } from './current-user';
 import { db } from './db';
 
-export type Role = 'commissioner' | 'member';
+// Pure decision helpers live in auth-decisions.ts so unit tests can
+// import them without pulling in NextAuth / pg. Re-export here so
+// existing callers don't change.
+export {
+  decideCommissionerAuth,
+  decideMemberAuth,
+  wouldOrphanLeague,
+  type AuthDecision,
+  type Role,
+} from './auth-decisions';
+
+import type { Role } from './auth-decisions';
 
 export interface LeagueRow {
   id:              string;
@@ -125,62 +136,7 @@ export async function requireCommissioner(args: {
   };
 }
 
-// ── Pure decision logic (testable without DB) ────────────────
-
-/**
- * Pure: given the inputs (session user, league row, membership row),
- * compute what the auth check should return. Used by tests so we can
- * cover all the branches without a Supabase server. Real callers go
- * through `requireCommissioner`.
- */
-export type AuthDecision =
-  | { code: 200 }
-  | { code: 400; reason: 'no-identifier' }
-  | { code: 401; reason: 'unauthenticated' }
-  | { code: 403; reason: 'not-commissioner' }
-  | { code: 404; reason: 'no-league-or-not-member' };
-
-export function decideCommissionerAuth(input: {
-  hasIdentifier: boolean;
-  user:          { id: string } | null;
-  league:        { id: string } | null;
-  membership:    { role: Role } | null;
-}): AuthDecision {
-  if (!input.hasIdentifier)        return { code: 400, reason: 'no-identifier' };
-  if (!input.user)                 return { code: 401, reason: 'unauthenticated' };
-  if (!input.league)               return { code: 404, reason: 'no-league-or-not-member' };
-  if (!input.membership)           return { code: 404, reason: 'no-league-or-not-member' };
-  if (input.membership.role !== 'commissioner')
-                                   return { code: 403, reason: 'not-commissioner' };
-  return { code: 200 };
-}
-
-export function decideMemberAuth(input: {
-  hasIdentifier: boolean;
-  user:          { id: string } | null;
-  league:        { id: string } | null;
-  membership:    { role: Role } | null;
-}): AuthDecision {
-  if (!input.hasIdentifier)        return { code: 400, reason: 'no-identifier' };
-  if (!input.user)                 return { code: 401, reason: 'unauthenticated' };
-  if (!input.league)               return { code: 404, reason: 'no-league-or-not-member' };
-  if (!input.membership)           return { code: 404, reason: 'no-league-or-not-member' };
-  return { code: 200 };
-}
-
-// ── Last-commissioner guard ──────────────────────────────────
-
-/**
- * Returns true if the proposed removal of this user from this league
- * would leave the league with zero commissioners — i.e. the action
- * MUST be blocked.
- *
- * Pure: takes the current member list. Caller fetches it.
- */
-export function wouldOrphanLeague(input: {
-  members:    Array<{ user_id: string; role: Role }>;
-  removeUserId: string;
-}): boolean {
-  const remaining = input.members.filter(m => m.user_id !== input.removeUserId);
-  return !remaining.some(m => m.role === 'commissioner');
-}
+// (Pure decision helpers — `decideCommissionerAuth`, `decideMemberAuth`,
+// `wouldOrphanLeague` — are imported above from `./auth-decisions`
+// and re-exported. They live there so unit tests can import them
+// without pulling NextAuth / pg / kysely into Vitest's bundle.)

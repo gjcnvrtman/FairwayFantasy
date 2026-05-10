@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
+// Import directly from the pure module — importing from
+// `@/lib/auth-league` would transitively pull NextAuth and `pg` into
+// the Vitest runner, which fails because Vitest doesn't have Next's
+// module resolution shims.
 import {
   decideCommissionerAuth,
   decideMemberAuth,
   wouldOrphanLeague,
   type Role,
-} from '@/lib/auth-league';
+} from '@/lib/auth-decisions';
 
 // ─────────────────────────────────────────────────────────────
 // decideCommissionerAuth — every branch must return the right code

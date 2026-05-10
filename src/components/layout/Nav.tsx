@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { createBrowserSupabaseClient } from '@/lib/supabase';
+import { signOut as nextAuthSignOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 
 interface NavProps {
@@ -15,8 +15,8 @@ export default function Nav({ leagueSlug, leagueName, userName }: NavProps) {
   const router = useRouter();
 
   async function signOut() {
-    const supabase = createBrowserSupabaseClient();
-    await supabase.auth.signOut();
+    // Clears the NextAuth session cookie + bounces home.
+    await nextAuthSignOut({ redirect: false });
     router.push('/');
     router.refresh();
   }

@@ -2,7 +2,7 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { createBrowserSupabaseClient } from '@/lib/supabase';
+import { signIn } from 'next-auth/react';
 
 // ``useSearchParams()`` must be wrapped in a ``<Suspense>`` boundary or
 // ``next build`` errors the static-export of this page with
@@ -23,10 +23,14 @@ function SignInForm() {
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
     setError(''); setLoading(true);
-    const supabase = createBrowserSupabaseClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    // `redirect: false` lets us own the post-signin navigation
+    // (and surface the error inline rather than via a query string).
+    const res = await signIn('credentials', { email, password, redirect: false });
     setLoading(false);
-    if (error) { setError(error.message); return; }
+    if (!res || res.error) {
+      setError('Invalid email or password.');
+      return;
+    }
     router.push(redirect);
     router.refresh();
   }

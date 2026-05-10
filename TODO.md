@@ -78,6 +78,40 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — golf-czar migration Phase 4: NextAuth + Credentials
+Replaces Supabase Auth with NextAuth v5 (Auth.js) using a Credentials provider against the local `auth_credentials` table. Bcrypt cost 10 — compatible with Supabase's hashes so existing users keep their passwords after Phase 5 migration.
+
+- [x] **`next-auth@^5.0.0-beta.20`** + **`bcryptjs`** installed.
+- [x] **`@supabase/ssr` and `@supabase/supabase-js` uninstalled**. The dependency is gone — Fairway no longer imports any Supabase code.
+- [x] **`src/auth.ts`** — NextAuth config. Credentials provider with bcrypt, JWT session strategy, `authorize()` joins `profiles` × `auth_credentials`. Updates `last_login_at` best-effort. Strong-secret guard at module load (mirrors golf-czar's pattern).
+- [x] **`src/app/api/auth/[...nextauth]/route.ts`** — exports NextAuth handlers.
+- [x] **`src/app/api/auth/register/route.ts`** — public POST. Validates input via shared `validateRegistration`, checks email uniqueness, hashes password, inserts profile + auth_credentials atomically in a kysely transaction.
+- [x] **`src/lib/auth-validation.ts`** — pure registration validator (used by both client and server). 14 tests.
+- [x] **`src/lib/current-user.ts`** body swapped — calls `auth()` from NextAuth instead of Supabase. Same return shape, all 12 callsites unchanged.
+- [x] **`src/lib/auth-decisions.ts`** (new) — pure decision helpers split out so unit tests can import without pulling NextAuth into Vitest. `auth-league.ts` re-exports them.
+- [x] **`src/middleware.ts`** rewritten — uses NextAuth's `auth()` middleware export. Same protected-route logic, no cookie-refresh dance.
+- [x] **`src/app/auth/signin/page.tsx`** — `signIn('credentials', {...})` from `next-auth/react`.
+- [x] **`src/app/auth/signup/page.tsx`** — POST `/api/auth/register`, then auto-login via `signIn`. Field-level error rendering. Uses `AUTH_LIMITS` constants.
+- [x] **`src/app/auth/callback/route.ts`** deleted (was Supabase email-confirmation handler).
+- [x] **`src/components/layout/Nav.tsx`** — `signOut` from `next-auth/react`.
+- [x] **`src/app/join/[slug]/[code]/page.tsx`** — `useSession()` from `next-auth/react`.
+- [x] **`src/components/providers/AuthProvider.tsx`** + `layout.tsx` — `<SessionProvider>` wraps the app so `useSession()` works in client components.
+- [x] **`src/lib/supabase.ts`** + **`src/lib/supabase-server.ts`** deleted. Zero references remain.
+- [x] **`tests/auth-validation.test.ts`** — 14 tests covering email regex, display-name boundaries, password length boundaries, multi-field error reporting.
+- [x] **`.env.local.example`** updated — Supabase vars removed, `NEXTAUTH_SECRET` + `NEXTAUTH_URL` documented.
+
+VERIFICATION
+- npm run lint: 0 errors, 1 doc'd warning (custom fonts in layout)
+- npm test: 181 / 181 (was 167; +14 new auth-validation tests)
+- npx tsc --noEmit: clean
+- npm run build: 24 routes, 0 errors
+
+WHAT'S LEFT FOR ACTUAL CUTOVER (Phase 5)
+1. Stand up local Postgres on 192.168.1.160 via `infra/postgres/docker compose up -d`.
+2. Run `npx tsx scripts/migrate-from-supabase.ts --dry-run` to count, then real run.
+3. Flip `DATABASE_URL` on prod Fairway to point at local Postgres.
+4. Restart. Existing users sign in with their existing passwords (bcrypt hashes flowed through migration).
+
 ### 2026-05-10 — golf-czar migration Phase 3: local Postgres standup
 Architecture decision (recorded in conversation): Fairway is **not** integrating with golf-czar's SSO. `fairway.golf-czar.com` is just a DNS subdomain — nginx host-routes it to a fully independent Fairway instance. Phase 4 will use NextAuth + Credentials + bcrypt for Fairway's own auth.
 

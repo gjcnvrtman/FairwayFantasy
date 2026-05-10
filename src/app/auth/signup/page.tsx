@@ -2,7 +2,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { createBrowserSupabaseClient } from '@/lib/supabase';
+import { signIn } from 'next-auth/react';
+import { AUTH_LIMITS } from '@/lib/auth-validation';
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -10,55 +11,52 @@ export default function SignUpPage() {
   const [email, setEmail]             = useState('');
   const [password, setPassword]       = useState('');
   const [loading, setLoading]         = useState(false);
-  const [error, setError]             = useState('');
-  const [success, setSuccess]         = useState(false);
+  const [topError, setTopError]       = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   async function handleSignUp(e: React.FormEvent) {
     e.preventDefault();
-    setError(''); setLoading(true);
+    setTopError(''); setFieldErrors({}); setLoading(true);
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.'); setLoading(false); return;
-    }
-
-    const supabase = createBrowserSupabaseClient();
-
-    const { data, error: authError } = await supabase.auth.signUp({
-      email, password,
-      options: {
-        data: { display_name: displayName },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
-
-    if (authError) { setError(authError.message); setLoading(false); return; }
-
-    // Create profile row
-    if (data.user) {
-      await supabase.from('profiles').insert({
-        id: data.user.id,
-        display_name: displayName,
-        email,
+    try {
+      // ── 1. Create the account ──
+      const res = await fetch('/api/auth/register', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          email,
+          display_name: displayName,
+          password,
+        }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.fieldErrors) setFieldErrors(data.fieldErrors);
+        else setTopError(data.error ?? `Registration failed (HTTP ${res.status}).`);
+        setLoading(false);
+        return;
+      }
+
+      // ── 2. Auto-login ──
+      // The user just told us their password; signing them in now
+      // means they don't see "now log in" friction.
+      const signInRes = await signIn('credentials', {
+        email, password, redirect: false,
+      });
+      setLoading(false);
+      if (!signInRes || signInRes.error) {
+        // Account exists but login failed — surface and let them retry.
+        setTopError(
+          'Account created, but sign-in failed. Please go to the sign-in page.',
+        );
+        return;
+      }
+      router.push('/dashboard');
+      router.refresh();
+    } catch (err) {
+      setLoading(false);
+      setTopError(err instanceof Error ? err.message : String(err));
     }
-
-    setLoading(false);
-    setSuccess(true);
-  }
-
-  if (success) {
-    return (
-      <div className="page-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
-        <div className="container-sm" style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✉️</div>
-          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.8rem', marginBottom: '0.75rem' }}>Check your email</h2>
-          <p style={{ color: 'var(--slate-mid)', marginBottom: '1.5rem' }}>
-            We sent a confirmation link to <strong>{email}</strong>. Click it to activate your account.
-          </p>
-          <Link href="/auth/signin" className="btn btn-primary">Back to Sign In</Link>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -81,29 +79,67 @@ export default function SignUpPage() {
         </div>
 
         <div className="card">
-          <form onSubmit={handleSignUp}>
-            {error && <div className="alert alert-error">{error}</div>}
+          <form onSubmit={handleSignUp} noValidate>
+            {topError && <div className="alert alert-error">{topError}</div>}
 
             <div className="field">
-              <label className="label">Your Name</label>
-              <input className="input" type="text" required placeholder="Rory McLeague"
-                value={displayName} onChange={e => setDisplayName(e.target.value)} maxLength={40} />
-              <p className="hint">This is how you&rsquo;ll appear on leaderboards.</p>
+              <label className="label" htmlFor="display_name">Your Name</label>
+              <input
+                id="display_name"
+                className="input"
+                type="text"
+                required
+                placeholder="Rory McLeague"
+                value={displayName}
+                onChange={e => setDisplayName(e.target.value)}
+                maxLength={AUTH_LIMITS.DISPLAY_NAME_MAX}
+                aria-invalid={!!fieldErrors.display_name}
+                autoComplete="name"
+              />
+              {fieldErrors.display_name
+                ? <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.display_name}</p>
+                : <p className="hint">This is how you&rsquo;ll appear on leaderboards.</p>}
             </div>
 
             <div className="field">
-              <label className="label">Email</label>
-              <input className="input" type="email" required autoComplete="email"
-                placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+              <label className="label" htmlFor="email">Email</label>
+              <input
+                id="email"
+                className="input"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                aria-invalid={!!fieldErrors.email}
+              />
+              {fieldErrors.email && (
+                <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.email}</p>
+              )}
             </div>
 
             <div className="field">
-              <label className="label">Password</label>
-              <input className="input" type="password" required autoComplete="new-password"
-                placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} />
+              <label className="label" htmlFor="password">Password</label>
+              <input
+                id="password"
+                className="input"
+                type="password"
+                required
+                autoComplete="new-password"
+                placeholder={`Min. ${AUTH_LIMITS.PASSWORD_MIN} characters`}
+                minLength={AUTH_LIMITS.PASSWORD_MIN}
+                maxLength={AUTH_LIMITS.PASSWORD_MAX}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                aria-invalid={!!fieldErrors.password}
+              />
+              {fieldErrors.password && (
+                <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.password}</p>
+              )}
             </div>
 
-            <button type="submit" className="btn btn-primary btn-full btn-lg" disabled={loading} style={{ marginTop: '0.5rem' }}>
+            <button type="submit" className="btn btn-primary btn-full btn-lg" disabled={loading} aria-busy={loading} style={{ marginTop: '0.5rem' }}>
               {loading ? 'Creating account…' : 'Create Account →'}
             </button>
           </form>

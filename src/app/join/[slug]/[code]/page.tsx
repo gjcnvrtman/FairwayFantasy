@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-import { createBrowserSupabaseClient } from '@/lib/supabase';
+import { useSession } from 'next-auth/react';
 
 export default function JoinLeaguePage() {
   const params = useParams();
@@ -13,15 +13,15 @@ export default function JoinLeaguePage() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'joining' | 'success' | 'error'>('loading');
   const [leagueName, setLeagueName] = useState('');
   const [error, setError] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // NextAuth session — `useSession()` returns `{ data, status }`.
+  // We only care about whether there's a user; UI logic below.
+  const session    = useSession();
+  const isLoggedIn = !!session.data?.user?.id;
 
   useEffect(() => {
-    async function checkAuth() {
-      const supabase = createBrowserSupabaseClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      setIsLoggedIn(!!user);
-
-      // Verify invite code is valid
+    async function verify() {
+      // Verify invite code is valid (public endpoint — no auth needed).
       const res = await fetch(`/api/leagues/verify?slug=${slug}&code=${inviteCode}`);
       if (!res.ok) {
         setError('This invite link is invalid or expired.'); setStatus('error'); return;
@@ -30,7 +30,7 @@ export default function JoinLeaguePage() {
       setLeagueName(data.leagueName);
       setStatus('ready');
     }
-    checkAuth();
+    verify();
   }, [slug, inviteCode]);
 
   async function handleJoin() {
