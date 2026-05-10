@@ -70,14 +70,17 @@ const pool = new Pool({ connectionString: DATABASE_URL, max: 2 });
 
 async function seedFromEvent(eventId: string): Promise<number> {
   console.log(`\n▸ Pulling player field for event ${eventId} from ESPN...`);
-  const res = await fetch(
+
+  // Try the leaderboard endpoint first — populated once the tournament
+  // starts. For UPCOMING events ESPN returns 404 there, so we fall
+  // back to the scoreboard endpoint (which has event metadata for
+  // future tournaments). Same JSON shape; same parser handles both.
+  const candidates = [
     `https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event=${eventId}`,
-    { cache: 'no-store' as RequestCache },
-  );
-  if (!res.ok) {
-    throw new Error(`ESPN field fetch failed: HTTP ${res.status}`);
-  }
-  const data = await res.json() as {
+    `https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?event=${eventId}`,
+  ];
+
+  let data: {
     events?: Array<{
       competitions?: Array<{
         competitors?: Array<{
@@ -87,10 +90,29 @@ async function seedFromEvent(eventId: string): Promise<number> {
         }>;
       }>;
     }>;
-  };
+  } | null = null;
+
+  for (const url of candidates) {
+    const res = await fetch(url, { cache: 'no-store' as RequestCache });
+    if (res.ok) {
+      data = await res.json();
+      console.log(`  ✓ fetched from ${url.includes('/scoreboard') ? 'scoreboard' : 'leaderboard'} endpoint`);
+      break;
+    }
+    console.log(`  ✗ ${url.split('/').slice(-1)[0]}: HTTP ${res.status}`);
+  }
+
+  if (!data) {
+    throw new Error(`ESPN field fetch failed at every candidate endpoint for event ${eventId}`);
+  }
+
   const competitors = data.events?.[0]?.competitions?.[0]?.competitors ?? [];
   if (competitors.length === 0) {
-    throw new Error(`No competitors in event ${eventId} — wrong ID, or field not yet announced?`);
+    throw new Error(
+      `No competitors in event ${eventId} — ESPN may not have published the ` +
+      `field yet (typically 1-2 days before tee time). Try a recently-completed ` +
+      `event whose leaderboard is populated.`,
+    );
   }
   console.log(`  found ${competitors.length} players`);
 
