@@ -201,9 +201,17 @@ docker compose logs postgres | tail -40   # confirm schema applied — look for
                                           # "CREATE TABLE" lines, no errors
 ```
 
-Verify connectivity from the Fairway side:
+Verify connectivity from the Fairway side. Use `PGPASSWORD` + flags
+rather than the URI form — base64 passwords contain `/` and `+` which
+break URI parsing:
 ```bash
-psql "$DATABASE_URL" -c '\dt'             # should list 12 tables
+source infra/postgres/.env                # exports POSTGRES_PASSWORD
+PGPASSWORD="$POSTGRES_PASSWORD" \
+  psql -h 127.0.0.1 -p "${POSTGRES_HOST_PORT:-5432}" -U fairway -d fairway -c '\dt'
+# should list 12 tables: profiles, auth_credentials, leagues,
+# league_members, tournaments, golfers, picks, scores,
+# fantasy_results, season_standings, reminder_preferences,
+# reminder_log
 ```
 
 #### Step 2 — Pre-flight check
