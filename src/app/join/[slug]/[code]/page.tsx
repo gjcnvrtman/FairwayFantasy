@@ -75,7 +75,7 @@ export default function JoinLeaguePage() {
       <div className="page-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
         <div className="container-sm" style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
           <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎉</div>
-          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.8rem', marginBottom: '0.5rem' }}>You're in!</h2>
+          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.8rem', marginBottom: '0.5rem' }}>You&rsquo;re in!</h2>
           <p style={{ color: 'var(--slate-mid)' }}>Redirecting you to {leagueName}…</p>
         </div>
       </div>
@@ -96,7 +96,7 @@ export default function JoinLeaguePage() {
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>🤝</div>
           <p style={{ fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--slate-mid)', marginBottom: '0.4rem' }}>
-            You've been invited to join
+            You&rsquo;ve been invited to join
           </p>
           <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: '2.2rem', fontWeight: 900, marginBottom: '0.5rem' }}>
             {leagueName}
@@ -130,7 +130,7 @@ export default function JoinLeaguePage() {
           ) : (
             <div>
               <div className="alert alert-info" style={{ marginBottom: '1.25rem' }}>
-                📋 Joining this league means you'll pick golfers for each PGA Tour event and the four Majors.
+                📋 Joining this league means you&rsquo;ll pick golfers for each PGA Tour event and the four Majors.
               </div>
               <button
                 className="btn btn-primary btn-full btn-lg"

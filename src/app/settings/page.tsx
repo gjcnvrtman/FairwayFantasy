@@ -5,6 +5,9 @@ import Nav from '@/components/layout/Nav';
 import NotificationPrefsForm from './NotificationPrefsForm';
 import type { Metadata } from 'next';
 
+// Per-user, auth-gated — never makes sense to prerender.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = { title: 'Settings' };
 
 export default async function SettingsPage() {

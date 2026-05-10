@@ -5,6 +5,11 @@ import { supabaseAdmin } from '@/lib/supabase';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
 
+// This page is auth-gated and reads per-user data on every request,
+// so static prerender is wrong for it (and also crashes during
+// `next build` without Supabase env). Mark dynamic.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = { title: 'My Leagues' };
 
 export default async function DashboardPage() {
@@ -142,7 +147,7 @@ export default async function DashboardPage() {
                   Invite Friends
                 </h3>
                 <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.82rem', marginBottom: '1rem', lineHeight: 1.55 }}>
-                  Create a league first, then share the invite link. Friends click, sign up, and they're in.
+                  Create a league first, then share the invite link. Friends click, sign up, and they&rsquo;re in.
                 </p>
                 <Link href="/create" className="btn btn-brass btn-sm btn-full">
                   Create League →

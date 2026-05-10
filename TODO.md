@@ -26,7 +26,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P1 — broken UX / latent build issues / structural
 
-- [ ] **Build fails on `/dashboard` and `/api/picks/setup` prerender without env vars** *(P3 / dev experience)* — `createServerSupabaseClient` is called at module level on those routes. Either mark them `dynamic = 'force-dynamic'` or extend the lazy-Proxy pattern from `supabaseAdmin` to the server client. Currently mitigated by `.env.local.example` placeholder pattern. Revisit during de-Supabase migration.
+- [x] **Build fails on `/dashboard` and `/api/picks/setup` prerender without env vars** *(P3 / dev experience)* — fixed in P10. Added `export const dynamic = 'force-dynamic'` to `/dashboard`, `/settings`, `/api/picks/setup`, `/api/me/notification-prefs`. `npm run build` now succeeds with empty env. ✓
 - [x] **Mobile-broken layouts on remaining pages** *(P1 #6.1-6.10)* — fixed in P7. Both `src/app/league/[slug]/page.tsx` and `src/app/dashboard/page.tsx` now use the same flex-wrap pattern as the picks page (P5). ✓
 - [ ] **No withdrawal-replacement UI** *(P1 - Main user flows)* — API exists at `src/app/api/picks/route.ts:57-84` but no page calls it.
 - [ ] **No demo route originally; resolved in P3** ✓ — moved to Done.
@@ -38,7 +38,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P2 — quality / monitoring / future-proofing
 
-- [ ] **TS strict mode + lint enforcement** *(P1 #4.10, #4.11)* — `next.config.js` has `typescript.ignoreBuildErrors: true` AND `eslint.ignoreDuringBuilds: true`. Real type/lint errors land silently. Set up ESLint config (currently absent — `next lint` prompts interactively), turn on strict TS, fix what surfaces.
+- [ ] **TS strict mode + flip `next.config.js` ignore flags** *(P1 #4.10, #4.11)* — P10 added `.eslintrc.json` (`next/core-web-vitals`) + pinned ESLint v8 + fixed all 5 surfaced lint errors. Lint + tsc both clean now. Remaining work: flip `typescript.ignoreBuildErrors` / `eslint.ignoreDuringBuilds` off in `next.config.js` and turn on `tsconfig.json` strict mode. Was kept on for safety; can flip once a baseline is comfortable.
 - [ ] **`calculateTop3` partial-data semantics ambiguous** *(P1 #5.3, pinned in `tests/picks.test.ts`)* — when fewer than 3 golfers have scored, returns sum of remaining. A user with 2 scored at -5 outranks a user with 3 scored at -4. Documented in `scoring.ts` JSDoc + locked by test. Decide between (a) keep current, (b) penalize with a high number per missing slot, (c) pro-rate. P5/P6 left as-is pending product decision.
 - [ ] **`isReplacementEligible` vs in-route inline check are different** *(P1 #5.6)* — `scoring.ts:isReplacementEligible` checks `!golfer.teed_off && golfer.status === 'active'`. The actual usage at `picks/route.ts:73-77` checks `repScore?.round_1 !== null`. Two truths. Pick one and delete the other.
 - [ ] **`mapESPNStatus` MDF case** *(P1 #5.10 partial)* — P6 fixed `STATUS_FINAL` mapping, but `MDF` (made cut, did not finish) still falls through to `active`. Pinned by test so behavior is deliberate. Decide whether MDF → `complete` (final, score frozen) or stay `active`.
@@ -62,7 +62,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. Consider SVG icons.
 - [ ] **No PWA manifest, no offline fallback** *(P1 #6.8)* — "Install to home screen" experience absent.
 - [ ] **`vercel.json` cleanup post-migration** — once we move off Vercel, the file is dead. Decide whether to delete or keep for future re-deploy parity.
-- [ ] **`.eslintrc` setup** — `next lint` opens an interactive prompt because no config exists. `next.config.js:eslint.ignoreDuringBuilds: true` masks the absence. Pick Strict or Base, commit a config, ideally turn off the ignore.
+- [x] **`.eslintrc` setup** — done in P10. Added `.eslintrc.json` extending `next/core-web-vitals`, pinned `eslint@^8.57.0` + `eslint-config-next@^14.2.35`. ✓
 
 ---
 
@@ -77,6 +77,13 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-10 — Prompt 10: full QA + LAN deployment readiness review
+- [x] **`DEPLOYMENT.md`** — pass/fail table for every prompt-10 check, bug list (fixed + deferred), full systemd unit + nginx + ufw walkthrough, env var reference, firewall checklist, recommended next-PR priority list. **First clean `npm run build`** in the project's history.
+- [x] **`next build` fixed** — added `export const dynamic = 'force-dynamic'` to `/dashboard`, `/settings`, `/api/picks/setup`, `/api/me/notification-prefs`. Auth-gated routes never made sense to prerender; were silently failing without Supabase env. Build now produces 24 routes with 0 errors.
+- [x] **`.eslintrc.json`** + ESLint v8 pinned — closes long-standing TODO. `npm run lint`: 0 errors, 1 warning (custom-fonts in layout — documented).
+- [x] **5 lint errors fixed** — unescaped `'` in `signup/page.tsx`, `dashboard/page.tsx`, `join/[slug]/[code]/page.tsx`. `&rsquo;` swap.
+- [x] **`.env.local.example` updated** for P9 (`REMINDERS_LIVE`, future SMTP/Twilio placeholders). Comments now describe all three modes (preview / dev / LAN prod).
 
 ### 2026-05-10 — Prompt 9: pick-reminders foundation + 30 new tests
 - [x] **Schema** — `reminder_preferences` (per-user opt-in: email/sms/push booleans, hours_before, per-channel destinations) + `reminder_log` (audit + idempotency via `UNIQUE(user_id, tournament_id, channel)`). RLS on prefs so users only see their own row. Appended to `supabase/schema.sql` as additive `IF NOT EXISTS`.

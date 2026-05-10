@@ -1,9 +1,12 @@
-import { createServerSupabaseClient } from '@/lib/supabase-server';
 // GET /api/picks/setup?slug=the-boys
 // Returns everything the picks page needs in one call
 
+import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin, getLeagueBySlug } from '@/lib/supabase';
+
+// Auth-gated, per-user — opt out of static analysis during build.
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const supabase = await createServerSupabaseClient();

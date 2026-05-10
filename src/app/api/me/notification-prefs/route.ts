@@ -9,6 +9,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { supabaseAdmin } from '@/lib/supabase';
 
+// Auth-gated; reads/writes per-user data. Never prerender.
+export const dynamic = 'force-dynamic';
+
 const DEFAULT_HOURS_BEFORE = 24;
 const MIN_HOURS_BEFORE     = 1;
 const MAX_HOURS_BEFORE     = 168;  // 1 week — schema CHECK constraint

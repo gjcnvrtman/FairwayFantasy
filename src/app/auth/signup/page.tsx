@@ -88,7 +88,7 @@ export default function SignUpPage() {
               <label className="label">Your Name</label>
               <input className="input" type="text" required placeholder="Rory McLeague"
                 value={displayName} onChange={e => setDisplayName(e.target.value)} maxLength={40} />
-              <p className="hint">This is how you'll appear on leaderboards.</p>
+              <p className="hint">This is how you&rsquo;ll appear on leaderboards.</p>
             </div>
 
             <div className="field">
