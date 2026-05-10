@@ -1,10 +1,16 @@
 'use client';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createBrowserSupabaseClient } from '@/lib/supabase';
 
-export default function SignInPage() {
+// ``useSearchParams()`` must be wrapped in a ``<Suspense>`` boundary or
+// ``next build`` errors the static-export of this page with
+// "useSearchParams() should be wrapped in a suspense boundary at page
+// /auth/signin". Splitting the form into an inner client component lets
+// the page itself render without reading the URL until the inner
+// component hydrates.
+function SignInForm() {
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get('redirect') || '/dashboard';
@@ -72,5 +78,17 @@ export default function SignInPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={
+      <div className="page-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <p style={{ color: 'var(--slate-mid)' }}>Loading…</p>
+      </div>
+    }>
+      <SignInForm />
+    </Suspense>
   );
 }

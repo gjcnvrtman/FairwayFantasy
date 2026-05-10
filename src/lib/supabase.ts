@@ -2,7 +2,7 @@
 // SUPABASE CLIENT
 // ============================================================
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // ── Browser client (use in Client Components) ────────────────
 export function createBrowserSupabaseClient() {
@@ -13,11 +13,40 @@ export function createBrowserSupabaseClient() {
 }
 
 // ── Admin client — service role, bypasses RLS ────────────────
-export const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { autoRefreshToken: false, persistSession: false } }
-);
+//
+// Lazy Proxy: ``createClient`` is NOT called until first property access.
+// Without this, ``next build`` crashes during the "Collecting page data"
+// step because the constructor reads env vars at module-load time and
+// they're empty in CI / fresh checkouts. The Proxy preserves the
+// existing call-site syntax (``supabaseAdmin.from(...)``) at every
+// existing import — no churn elsewhere.
+//
+// Methods accessed off the proxy are bound to the underlying client so
+// ``this`` references stay correct inside the Supabase SDK.
+let _admin: SupabaseClient | null = null;
+function getAdminClient(): SupabaseClient {
+  if (_admin) return _admin;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      'Supabase admin client requested before env was configured. ' +
+      'Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    );
+  }
+  _admin = createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return _admin;
+}
+
+export const supabaseAdmin = new Proxy({} as SupabaseClient, {
+  get(_target, prop, _receiver) {
+    const target = getAdminClient();
+    const value = Reflect.get(target, prop);
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
 
 // ── League Helpers ───────────────────────────────────────────
 export async function getLeagueBySlug(slug: string) {
