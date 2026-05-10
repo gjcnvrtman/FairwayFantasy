@@ -78,6 +78,33 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — Production deployment: Fairway live at https://fairway.golf-czar.com
+End-to-end deployment finished. App running with HTTPS, signed in successfully, all routes work.
+
+**Topology (recorded for failover reference):**
+- `192.168.1.150` (production face) — nginx + Let's Encrypt SAN cert covering all `*.golf-czar.com` subdomains. Hosts golf-czar app + a server-block proxy for fairway.
+- `192.168.1.160` (mirror box, hosts Fairway) — Fairway Next.js process under systemd on port 3000, local Postgres in Docker on port 5434 (loopback only), ufw allows port 3000 from `.150` only.
+- Public traffic flow: `https://fairway.golf-czar.com` → nginx on .150 → cross-LAN to `192.168.1.160:3000` → Fairway → `127.0.0.1:5434` Postgres on .160.
+
+**Setup performed (in order):**
+- [x] Started fresh — no Supabase data migration needed.
+- [x] `infra/postgres/docker-compose.yml` brought up on .160 with hex POSTGRES_PASSWORD. Schema auto-applied on first init (`init/00-schema.sql`).
+- [x] `seed-user.ts` ran once on .160 to create the first user (bcrypt hash + email_verified=true).
+- [x] `.env.local` on .160 set: DATABASE_URL → loopback Postgres on :5434, NEXTAUTH_SECRET (openssl rand -base64 32), CRON_SECRET (openssl rand -hex 32), NEXTAUTH_URL + NEXT_PUBLIC_SITE_URL → https://fairway.golf-czar.com.
+- [x] nginx server-block on .150 at `/etc/nginx/sites-{available,enabled}/fairway-subdomain` proxying to `192.168.1.160:3000`. SAN cert at `/etc/letsencrypt/live/golf-czar.com/` reused (cert covers fairway).
+- [x] HTTP→HTTPS 301 redirect block + `listen 443 ssl;` block (matches existing `weekend.golf-czar.com` style).
+- [x] systemd unit `fairway-fantasy.service` on .160 with `EnvironmentFile=/opt/fairway-fantasy/.env.local`, `Restart=on-failure`. Enabled + active.
+- [x] ufw on .160: removed broad LAN allow on :3000, replaced with `allow from 192.168.1.150 to any port 3000` so only the nginx box can reach Fairway.
+- [x] End-to-end browser test: landing → /auth/signin → sign in with seeded creds → /dashboard. Cookies scoped to fairway.golf-czar.com.
+
+**Patches landed during deployment** (each its own commit):
+- `5be6a4d` — DEPLOYMENT.md fix: NodeSource vs Debian npm conflict.
+- `e16c848` — DEPLOYMENT.md fix: `curl get.docker.com | sh` instead of nonexistent `docker-compose-v2` apt package.
+- `0505668` — DEPLOYMENT.md + .env.example: PGPASSWORD env-var psql, hex (not base64) for POSTGRES_PASSWORD (URI-safe).
+- `dda0866` — Drop `deploy.resources.limits.memory` from postgres compose (cgroup v2 unavailable on Greg's kernel).
+- `a18f712` — `scripts/seed-user.ts` + "starting fresh" deploy path in DEPLOYMENT.md (no Supabase migration).
+- `80a6fa7` — **NextAuth split-config**: `auth.config.ts` (edge-safe) + `auth.ts` (Node-runtime) + `middleware.ts` rewrite. Fixed runtime crash on first request: `Error: The edge runtime does not support Node.js 'crypto' module.`
+
 ### 2026-05-10 — golf-czar migration Phase 5: cutover tooling + runbook
 The actual cutover requires running commands on the LAN box (Docker compose, real migration, prod env flip) and isn't something I can execute from a dev box. What I shipped: the operational tooling around the cutover so it's safe and rollback-able when Greg runs it.
 
