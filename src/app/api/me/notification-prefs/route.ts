@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
 
 // Auth-gated; reads/writes per-user data. Never prerender.
 export const dynamic = 'force-dynamic';
@@ -20,11 +20,10 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-  const { data } = await supabaseAdmin
-    .from('reminder_preferences')
-    .select('*')
-    .eq('user_id', user.id)
-    .single();
+  const data = await db.selectFrom('reminder_preferences')
+    .selectAll()
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
 
   if (data) return NextResponse.json({ preferences: data });
 
@@ -91,25 +90,36 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ fieldErrors: errors }, { status: 400 });
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('reminder_preferences')
-    .upsert({
-      user_id:        user.id,
-      email_enabled:  emailEnabled,
-      sms_enabled:    smsEnabled,
-      push_enabled:   pushEnabled,
-      hours_before:   hoursBefore,
-      email_addr:     emailAddr,
-      phone_e164:     phoneE164,
-      push_token:     pushToken,
-      updated_at:     new Date().toISOString(),
-    }, { onConflict: 'user_id' })
-    .select()
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    const data = await db.insertInto('reminder_preferences')
+      .values({
+        user_id:        user.id,
+        email_enabled:  emailEnabled,
+        sms_enabled:    smsEnabled,
+        push_enabled:   pushEnabled,
+        hours_before:   hoursBefore,
+        email_addr:     emailAddr,
+        phone_e164:     phoneE164,
+        push_token:     pushToken,
+        updated_at:     new Date().toISOString(),
+      })
+      .onConflict(oc => oc.column('user_id').doUpdateSet(eb => ({
+        email_enabled:  eb.ref('excluded.email_enabled'),
+        sms_enabled:    eb.ref('excluded.sms_enabled'),
+        push_enabled:   eb.ref('excluded.push_enabled'),
+        hours_before:   eb.ref('excluded.hours_before'),
+        email_addr:     eb.ref('excluded.email_addr'),
+        phone_e164:     eb.ref('excluded.phone_e164'),
+        push_token:     eb.ref('excluded.push_token'),
+        updated_at:     eb.ref('excluded.updated_at'),
+      })))
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return NextResponse.json({ preferences: data });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json({ preferences: data });
 }

@@ -3,7 +3,8 @@
 // Commissioner-only. Old code is invalidated immediately.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin, generateInviteCode } from '@/lib/supabase';
+import { db } from '@/lib/db';
+import { generateInviteCode } from '@/lib/db/queries';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 
 export async function POST(req: NextRequest) {
@@ -14,13 +15,16 @@ export async function POST(req: NextRequest) {
   if (isAuthFail(auth)) return auth.response;
 
   const newCode = generateInviteCode();
-  const { error } = await supabaseAdmin
-    .from('leagues')
-    .update({ invite_code: newCode })
-    .eq('id', auth.league.id);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    await db.updateTable('leagues')
+      .set({ invite_code: newCode })
+      .where('id', '=', auth.league.id)
+      .execute();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({ inviteCode: newCode });

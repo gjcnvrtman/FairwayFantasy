@@ -7,7 +7,7 @@
 //   - cron systemd timer (Bearer CRON_SECRET)
 // ============================================================
 
-import { supabaseAdmin } from './supabase';
+import { db } from './db';
 import {
   findUsersDueForReminder,
   buildPicksByUserLeague,
@@ -62,65 +62,65 @@ export async function runReminderJob(args: { now?: Date } = {}): Promise<Reminde
 
   try {
     // ── Find candidate tournaments ──
-    const { data: tournaments } = await supabaseAdmin
-      .from('tournaments')
-      .select('id, name, status, pick_deadline')
-      .eq('status', 'upcoming')
-      .not('pick_deadline', 'is', null);
+    const tournaments = await db.selectFrom('tournaments')
+      .select(['id', 'name', 'status', 'pick_deadline'])
+      .where('status', '=', 'upcoming')
+      .where('pick_deadline', 'is not', null)
+      .execute();
 
-    if (!tournaments?.length) return summary;
+    if (tournaments.length === 0) return summary;
 
     // ── Pre-fetch global state once (faster than per-tournament) ──
     // All league members across all leagues. Tournaments are global,
     // so any league member could be eligible.
-    const { data: members } = await supabaseAdmin
-      .from('league_members')
-      .select('user_id, league_id');
+    const members = await db.selectFrom('league_members')
+      .select(['user_id', 'league_id'])
+      .execute();
 
     // Reminder prefs for all users that have a row.
-    const { data: prefsRows } = await supabaseAdmin
-      .from('reminder_preferences')
-      .select('*');
+    const prefsRows = await db.selectFrom('reminder_preferences')
+      .selectAll()
+      .execute();
 
     // Profile email fallbacks.
-    const userIds = Array.from(new Set((members ?? []).map(m => m.user_id)));
-    const { data: profiles } = userIds.length
-      ? await supabaseAdmin
-          .from('profiles')
-          .select('id, email')
-          .in('id', userIds)
-      : { data: [] as Array<{ id: string; email: string | null }> };
+    const userIds = Array.from(new Set(members.map(m => m.user_id)));
+    const profiles = userIds.length
+      ? await db.selectFrom('profiles')
+          .select(['id', 'email'])
+          .where('id', 'in', userIds)
+          .execute()
+      : [];
 
     const prefsByUser = new Map<string, ReminderPreferences>();
-    for (const r of (prefsRows ?? []) as ReminderPreferences[]) {
+    for (const r of prefsRows as unknown as ReminderPreferences[]) {
       prefsByUser.set(r.user_id, r);
     }
     const profileEmailByUser = new Map<string, string | null>();
-    for (const p of (profiles ?? [])) {
+    for (const p of profiles) {
       profileEmailByUser.set(p.id, p.email);
     }
 
-    for (const t of tournaments as TournamentRow[]) {
+    for (const t of tournaments as unknown as TournamentRow[]) {
       summary.tournamentsScanned++;
 
       // Picks for this tournament (across all leagues).
-      const { data: picks } = await supabaseAdmin
-        .from('picks')
-        .select('league_id, tournament_id, user_id')
-        .eq('tournament_id', t.id);
+      const picks = await db.selectFrom('picks')
+        .select(['league_id', 'tournament_id', 'user_id'])
+        .where('tournament_id', '=', t.id)
+        .execute();
 
       // Already-logged reminders for this tournament.
-      const { data: log } = await supabaseAdmin
-        .from('reminder_log')
-        .select('user_id, tournament_id, channel')
-        .eq('tournament_id', t.id);
+      const log = await db.selectFrom('reminder_log')
+        .select(['user_id', 'tournament_id', 'channel'])
+        .where('tournament_id', '=', t.id)
+        .execute();
 
-      const picksByUserLeague = buildPicksByUserLeague((picks ?? []) as PickRow[]);
-      const alreadySent       = buildAlreadySentSet(log ?? []);
+      const picksByUserLeague = buildPicksByUserLeague(picks as PickRow[]);
+      const alreadySent       = buildAlreadySentSet(log);
 
       const tasks = findUsersDueForReminder({
         tournament:        t,
-        members:           (members ?? []) as MemberRow[],
+        members:           members as MemberRow[],
         picksByUserLeague,
         prefsByUser,
         profileEmailByUser,
@@ -132,7 +132,7 @@ export async function runReminderJob(args: { now?: Date } = {}): Promise<Reminde
       if (tasks.length === 0) continue;
 
       const pickDeadline = new Date(t.pick_deadline!);
-      const tournamentName = (t as any).name ?? 'next tournament';
+      const tournamentName = (t as { name?: string }).name ?? 'next tournament';
 
       for (const task of tasks) {
         const result = await dispatchReminder(task, t2 =>
@@ -167,15 +167,17 @@ export async function runReminderJob(args: { now?: Date } = {}): Promise<Reminde
 }
 
 async function persistResult(result: NotifyResult): Promise<void> {
-  await supabaseAdmin.from('reminder_log').insert({
-    user_id:       result.task.user_id,
-    league_id:     result.task.league_id,
-    tournament_id: result.task.tournament_id,
-    channel:       result.status === 'console'
-      ? 'console'
-      : result.task.channel,
-    status:        result.status,
-    error_message: result.error ?? null,
-    sent_at:       new Date().toISOString(),
-  });
+  await db.insertInto('reminder_log')
+    .values({
+      user_id:       result.task.user_id,
+      league_id:     result.task.league_id,
+      tournament_id: result.task.tournament_id,
+      channel:       result.status === 'console'
+        ? 'console'
+        : result.task.channel,
+      status:        result.status,
+      error_message: result.error ?? null,
+      sent_at:       new Date().toISOString(),
+    })
+    .execute();
 }

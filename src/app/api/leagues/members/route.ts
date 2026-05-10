@@ -4,7 +4,7 @@
 // against last-commissioner removal so the league can't be orphaned.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
 import { requireCommissioner, isAuthFail, wouldOrphanLeague, type Role } from '@/lib/auth-league';
 
 export async function DELETE(req: NextRequest) {
@@ -25,13 +25,13 @@ export async function DELETE(req: NextRequest) {
   // ── Last-commissioner guard ──
   // Fetch current membership snapshot. If removing this user would
   // leave the league with zero commissioners, block the request.
-  const { data: members } = await supabaseAdmin
-    .from('league_members')
-    .select('user_id, role')
-    .eq('league_id', auth.league.id);
+  const members = await db.selectFrom('league_members')
+    .select(['user_id', 'role'])
+    .where('league_id', '=', auth.league.id)
+    .execute();
 
   if (wouldOrphanLeague({
-    members: (members ?? []) as Array<{ user_id: string; role: Role }>,
+    members: members as Array<{ user_id: string; role: Role }>,
     removeUserId: userId,
   })) {
     return NextResponse.json(
@@ -44,14 +44,16 @@ export async function DELETE(req: NextRequest) {
     );
   }
 
-  const { error } = await supabaseAdmin
-    .from('league_members')
-    .delete()
-    .eq('league_id', auth.league.id)
-    .eq('user_id', userId);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  try {
+    await db.deleteFrom('league_members')
+      .where('league_id', '=', auth.league.id)
+      .where('user_id', '=', userId)
+      .execute();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({ success: true });

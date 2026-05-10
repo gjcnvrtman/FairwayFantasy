@@ -3,7 +3,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin, getLeagueBySlug } from '@/lib/supabase';
+import { db } from '@/lib/db';
+import { getLeagueBySlug } from '@/lib/db/queries';
 
 // Auth-gated, per-user — opt out of static analysis during build.
 export const dynamic = 'force-dynamic';
@@ -19,53 +20,45 @@ export async function GET(req: NextRequest) {
   if (!league) return NextResponse.json({ error: 'League not found' }, { status: 404 });
 
   // Verify membership
-  const { data: membership } = await supabaseAdmin
-    .from('league_members').select('id').eq('league_id', league.id).eq('user_id', user.id).single();
+  const membership = await db.selectFrom('league_members')
+    .select('id')
+    .where('league_id', '=', league.id)
+    .where('user_id',   '=', user.id)
+    .executeTakeFirst();
   if (!membership) return NextResponse.json({ error: 'Not a member' }, { status: 403 });
 
   // Get next upcoming or active tournament
-  const { data: tournament } = await supabaseAdmin
-    .from('tournaments')
-    .select('*')
-    .in('status', ['upcoming', 'active'])
-    .order('start_date', { ascending: true })
+  const tournament = await db.selectFrom('tournaments')
+    .selectAll()
+    .where('status', 'in', ['upcoming', 'active'])
+    .orderBy('start_date', 'asc')
     .limit(1)
-    .single();
+    .executeTakeFirst();
 
   if (!tournament) return NextResponse.json({ tournament: null, golfers: [], leagueId: league.id });
 
-  // Get all golfers sorted by OWGR rank
-  const { data: golfers } = await supabaseAdmin
-    .from('golfers')
-    .select('id, espn_id, name, owgr_rank, is_dark_horse, headshot_url, country')
-    .order('owgr_rank', { ascending: true, nullsFirst: false });
+  // Get all golfers sorted by OWGR rank, unranked at the bottom
+  const golfers = await db.selectFrom('golfers')
+    .select(['id', 'espn_id', 'name', 'owgr_rank', 'is_dark_horse', 'headshot_url', 'country'])
+    .orderBy('owgr_rank', sb => sb.asc().nullsLast())
+    .execute();
 
-  // Get current user's existing pick
-  const { data: existingPick } = await supabaseAdmin
-    .from('picks')
-    .select('*')
-    .eq('league_id', league.id)
-    .eq('tournament_id', tournament.id)
-    .eq('user_id', user.id)
-    .single();
+  // Get current user's existing pick (if any)
+  const existingPick = await db.selectFrom('picks')
+    .selectAll()
+    .where('league_id',     '=', league.id)
+    .where('tournament_id', '=', tournament.id)
+    .where('user_id',       '=', user.id)
+    .executeTakeFirst() ?? null;
 
-  // Get all golfer IDs already picked by OTHER players in this league
-  // (used to show "Taken" — but we don't block since uniqueness is about full 4-set)
-  const { data: otherPicks } = await supabaseAdmin
-    .from('picks')
-    .select('golfer_1_id, golfer_2_id, golfer_3_id, golfer_4_id')
-    .eq('league_id', league.id)
-    .eq('tournament_id', tournament.id)
-    .neq('user_id', user.id);
-
-  // We only truly block identical foursomes — not individual golfers
-  // So alreadyPickedIds is informational only
+  // We only truly block identical foursomes — not individual golfers —
+  // so `alreadyPickedIds` is informational only and currently empty.
   const alreadyPickedIds: string[] = [];
 
   return NextResponse.json({
     leagueId:    league.id,
     tournament,
-    golfers:     golfers ?? [],
+    golfers,
     existingPick,
     alreadyPickedIds,
   });

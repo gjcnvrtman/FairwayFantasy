@@ -10,7 +10,7 @@
 
 import { NextResponse } from 'next/server';
 import { getCurrentUser } from './current-user';
-import { supabaseAdmin } from './supabase';
+import { db } from './db';
 
 export type Role = 'commissioner' | 'member';
 
@@ -79,11 +79,12 @@ export async function requireCommissioner(args: {
     };
   }
 
-  // ── Look up league (admin client so RLS doesn't hide it) ──
-  let leagueQuery = supabaseAdmin.from('leagues').select('*');
-  if (leagueId) leagueQuery = leagueQuery.eq('id', leagueId);
-  else          leagueQuery = leagueQuery.eq('slug', slug);
-  const { data: league } = await leagueQuery.single();
+  // ── Look up league ──
+  // We trust the caller's identifier; either path returns the same row.
+  let leagueQuery = db.selectFrom('leagues').selectAll();
+  if (leagueId) leagueQuery = leagueQuery.where('id',   '=', leagueId);
+  else          leagueQuery = leagueQuery.where('slug', '=', slug!);
+  const league = await leagueQuery.executeTakeFirst();
   if (!league) {
     return {
       ok: false,
@@ -92,12 +93,11 @@ export async function requireCommissioner(args: {
   }
 
   // ── Membership check ──
-  const { data: membership } = await supabaseAdmin
-    .from('league_members')
+  const membership = await db.selectFrom('league_members')
     .select('role')
-    .eq('league_id', league.id)
-    .eq('user_id', user.id)
-    .single();
+    .where('league_id', '=', league.id)
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
 
   if (!membership) {
     // Non-member: respond 404 (don't leak the league's existence).

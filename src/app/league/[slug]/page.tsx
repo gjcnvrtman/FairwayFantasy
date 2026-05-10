@@ -1,8 +1,8 @@
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
+import { db } from '@/lib/db';
 import {
-  supabaseAdmin,
   getLeagueBySlug,
   getLeagueMembers,
   getActiveTournament,
@@ -10,7 +10,7 @@ import {
   getSeasonStandings,
   getUpcomingTournaments,
   getPicksForTournament,
-} from '@/lib/supabase';
+} from '@/lib/db/queries';
 import { formatScore } from '@/lib/scoring';
 import {
   deriveLockStatus,
@@ -37,11 +37,17 @@ export default async function LeaguePage({ params }: Props) {
   if (!league) notFound();
 
   // Verify membership
-  const { data: membership } = await supabaseAdmin
-    .from('league_members').select('role').eq('league_id', league.id).eq('user_id', user.id).single();
+  const membership = await db.selectFrom('league_members')
+    .select('role')
+    .where('league_id', '=', league.id)
+    .where('user_id',   '=', user.id)
+    .executeTakeFirst();
   if (!membership) redirect(`/join/${params.slug}/${league.invite_code}`);
 
-  const { data: profile } = await supabaseAdmin.from('profiles').select('display_name').eq('id', user.id).single();
+  const profile = await db.selectFrom('profiles')
+    .select('display_name')
+    .where('id', '=', user.id)
+    .executeTakeFirst();
 
   const [members, activeTournament, upcoming, standings] = await Promise.all([
     getLeagueMembers(league.id),

@@ -78,6 +78,29 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — golf-czar migration Phase 2: data-access boundary (kysely)
+Replaced every `supabaseAdmin.from(...)` callsite (~50 ops across 15 files) with kysely. Pure mechanical translation; behavior unchanged. App still talks to Supabase Cloud today via direct pg connection — Phase 3 stands up local Postgres and just flips `DATABASE_URL`.
+- [x] **`kysely` + `pg` + `@types/pg`** installed and pinned.
+- [x] **Hand-written schema types** at `src/lib/db/schema.ts` mirror `supabase/schema.sql` exactly. 11 tables. Single source of truth — when you change the SQL, change the TS.
+- [x] **Lazy `db` proxy** at `src/lib/db/index.ts` — same pattern as `supabaseAdmin`. Pool created on first query, never at module load. Build/tests pass without `DATABASE_URL` set; runtime queries throw a clear error until configured.
+- [x] **`src/lib/db/queries.ts`** — replaces the helpers that lived in `lib/supabase.ts`. Joins via `jsonObjectFrom` from `kysely/helpers/postgres` so the response shape stays compatible with what supabase-js produced.
+- [x] **15 callsites migrated**: all API routes (`leagues/*`, `picks/*`, `players`, `me/notification-prefs`, `sync-scores/rankings`), all server-rendered pages (`dashboard`, `settings`, `league/[slug]`, `league/[slug]/admin`, `league/[slug]/history`), and library code (`auth-league.ts`, `sync.ts`, `reminder-job.ts`, `datagolf.ts`).
+- [x] **`strictNullChecks: true`** added to `tsconfig.json`. kysely's `Generated<T>` type relies on it; without it, `string | undefined` collapses to `string` and inserts demand all columns. Surfaced 4 type errors elsewhere in the codebase (now fixed): `scoring.ts:226` rank assignment, `history/page.tsx:134` null score guard, `admin/page.tsx:54` member shape, `AdminPanel` member type.
+- [x] **Build leak fix**: removing the `db/queries` re-export from `lib/supabase.ts` prevents `pg` (Node-only driver: tls, dns) from being bundled into client components like `<Nav>` that import `createBrowserSupabaseClient`.
+- [x] **`lib/supabase.ts` slimmed** to just `createBrowserSupabaseClient` (Phase 4 will delete this file when client-side Supabase auth goes away).
+- [x] **`supabaseAdmin` removed** entirely. Gone from imports, exports, and call graph.
+
+VERIFICATION
+- npm run lint: 0 errors, 1 doc'd warning
+- npm test: 167 / 167
+- npx tsc --noEmit: clean (with strictNullChecks now on)
+- npm run build: 24 routes, 0 errors
+
+NEXT (Phase 3): stand up local Postgres on `192.168.1.160` via Docker, apply `supabase/schema.sql` (with the noted modifications: drop `auth.users` FK, add `golf_czar_user_id`), point `DATABASE_URL` at it. Phase 4: golf-czar JWT in the auth boundary. Phase 5: data migration cutover.
+
+### 2026-05-10 — golf-czar migration Phase 1: auth boundary
+- [x] See commit `39ec9c0`. Single boundary file `src/lib/current-user.ts`. 12 server-side callsites rewired. Implementation still Supabase Auth under the hood; Phase 4 swaps it to golf-czar JWT.
+
 ### 2026-05-10 — Prompt 10: full QA + LAN deployment readiness review
 - [x] **`DEPLOYMENT.md`** — pass/fail table for every prompt-10 check, bug list (fixed + deferred), full systemd unit + nginx + ufw walkthrough, env var reference, firewall checklist, recommended next-PR priority list. **First clean `npm run build`** in the project's history.
 - [x] **`next build` fixed** — added `export const dynamic = 'force-dynamic'` to `/dashboard`, `/settings`, `/api/picks/setup`, `/api/me/notification-prefs`. Auth-gated routes never made sense to prerender; were silently failing without Supabase env. Build now produces 24 routes with 0 errors.

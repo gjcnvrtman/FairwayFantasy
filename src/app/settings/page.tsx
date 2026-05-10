@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
 import Nav from '@/components/layout/Nav';
 import NotificationPrefsForm from './NotificationPrefsForm';
 import type { Metadata } from 'next';
@@ -14,12 +14,16 @@ export default async function SettingsPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/auth/signin?redirect=/settings');
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles').select('*').eq('id', user.id).single();
+  const profile = await db.selectFrom('profiles')
+    .selectAll()
+    .where('id', '=', user.id)
+    .executeTakeFirst();
 
   // Read existing prefs, OR fall through with defaults.
-  const { data: prefs } = await supabaseAdmin
-    .from('reminder_preferences').select('*').eq('user_id', user.id).single();
+  const prefs = await db.selectFrom('reminder_preferences')
+    .selectAll()
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
 
   const initialPrefs = prefs ?? {
     user_id:       user.id,

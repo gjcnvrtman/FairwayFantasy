@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { syncRankingsToDatabase } from '@/lib/datagolf';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
 import { fetchPGASchedule } from '@/lib/espn';
 
 // Weekly cron: syncs OWGR rankings + imports ESPN schedule
@@ -18,20 +18,40 @@ export async function GET(req: NextRequest) {
     let tournamentsSynced = 0;
 
     for (const event of schedule) {
-      const { error } = await supabaseAdmin
-        .from('tournaments')
-        .upsert({
-          espn_event_id: event.espn_event_id,
-          name:          event.name,
-          type:          event.type,
-          season:        event.season,
-          start_date:    event.start_date,
-          end_date:      event.end_date,
-          // Pick deadline = Thursday 7am ET (roughly first tee time)
-          pick_deadline: new Date(new Date(event.start_date).getTime() - 60 * 60 * 1000).toISOString(),
-        }, { onConflict: 'espn_event_id', ignoreDuplicates: false });
+      try {
+        // Pick deadline = Thursday 7am ET (roughly first tee time —
+        // approx start_date - 1h). Bug #3.6 tracks the more precise
+        // per-tournament tee-time approach.
+        const pickDeadline = new Date(
+          new Date(event.start_date).getTime() - 60 * 60 * 1000,
+        ).toISOString();
 
-      if (!error) tournamentsSynced++;
+        await db.insertInto('tournaments')
+          .values({
+            espn_event_id: event.espn_event_id,
+            name:          event.name,
+            type:          event.type,
+            season:        event.season,
+            start_date:    event.start_date,
+            end_date:      event.end_date,
+            pick_deadline: pickDeadline,
+          })
+          .onConflict(oc => oc.column('espn_event_id').doUpdateSet(eb => ({
+            name:          eb.ref('excluded.name'),
+            type:          eb.ref('excluded.type'),
+            season:        eb.ref('excluded.season'),
+            start_date:    eb.ref('excluded.start_date'),
+            end_date:      eb.ref('excluded.end_date'),
+            pick_deadline: eb.ref('excluded.pick_deadline'),
+          })))
+          .execute();
+        tournamentsSynced++;
+      } catch (innerErr) {
+        console.error(
+          `Tournament upsert failed for ${event.name}:`,
+          innerErr,
+        );
+      }
     }
 
     return NextResponse.json({

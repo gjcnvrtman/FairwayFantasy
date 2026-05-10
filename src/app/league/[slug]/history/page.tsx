@@ -1,7 +1,9 @@
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin, getLeagueBySlug } from '@/lib/supabase';
+import { db } from '@/lib/db';
+import { getLeagueBySlug } from '@/lib/db/queries';
+import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -16,31 +18,43 @@ export default async function HistoryPage({ params }: Props) {
   const league = await getLeagueBySlug(params.slug);
   if (!league) notFound();
 
-  const { data: membership } = await supabaseAdmin
-    .from('league_members').select('role').eq('league_id', league.id).eq('user_id', user.id).single();
+  const membership = await db.selectFrom('league_members')
+    .select('role')
+    .where('league_id', '=', league.id)
+    .where('user_id',   '=', user.id)
+    .executeTakeFirst();
   if (!membership) redirect(`/join/${params.slug}/${league.invite_code}`);
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles').select('display_name').eq('id', user.id).single();
+  const profile = await db.selectFrom('profiles')
+    .select('display_name')
+    .where('id', '=', user.id)
+    .executeTakeFirst();
 
   // Get all completed tournaments with results for this league
-  const { data: completedTournaments } = await supabaseAdmin
-    .from('tournaments')
-    .select('*')
-    .eq('status', 'complete')
-    .order('start_date', { ascending: false });
+  const completedTournaments = await db.selectFrom('tournaments')
+    .selectAll()
+    .where('status', '=', 'complete')
+    .orderBy('start_date', 'desc')
+    .execute();
 
-  // For each tournament, get the fantasy results for this league
+  // For each tournament, get the fantasy results for this league.
+  // Embedding `profile` via jsonObjectFrom matches the old supabase-js
+  // shape so the rendering code below doesn't need changes.
   const tournamentResults = await Promise.all(
-    (completedTournaments ?? []).map(async (t: any) => {
-      const { data: results } = await supabaseAdmin
-        .from('fantasy_results')
-        .select('*, profile:profiles(display_name)')
-        .eq('league_id', league.id)
-        .eq('tournament_id', t.id)
-        .order('rank', { ascending: true });
-      return { tournament: t, results: results ?? [] };
-    })
+    completedTournaments.map(async t => {
+      const results = await db.selectFrom('fantasy_results')
+        .selectAll('fantasy_results')
+        .select(eb => jsonObjectFrom(
+          eb.selectFrom('profiles')
+            .select('display_name')
+            .whereRef('profiles.id', '=', 'fantasy_results.user_id'),
+        ).as('profile'))
+        .where('league_id',     '=', league.id)
+        .where('tournament_id', '=', t.id)
+        .orderBy('rank', 'asc')
+        .execute();
+      return { tournament: t, results };
+    }),
   );
 
   const withResults = tournamentResults.filter(t => t.results.length > 0);
@@ -130,7 +144,7 @@ export default async function HistoryPage({ params }: Props) {
                               <td key={si} className="hide-mobile">
                                 <span
                                   className={
-                                    r.counting_golfers?.includes(si + 1)
+                                    r.counting_golfers?.includes(si + 1) && s !== null
                                       ? (s < 0 ? 'score-under' : s > 0 ? 'score-over' : 'score-even')
                                       : ''
                                   }

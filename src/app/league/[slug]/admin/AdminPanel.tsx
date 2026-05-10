@@ -17,7 +17,10 @@ interface Member {
   user_id:   string;
   role:      'commissioner' | 'member';
   joined_at: string;
-  profile?:  { display_name?: string; email?: string };
+  // The query helper returns the full profile row OR null when the
+  // join misses. We only read two fields here, but accepting the full
+  // shape keeps the prop type compatible with what kysely emits.
+  profile?:  { display_name?: string; email?: string } | null;
 }
 
 interface Tournament {

@@ -210,7 +210,9 @@ export function computeLeagueResults(
       golfer_4_score:  scores[3],
       counting_golfers: countingIndices.map(i => i + 1), // 1-indexed for display
       total_score:     total,
-      rank:            null, // assigned after sorting all results
+      // Annotated as number|null so TS doesn't infer the literal `null`
+      // and reject the rank assignment loop below under strictNullChecks.
+      rank:            null as number | null,
     };
   });
 

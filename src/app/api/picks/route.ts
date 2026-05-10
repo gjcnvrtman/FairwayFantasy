@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
 import { validatePick } from '@/lib/scoring';
 
 export async function POST(req: NextRequest) {
@@ -10,13 +10,18 @@ export async function POST(req: NextRequest) {
   const { leagueId, tournamentId, golferIds } = await req.json();
 
   // Verify membership
-  const { data: membership } = await supabaseAdmin
-    .from('league_members').select('id').eq('league_id', leagueId).eq('user_id', user.id).single();
+  const membership = await db.selectFrom('league_members')
+    .select('id')
+    .where('league_id', '=', leagueId)
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
   if (!membership) return NextResponse.json({ error: 'Not a member of this league.' }, { status: 403 });
 
   // Check tournament is still open
-  const { data: tournament } = await supabaseAdmin
-    .from('tournaments').select('pick_deadline, status, name').eq('id', tournamentId).single();
+  const tournament = await db.selectFrom('tournaments')
+    .select(['pick_deadline', 'status', 'name'])
+    .where('id', '=', tournamentId)
+    .executeTakeFirst();
   if (!tournament) return NextResponse.json({ error: 'Tournament not found.' }, { status: 404 });
   if (tournament.status !== 'upcoming')
     return NextResponse.json({ error: 'Picks are locked — this tournament has started.' }, { status: 403 });
@@ -24,32 +29,63 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'The pick deadline has passed.' }, { status: 403 });
 
   // Validate golfer tiers
-  const nonNull = golferIds.filter(Boolean);
-  const { data: golfers } = await supabaseAdmin
-    .from('golfers').select('id, name, owgr_rank, is_dark_horse').in('id', nonNull);
-  if (!golfers) return NextResponse.json({ error: 'Could not load golfer data.' }, { status: 500 });
+  const nonNull = (golferIds as Array<string | null>).filter(Boolean) as string[];
+  const golfers = nonNull.length > 0
+    ? await db.selectFrom('golfers')
+        .select(['id', 'name', 'owgr_rank', 'is_dark_horse'])
+        .where('id', 'in', nonNull)
+        .execute()
+    : [];
 
   // Get other picks for duplicate check
-  const { data: existingPicks } = await supabaseAdmin
-    .from('picks')
-    .select('golfer_1_id, golfer_2_id, golfer_3_id, golfer_4_id')
-    .eq('league_id', leagueId).eq('tournament_id', tournamentId).neq('user_id', user.id);
+  const existingPicks = await db.selectFrom('picks')
+    .select(['golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id'])
+    .where('league_id',     '=',  leagueId)
+    .where('tournament_id', '=',  tournamentId)
+    .where('user_id',       '!=', user.id)
+    .execute();
 
-  const errors = validatePick({ golferIds, golfers, existingPicks: existingPicks ?? [] });
+  // validatePick wants string FKs (not nullable) so filter only fully-formed rows.
+  const eligible = existingPicks.filter(p =>
+    p.golfer_1_id && p.golfer_2_id && p.golfer_3_id && p.golfer_4_id,
+  ) as Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
+
+  const errors = validatePick({ golferIds, golfers, existingPicks: eligible });
   if (errors.length > 0) return NextResponse.json({ errors }, { status: 400 });
 
-  const { data: pick, error } = await supabaseAdmin
-    .from('picks')
-    .upsert({
-      league_id: leagueId, tournament_id: tournamentId, user_id: user.id,
-      golfer_1_id: golferIds[0], golfer_2_id: golferIds[1],
-      golfer_3_id: golferIds[2], golfer_4_id: golferIds[3],
-      is_locked: false, submitted_at: new Date().toISOString(),
-    }, { onConflict: 'league_id,tournament_id,user_id' })
-    .select().single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ pick, success: true });
+  try {
+    const pick = await db.insertInto('picks')
+      .values({
+        league_id:     leagueId,
+        tournament_id: tournamentId,
+        user_id:       user.id,
+        golfer_1_id:   golferIds[0],
+        golfer_2_id:   golferIds[1],
+        golfer_3_id:   golferIds[2],
+        golfer_4_id:   golferIds[3],
+        is_locked:     false,
+        submitted_at:  new Date().toISOString(),
+      })
+      .onConflict(oc => oc
+        .columns(['league_id', 'tournament_id', 'user_id'])
+        .doUpdateSet(eb => ({
+          golfer_1_id:  eb.ref('excluded.golfer_1_id'),
+          golfer_2_id:  eb.ref('excluded.golfer_2_id'),
+          golfer_3_id:  eb.ref('excluded.golfer_3_id'),
+          golfer_4_id:  eb.ref('excluded.golfer_4_id'),
+          is_locked:    eb.ref('excluded.is_locked'),
+          submitted_at: eb.ref('excluded.submitted_at'),
+        })),
+      )
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return NextResponse.json({ pick, success: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
 }
 
 // Withdrawal replacement
@@ -59,8 +95,11 @@ export async function PUT(req: NextRequest) {
 
   const { pickId, withdrawnGolferId, replacementGolferId } = await req.json();
 
-  const { data: pick } = await supabaseAdmin
-    .from('picks').select('*').eq('id', pickId).eq('user_id', user.id).single();
+  const pick = await db.selectFrom('picks')
+    .selectAll()
+    .where('id', '=', pickId)
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
   if (!pick) return NextResponse.json({ error: 'Pick not found.' }, { status: 404 });
 
   const pickGolferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id];
@@ -68,15 +107,19 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: 'That golfer is not in your pick.' }, { status: 400 });
 
   // Ensure replacement hasn't teed off (round_1 still null)
-  const { data: repScore } = await supabaseAdmin
-    .from('scores').select('round_1').eq('golfer_id', replacementGolferId)
-    .eq('tournament_id', pick.tournament_id).single();
-  if (repScore?.round_1 !== null)
+  const repScore = await db.selectFrom('scores')
+    .select('round_1')
+    .where('golfer_id',     '=', replacementGolferId)
+    .where('tournament_id', '=', pick.tournament_id)
+    .executeTakeFirst();
+  if (repScore?.round_1 !== null && repScore?.round_1 !== undefined)
     return NextResponse.json({ error: 'That golfer has already teed off.' }, { status: 400 });
 
-  await supabaseAdmin.from('scores')
-    .update({ was_replaced: true, replaced_by_golfer_id: replacementGolferId })
-    .eq('golfer_id', withdrawnGolferId).eq('tournament_id', pick.tournament_id);
+  await db.updateTable('scores')
+    .set({ was_replaced: true, replaced_by_golfer_id: replacementGolferId })
+    .where('golfer_id',     '=', withdrawnGolferId)
+    .where('tournament_id', '=', pick.tournament_id)
+    .execute();
 
   return NextResponse.json({ success: true });
 }

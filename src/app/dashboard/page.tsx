@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin } from '@/lib/supabase';
+import { db } from '@/lib/db';
+import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
 
@@ -16,22 +17,34 @@ export default async function DashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/auth/signin');
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles').select('*').eq('id', user.id).single();
+  const profile = await db.selectFrom('profiles')
+    .selectAll()
+    .where('id', '=', user.id)
+    .executeTakeFirst();
 
-  const { data: memberships } = await supabaseAdmin
-    .from('league_members')
-    .select('role, leagues(*)')
-    .eq('user_id', user.id);
+  // memberships → flattened league rows with the user's role.
+  // jsonObjectFrom matches the supabase-js shape `{ role, leagues: {...} }`
+  // which we then flatten to `{ ...league, role }`.
+  const memberships = await db.selectFrom('league_members')
+    .select('role')
+    .select(eb => jsonObjectFrom(
+      eb.selectFrom('leagues')
+        .selectAll('leagues')
+        .whereRef('leagues.id', '=', 'league_members.league_id'),
+    ).as('league'))
+    .where('user_id', '=', user.id)
+    .execute();
 
-  const leagues = memberships?.map((m: any) => ({ ...m.leagues, role: m.role })) ?? [];
+  const leagues = memberships
+    .filter(m => m.league !== null)
+    .map(m => ({ ...m.league!, role: m.role }));
 
-  const { data: upcoming } = await supabaseAdmin
-    .from('tournaments')
-    .select('*')
-    .in('status', ['upcoming', 'active'])
-    .order('start_date', { ascending: true })
-    .limit(3);
+  const upcoming = await db.selectFrom('tournaments')
+    .selectAll()
+    .where('status', 'in', ['upcoming', 'active'])
+    .orderBy('start_date', 'asc')
+    .limit(3)
+    .execute();
 
   return (
     <div className="page-shell">

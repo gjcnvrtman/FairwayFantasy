@@ -1,7 +1,8 @@
 import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
-import { supabaseAdmin, getLeagueBySlug, getLeagueMembers } from '@/lib/supabase';
+import { db } from '@/lib/db';
+import { getLeagueBySlug, getLeagueMembers } from '@/lib/db/queries';
 import Nav from '@/components/layout/Nav';
 import AdminPanel from './AdminPanel';
 import type { Metadata } from 'next';
@@ -17,20 +18,31 @@ export default async function AdminPage({ params }: Props) {
   if (!league) notFound();
 
   // Only commissioners
-  const { data: membership } = await supabaseAdmin
-    .from('league_members').select('role').eq('league_id', league.id).eq('user_id', user.id).single();
+  const membership = await db.selectFrom('league_members')
+    .select('role')
+    .where('league_id', '=', league.id)
+    .where('user_id',   '=', user.id)
+    .executeTakeFirst();
   if (!membership || membership.role !== 'commissioner') redirect(`/league/${params.slug}`);
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles').select('display_name').eq('id', user.id).single();
+  const profile = await db.selectFrom('profiles')
+    .select('display_name')
+    .where('id', '=', user.id)
+    .executeTakeFirst();
 
   const members = await getLeagueMembers(league.id);
 
-  const { data: tournaments } = await supabaseAdmin
-    .from('tournaments').select('*').order('start_date', { ascending: false }).limit(10);
+  const tournaments = await db.selectFrom('tournaments')
+    .selectAll()
+    .orderBy('start_date', 'desc')
+    .limit(10)
+    .execute();
 
-  const { data: activeTournament } = await supabaseAdmin
-    .from('tournaments').select('*').in('status', ['active', 'cut_made']).limit(1).single();
+  const activeTournament = await db.selectFrom('tournaments')
+    .selectAll()
+    .where('status', 'in', ['active', 'cut_made'])
+    .limit(1)
+    .executeTakeFirst() ?? null;
 
   return (
     <div className="page-shell">
@@ -52,8 +64,8 @@ export default async function AdminPage({ params }: Props) {
           <AdminPanel
             league={league}
             members={members}
-            tournaments={tournaments ?? []}
-            activeTournament={activeTournament ?? null}
+            tournaments={tournaments}
+            activeTournament={activeTournament}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />
         </div>

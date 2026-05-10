@@ -8,7 +8,7 @@
 // Called once per week by the /api/sync-scores/rankings cron job.
 // ============================================================
 
-import { supabaseAdmin } from './supabase';
+import { db } from './db';
 
 const ESPN_RANKINGS_URL =
   'https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/rankings';
@@ -80,66 +80,63 @@ export async function syncRankingsToDatabase(): Promise<{
 
     try {
       // 1. Try to find by ESPN ID (most reliable)
-      const { data: byId } = await supabaseAdmin
-        .from('golfers')
+      const byId = await db.selectFrom('golfers')
         .select('id')
-        .eq('espn_id', espnId)
-        .single();
+        .where('espn_id', '=', espnId)
+        .executeTakeFirst();
 
       if (byId) {
         // Update existing record
-        await supabaseAdmin
-          .from('golfers')
-          .update({
+        await db.updateTable('golfers')
+          .set({
             owgr_rank:    owgrRank,
             country,
             headshot_url: headshot,
             updated_at:   new Date().toISOString(),
           })
-          .eq('id', byId.id);
+          .where('id', '=', byId.id)
+          .execute();
         updated++;
         continue;
       }
 
       // 2. Fallback: match by name (handles players added via score sync
-      //    before rankings sync ran)
-      const { data: byName } = await supabaseAdmin
-        .from('golfers')
+      //    before rankings sync ran).
+      const byName = await db.selectFrom('golfers')
         .select('id')
-        .ilike('name', name)
-        .single();
+        .where('name', 'ilike', name)
+        .executeTakeFirst();
 
       if (byName) {
-        await supabaseAdmin
-          .from('golfers')
-          .update({
+        await db.updateTable('golfers')
+          .set({
             espn_id:      espnId,   // backfill ESPN ID
             owgr_rank:    owgrRank,
             country,
             headshot_url: headshot,
             updated_at:   new Date().toISOString(),
           })
-          .eq('id', byName.id);
+          .where('id', '=', byName.id)
+          .execute();
         updated++;
         continue;
       }
 
       // 3. New player — insert fresh row
-      const { error } = await supabaseAdmin
-        .from('golfers')
-        .insert({
-          espn_id:      espnId,
-          name,
-          owgr_rank:    owgrRank,
-          country,
-          headshot_url: headshot,
-        });
-
-      if (error) {
-        console.error(`Insert failed for ${name}:`, error.message);
-        errors++;
-      } else {
+      try {
+        await db.insertInto('golfers')
+          .values({
+            espn_id:      espnId,
+            name,
+            owgr_rank:    owgrRank,
+            country,
+            headshot_url: headshot,
+          })
+          .execute();
         inserted++;
+      } catch (insertErr) {
+        console.error(`Insert failed for ${name}:`, insertErr);
+        errors++;
       }
 
     } catch (err) {
