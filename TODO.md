@@ -78,6 +78,30 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — golf-czar migration Phase 3: local Postgres standup
+Architecture decision (recorded in conversation): Fairway is **not** integrating with golf-czar's SSO. `fairway.golf-czar.com` is just a DNS subdomain — nginx host-routes it to a fully independent Fairway instance. Phase 4 will use NextAuth + Credentials + bcrypt for Fairway's own auth.
+
+- [x] **`infra/postgres/docker-compose.yml`** — Postgres 16-alpine, bound to `127.0.0.1:5432` (LAN access via SSH tunnel only). Named volume `fairway-pgdata`. Healthcheck. Auto-applies init scripts on first start.
+- [x] **`infra/postgres/init/00-schema.sql`** — self-host schema. Differences from `supabase/schema.sql`:
+  - Drop `REFERENCES auth.users(id)` from `profiles.id`
+  - Drop all 8 RLS policies (app-level auth via `requireCommissioner` is the source of truth)
+  - Add `auth_credentials` table (Phase-4 NextAuth Credentials writes here; Phase-5 cutover bulk-imports bcrypt hashes from Supabase's `auth.users`)
+  - Add `email`/`UNIQUE` constraint on `profiles.email` (auth flow needs it)
+  - Indexes on `auth_credentials.verify_token` / `reset_token`
+- [x] **`src/lib/db/schema.ts` updated** to include `AuthCredentialsTable` (matches the SQL file).
+- [x] **`scripts/migrate-from-supabase.ts`** — one-shot data migration. Connects to BOTH source (Supabase Cloud direct pg) and target (local Postgres). Copies 12 tables in dependency order with `ON CONFLICT DO NOTHING` (idempotent). Pulls bcrypt hashes from `auth.users.encrypted_password` into `auth_credentials.password_hash` so existing users keep their current passwords (no forced reset). Has a `--dry-run` flag. Run ONCE at Phase-5 cutover.
+- [x] **`tsx` added as dev dep** so `npx tsx scripts/...` works.
+- [x] **`.env.local.example`** updated — `DATABASE_URL` documented with both Supabase-direct-pg and local-Postgres connection-string forms. `SUPABASE_SERVICE_ROLE_KEY` removed (no longer used post-Phase-2).
+- [x] **`DEPLOYMENT.md`** — new "Postgres details (Phase 3)" + "Data migration (Phase 5 cutover)" sections. Updated env-var checklist.
+
+VERIFICATION
+- npm run lint: 0 errors
+- npm test: 167 / 167
+- npx tsc --noEmit: clean
+- npm run build: 24 routes, 0 errors
+
+NEXT (Phase 4): NextAuth + Credentials + bcrypt. Adds `app/api/auth/[...nextauth]/route.ts`, rewrites `current-user.ts` to call NextAuth's `auth()` helper, replaces `signin/signup/callback` flows. Email verification non-blocking (banner only) until SMTP is wired.
+
 ### 2026-05-10 — golf-czar migration Phase 2: data-access boundary (kysely)
 Replaced every `supabaseAdmin.from(...)` callsite (~50 ops across 15 files) with kysely. Pure mechanical translation; behavior unchanged. App still talks to Supabase Cloud today via direct pg connection — Phase 3 stands up local Postgres and just flips `DATABASE_URL`.
 - [x] **`kysely` + `pg` + `@types/pg`** installed and pinned.

@@ -40,13 +40,37 @@ export interface LeaguesTable {
 }
 
 // ── profiles ─────────────────────────────────────────────────
-// `id` references auth.users today. Phase 4 adds golf_czar_user_id
-// and removes the auth.users FK.
+// Self-host (Phase 3): no FK to auth.users — Fairway runs its own
+// auth via NextAuth Credentials. `id` is generated when the row is
+// created (signup) so it stays a UUID like before.
 export interface ProfilesTable {
-  id:                   string;              // UUID, NOT generated (set on insert)
+  id:                   Generated<string>;   // UUID, auto-gen on insert
   display_name:         string;
   email:                string;
   created_at:           Generated<Timestamp>;
+}
+
+// ── auth_credentials ─────────────────────────────────────────
+// Separated from profiles so password material isn't pulled into
+// every profile read. Populated at Phase-5 cutover from Supabase
+// auth.users; new signups (Phase-4 NextAuth) write here directly.
+export interface AuthCredentialsTable {
+  user_id:              string;              // PK + FK → profiles.id
+
+  password_hash:        string;              // bcrypt cost ≥ 10
+
+  // Verification — does NOT gate login (UI banner only). SMTP-gated.
+  email_verified:       Generated<boolean>;
+  verify_token:         string | null;
+  verify_token_expires: Timestamp | null;
+
+  // Password reset flow — same SMTP dependency.
+  reset_token:          string | null;
+  reset_token_expires:  Timestamp | null;
+
+  last_login_at:        Timestamp | null;
+  created_at:           Generated<Timestamp>;
+  updated_at:           Generated<Timestamp>;
 }
 
 // ── league_members ───────────────────────────────────────────
@@ -181,6 +205,7 @@ export interface ReminderLogTable {
 export interface Database {
   leagues:               LeaguesTable;
   profiles:              ProfilesTable;
+  auth_credentials:      AuthCredentialsTable;
   league_members:        LeagueMembersTable;
   tournaments:           TournamentsTable;
   golfers:               GolfersTable;

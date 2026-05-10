@@ -1,0 +1,61 @@
+# ============================================================
+# FAIRWAY FANTASY — local Postgres
+#
+# Run on 192.168.1.160 (the LAN app server). Bound to 127.0.0.1
+# only — Fairway connects over loopback. External LAN access goes
+# through SSH tunnel, not direct exposure.
+#
+# Bring up:
+#   cd infra/postgres
+#   cp .env.example .env       # set POSTGRES_PASSWORD
+#   docker compose up -d
+#
+# First-time init runs every .sql file in ./init/ in alphabetical
+# order. Schema lives in init/00-schema.sql.
+#
+# Connection string for Fairway's .env.local:
+#   DATABASE_URL=postgresql://fairway:<password>@127.0.0.1:5432/fairway
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fairway-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER:     fairway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB:       fairway
+      # Speed up bulk imports during the Phase-5 migration; off in steady-state.
+      # Override to 'on' in production after the migration completes.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+
+    # 127.0.0.1 binding — Postgres is NOT reachable from the LAN.
+    # Fairway connects over loopback. For ad-hoc queries from your
+    # laptop, use:
+    #   ssh -L 5432:127.0.0.1:5432 greg@192.168.1.160
+    ports:
+      - "127.0.0.1:5432:5432"
+
+    volumes:
+      - fairway-pgdata:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fairway -d fairway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    # Modest resource cap so a runaway query doesn't take down the
+    # whole LAN box. Adjust to taste.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  fairway-pgdata:
+    name: fairway-pgdata

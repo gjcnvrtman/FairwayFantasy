@@ -109,28 +109,73 @@ git clone https://github.com/gjcnvrtman/FairwayFantasy.git .
 # 3. Install deps
 npm ci
 
-# 4. Provision Postgres
-#    Until TODO P0 (Supabase migration), this app uses Supabase Cloud.
-#    Two options:
-#      a) Free Supabase Cloud project (no LAN data sovereignty).
-#      b) Self-hosted Supabase via Docker:
-#         git clone https://github.com/supabase/supabase
-#         cd supabase/docker && docker compose up -d
-#         Then run our supabase/schema.sql in the SQL editor.
-#    Either way, copy the URL + service-role key into .env.local.
+# 4. Provision local Postgres (Phase 3 — replaces Supabase Cloud at cutover)
+sudo apt-get install -y docker.io docker-compose-v2
+cd /opt/fairway-fantasy/infra/postgres
+cp .env.example .env
+$EDITOR .env                         # set POSTGRES_PASSWORD
+docker compose up -d
+docker compose ps                    # confirm healthy
+docker compose logs -f               # watch first-time schema apply
 
 # 5. Configure env
+cd /opt/fairway-fantasy
 cp .env.local.example .env.local
-# Edit .env.local — set:
-#   NEXT_PUBLIC_SUPABASE_URL
-#   NEXT_PUBLIC_SUPABASE_ANON_KEY
-#   SUPABASE_SERVICE_ROLE_KEY
-#   CRON_SECRET (openssl rand -hex 32)
-#   NEXT_PUBLIC_SITE_URL=http://192.168.1.160:3000
+$EDITOR .env.local                   # set:
+#   DATABASE_URL=postgresql://fairway:<pgpass>@127.0.0.1:5432/fairway
+#   NEXT_PUBLIC_SUPABASE_URL          (legacy, until Phase 4 — auth flow only)
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY     (legacy)
+#   CRON_SECRET=$(openssl rand -hex 32)
+#   NEXT_PUBLIC_SITE_URL=http://fairway.golf-czar.com   # nginx host-routes here
 
 # 6. Build
 npm run build
 ```
+
+### Postgres details (Phase 3)
+
+* Container: `postgres:16-alpine` named `fairway-postgres`.
+* Bound to `127.0.0.1:5432` only — Postgres is NOT reachable from
+  the LAN. Fairway connects over loopback. For ad-hoc psql sessions
+  from your laptop:
+  ```bash
+  ssh -L 5432:127.0.0.1:5432 greg@192.168.1.160
+  # in another terminal
+  psql 'postgresql://fairway:<pgpass>@127.0.0.1:5432/fairway'
+  ```
+* Volume: `fairway-pgdata` (named docker volume; survives `docker
+  compose down`, wiped by `docker compose down -v`).
+* Schema: `infra/postgres/init/00-schema.sql` auto-applies on first
+  start. To re-apply after edits: `docker compose down -v && docker
+  compose up -d` (this DESTROYS DATA — only do this on a fresh
+  install or after backing up).
+* Backups: `pg_dump fairway | gzip > /backups/fairway-$(date +%F).sql.gz`
+  on a daily cron. Off-machine copy is your call.
+
+### Data migration from Supabase Cloud (Phase 5 cutover)
+
+Run ONCE, when ready to flip from Supabase Cloud to local Postgres:
+
+```bash
+cd /opt/fairway-fantasy
+
+# 1. Dry-run first — counts rows, doesn't write anything.
+SOURCE_DATABASE_URL='postgresql://postgres:CLOUDPASS@db.xxx.supabase.co:5432/postgres' \
+DATABASE_URL='postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway' \
+  npx tsx scripts/migrate-from-supabase.ts --dry-run
+
+# 2. Real run.
+SOURCE_DATABASE_URL='postgresql://postgres:CLOUDPASS@db.xxx.supabase.co:5432/postgres' \
+DATABASE_URL='postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway' \
+  npx tsx scripts/migrate-from-supabase.ts
+```
+
+The script copies `profiles`, `golfers`, `tournaments`, `leagues`,
+`league_members`, `picks`, `scores`, `fantasy_results`,
+`season_standings`, `reminder_preferences`, `reminder_log` — and
+pulls bcrypt password hashes from Supabase's `auth.users` into the
+new `auth_credentials` table so existing users keep their passwords.
+Idempotent (`ON CONFLICT DO NOTHING`).
 
 ### Run as a service
 
