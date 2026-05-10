@@ -78,6 +78,22 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — Prompt 9: pick-reminders foundation + 30 new tests
+- [x] **Schema** — `reminder_preferences` (per-user opt-in: email/sms/push booleans, hours_before, per-channel destinations) + `reminder_log` (audit + idempotency via `UNIQUE(user_id, tournament_id, channel)`). RLS on prefs so users only see their own row. Appended to `supabase/schema.sql` as additive `IF NOT EXISTS`.
+- [x] **Pure eligibility logic** at `src/lib/reminders.ts` — `findUsersDueForReminder({ tournament, members, picksByUserLeague, prefsByUser, profileEmailByUser, alreadySent, now })` returns `ReminderTask[]`. Pure function, no I/O, fully deterministic. Helpers: `enabledChannels`, `isInsideReminderWindow`, `destinationFor`, `buildPicksByUserLeague`, `buildAlreadySentSet`.
+- [x] **Notifier placeholder** at `src/lib/notifier.ts` — `dispatchReminder(task, buildMessage)` routes per channel. Default: console-only driver (always safe, never sends real messages). Real drivers register via `registerDriver(channel, driver)` and only fire when `REMINDERS_LIVE=true` AND `driver.isConfigured()`. Default reminder message template is channel-aware (SMS bodies are short).
+- [x] **Job runner** at `src/lib/reminder-job.ts` — wires DB I/O around the pure logic. Logs every attempt to `reminder_log` (status='console' when in dry-run mode).
+- [x] **Endpoints**:
+  - `POST /api/admin/reminders` — accepts EITHER Bearer CRON_SECRET (systemd timer) or commissioner session (manual button). Calls `runReminderJob()`, returns summary.
+  - `GET /api/me/notification-prefs` — returns current user's prefs, falls through to defaults if no row.
+  - `PUT /api/me/notification-prefs` — upserts; validates SMS-without-phone, push-without-token, hours_before bounds (1..168). Server uses session user.id, ignores any user_id in the body.
+- [x] **`/settings` page** + `NotificationPrefsForm` client component — per-channel toggles (default OFF), email/phone/push fields, hours_before number input, save feedback. Sidebar entry on `/dashboard`.
+- [x] **`tests/reminders.test.ts`** — 30 unit tests covering: `enabledChannels`, `isInsideReminderWindow` (window boundaries, per-user hours_before), `destinationFor` (override + fallback + null), `findUsersDueForReminder` (happy path, missing-prefs, all-off, already-picked, multi-league per user, non-upcoming tournament status, no-deadline, outside-window, idempotency via alreadySent, missing-destination still emits a task for audit, full-off-roster privacy invariant).
+- [x] **Acceptance criteria met**:
+  - "No accidental real messages sent" — notifier defaults to console; real send requires `REMINDERS_LIVE=true` AND a driver registered.
+  - "Code is structured so email/SMS/push can be added later" — `ChannelDriver` interface + `registerDriver` + per-channel destination fields.
+  - "Reminder logic is testable" — eligibility logic is a pure function with 30 tests.
+
 ### 2026-05-10 — Prompt 8: commissioner tools + #4.1 fix + 18 new tests
 - [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client (P0 #4.1)** — fixed. AdminPanel "Sync Now" button now POSTs to a new `/api/admin/sync-scores` endpoint that authenticates via session cookie + commissioner role check. Sync engine extracted to `src/lib/sync.ts`. Cron-secret-authed `/api/sync-scores` still exists for systemd timer; no client code references the secret anymore.
 - [x] **Centralized auth helper** at `src/lib/auth-league.ts` — `requireCommissioner({slug?, leagueId?})` returns a tagged-union `{ ok, user, league, role }` or `{ ok: false, response }`. Status code matrix: 400 missing-id / 401 no-session / 403 not-commissioner / 404 not-found-or-not-member (collapsed for privacy). All commissioner endpoints now use the same helper.

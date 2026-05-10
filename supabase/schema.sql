@@ -245,3 +245,67 @@ CREATE POLICY "View season standings in your league"
 
 -- Golfers and tournaments are public (no RLS needed)
 -- Scores are public read
+
+-- ============================================================
+-- REMINDER_PREFERENCES — per-user opt-in for pick reminders
+-- (Prompt 9. All channels default OFF — never send anything
+--  unless the user explicitly opted in.)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS reminder_preferences (
+  user_id        UUID PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+
+  -- Channels — opt-in (false by default per privacy norm)
+  email_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
+  sms_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
+  push_enabled   BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- How early to remind (hours before pick_deadline). 1..168 hr (1 wk).
+  hours_before   INT NOT NULL DEFAULT 24
+                 CHECK (hours_before > 0 AND hours_before <= 168),
+
+  -- Optional per-channel destinations. NULL means "use the address
+  -- on profiles" (today: profiles.email only — no phone field yet).
+  email_addr     TEXT,
+  phone_e164     TEXT,
+  push_token     TEXT,
+
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE reminder_preferences ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users manage their own reminder prefs"
+  ON reminder_preferences FOR ALL
+  USING (user_id = auth.uid());
+
+-- ============================================================
+-- REMINDER_LOG — audit log of every reminder attempted/sent.
+-- Doubles as the idempotency table: we won't send the same
+-- (user, tournament, channel) combo more than once.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS reminder_log (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id        UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  league_id      UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  tournament_id  UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  channel        TEXT NOT NULL CHECK (channel IN ('email','sms','push','console')),
+
+  -- 'console' = printed to server logs (dry-run default for LAN).
+  -- 'sent'    = handed off to a real provider.
+  -- 'failed'  = provider rejected; error_message has details.
+  -- 'skipped' = computed eligible but skipped at delivery (e.g. no destination)
+  status         TEXT NOT NULL CHECK (status IN ('console','sent','failed','skipped')),
+
+  error_message  TEXT,
+  sent_at        TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Idempotency: never remind the same user about the same tournament
+  -- on the same channel twice. The job-finder helper queries this.
+  UNIQUE(user_id, tournament_id, channel)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminder_log_tournament ON reminder_log(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_reminder_log_user       ON reminder_log(user_id);
+
+-- No RLS on reminder_log — service-role-only writes; readers go
+-- through the API which already auth-checks.
