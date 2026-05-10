@@ -27,6 +27,7 @@ export async function GET(req: NextRequest) {
   // ── 2. PGA Tour schedule ──
   let tournamentsSynced  = 0;
   let scheduleError: string | null = null;
+  let statusFixes        = 0;
   try {
     const schedule = await fetchPGASchedule();
     for (const event of schedule) {
@@ -65,6 +66,28 @@ export async function GET(req: NextRequest) {
         );
       }
     }
+
+    // ── 2b. Status maintenance ─────────────────────────────
+    // Schedule upsert inserts tournaments with default status='upcoming'.
+    // The score sync only updates tournaments in the current date
+    // window (start_date <= now AND end_date >= now-1d), so PAST
+    // tournaments stay marked 'upcoming' forever — and the dashboard
+    // picks page grabs the earliest 'upcoming' row as "next event,"
+    // which is January's Sentry Tournament. Flip stale rows here.
+    const completed = await db.updateTable('tournaments')
+      .set({ status: 'complete' })
+      .where('end_date', '<', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .where('status', '!=', 'complete')
+      .executeTakeFirst();
+    statusFixes += Number(completed?.numUpdatedRows ?? 0);
+
+    const active = await db.updateTable('tournaments')
+      .set({ status: 'active' })
+      .where('start_date', '<=', new Date().toISOString())
+      .where('end_date',   '>=', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .where('status', '=', 'upcoming')
+      .executeTakeFirst();
+    statusFixes += Number(active?.numUpdatedRows ?? 0);
   } catch (err) {
     scheduleError = err instanceof Error ? err.message : String(err);
     console.error('Schedule sync failed:', err);
@@ -74,7 +97,8 @@ export async function GET(req: NextRequest) {
   // - 200 if at least one of the two sub-syncs produced data.
   // - 500 only if BOTH failed (genuinely no progress).
   const anyProgress = (rankingResult && rankingResult.updated > 0)
-                   || tournamentsSynced > 0;
+                   || tournamentsSynced > 0
+                   || statusFixes > 0;
 
   return NextResponse.json(
     {
@@ -82,6 +106,7 @@ export async function GET(req: NextRequest) {
       rankings:          rankingResult,
       rankingError,
       tournaments:       tournamentsSynced,
+      statusFixes,
       scheduleError,
     },
     { status: anyProgress || (!rankingError && !scheduleError) ? 200 : 500 },
