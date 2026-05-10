@@ -1,0 +1,20 @@
+# /etc/systemd/system/fairway-rankings.timer
+#
+# Fires fairway-rankings.service weekly. Mondays at 06:00 local time
+# is fine — OWGR rankings publish overnight Sunday → Monday morning,
+# and any new tournament calendar entries land in time for Thursday's
+# tee time.
+#
+# Persistent=true means: if the box was off when this should have
+# fired, run it once on next boot.
+
+[Unit]
+Description=Weekly: pull OWGR rankings + PGA schedule (Mondays 06:00)
+
+[Timer]
+OnCalendar=Mon *-*-* 06:00:00
+Persistent=true
+Unit=fairway-rankings.service
+
+[Install]
+WantedBy=timers.target

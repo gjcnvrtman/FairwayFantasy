@@ -1,0 +1,33 @@
+# /etc/systemd/system/fairway-scores.service
+#
+# Pulls live scores from ESPN for every tournament whose start_date
+# has passed and end_date hasn't been past for more than 24h, then
+# recomputes fantasy_results + season_standings.
+#
+# What gets updated:
+#   - `tournaments.status` (upcoming → active → cut_made → complete)
+#   - `tournaments.cut_score` (set when ESPN reports cut line)
+#   - `scores` table (one row per golfer per tournament)
+#   - `fantasy_results` table (per-user per-tournament totals + rank)
+#   - `season_standings` table (aggregated season totals)
+#
+# Cheap when no tournaments are active — runScoreSync() short-circuits
+# after one SELECT count.
+
+[Unit]
+Description=Fairway Fantasy — pull live scores from ESPN
+After=fairway-fantasy.service network-online.target
+Wants=network-online.target
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+ExecStart=/usr/bin/curl -fsS --max-time 60 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/sync-scores
+
+SuccessExitStatus=0

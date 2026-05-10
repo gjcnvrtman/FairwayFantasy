@@ -1,0 +1,25 @@
+# /etc/systemd/system/fairway-scores.timer
+#
+# Fires fairway-scores.service every 10 min, Thursday through Sunday,
+# 6am to 11:50pm local time.
+#
+# PGA tournaments: Thu (round 1), Fri (round 2), Sat (round 3),
+# Sun (round 4 / final). Hours 6-23 cover any reasonable US time
+# zone for play in progress. The service is cheap when no tournament
+# is running (single SELECT count, returns immediately).
+#
+# Why not just `*-*-* *:0/10`? Daily-every-10-min would be ~144 fires
+# per day on the 4-day-window vs 144*7=1008 per week. Day filter
+# cuts it to ~576 per week — still trivial load but reduces noise
+# in journalctl when there's nothing happening.
+
+[Unit]
+Description=Every 10 min Thu-Sun: pull live scores from ESPN
+
+[Timer]
+OnCalendar=Thu,Fri,Sat,Sun *-*-* 06..23:0/10:00
+Persistent=true
+Unit=fairway-scores.service
+
+[Install]
+WantedBy=timers.target

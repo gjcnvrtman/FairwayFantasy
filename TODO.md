@@ -8,22 +8,18 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
-### ESPN data is missing — app has no tournaments or golfers (TOP P0)
-- [ ] **Run the rankings + schedule sync ONCE to populate the empty DB.** When we did "starting fresh," we only seeded one user — the `tournaments` and `golfers` tables are empty. Until the rankings sync runs, the picks page has zero golfers to choose from and the dashboard has no upcoming events. The endpoint that fixes this is `GET /api/sync-scores/rankings` (already authed via `Bearer CRON_SECRET`). It pulls OWGR rankings from ESPN's free API into `golfers` AND imports the PGA schedule from ESPN into `tournaments`. Single curl from the LAN box:
+### ESPN data + sync timers (action: run install.sh on .160)
+- [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:
   ```bash
-  source /opt/fairway-fantasy/.env.local
-  curl -fsS -X GET -H "Authorization: Bearer $CRON_SECRET" \
-    https://fairway.golf-czar.com/api/sync-scores/rankings | jq
+  cd /opt/fairway-fantasy
+  git pull origin main
+  sudo ./infra/systemd/install.sh --populate
   ```
-  Should return `{success: true, rankings: {updated, inserted, errors}, tournaments: <n>}`. Then verify in psql:
-  ```sql
-  SELECT COUNT(*) FROM golfers;       -- should be ~200+
-  SELECT COUNT(*) FROM tournaments;   -- should be ~40 (one PGA season)
-  ```
-
-### Score sync timers (after the one-shot above)
-- [ ] **Wire the WEEKLY rankings/schedule timer** — `/api/sync-scores/rankings` should run Mondays ~6am ET so OWGR rankings stay current and any newly-announced tournaments land in the DB before pick time. systemd timer firing weekly.
-- [ ] **Wire the IN-TOURNAMENT score timer** *(P1 #3)* — `/api/sync-scores` (POST) every ~10 min Thu–Sun during play so live scores update on the leaderboard. Without it, scores never update during a tournament. Template in `DEPLOYMENT.md` ("Score-sync timer (P0 — wire after deploy)" section).
+  - `--populate` runs the rankings sync once immediately to fill the empty DB (~200 golfers + ~40 tournaments).
+  - Without `--populate` it just installs the timers; you can populate later with `sudo systemctl start fairway-rankings.service`.
+  - Timers installed: `fairway-rankings.timer` (Mondays 06:00 — keeps OWGR + schedule current) + `fairway-scores.timer` (every 10 min Thu–Sun — pulls live scores during play).
+  - Verify after install: `systemctl list-timers fairway-*` and `psql -c 'SELECT COUNT(*) FROM golfers'`.
+- [x] **Bug fix bundled in:** runScoreSync now queries by `start_date <= now AND end_date >= now-1d AND status != 'complete'` instead of the previous `status IN ('active', 'cut_made')`. The old version had a chicken-and-egg bug: rankings sync inserts new tournaments with default status `upcoming`, but nothing flipped them to `active` when start_date arrived, so the score sync skipped them forever. Now any tournament whose start_date has passed gets a sync; syncTournament() updates the status field from ESPN's response.
 
 ### Open signup since deployment went public
 - [ ] **Public-internet exposure now real, not LAN** — these were P3 ("LAN-only mitigates") but the mitigation no longer applies:

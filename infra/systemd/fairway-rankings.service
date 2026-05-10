@@ -1,0 +1,33 @@
+# /etc/systemd/system/fairway-rankings.service
+#
+# Pulls OWGR rankings + PGA tour schedule from ESPN's free public API
+# and upserts into the local Postgres. Triggered by the matching .timer.
+#
+# What gets updated:
+#   - `golfers` table (rank, country, headshot, etc.)
+#   - `tournaments` table (every event in this season's calendar)
+#
+# Idempotent — safe to run any time.
+
+[Unit]
+Description=Fairway Fantasy — pull OWGR rankings + PGA schedule from ESPN
+After=fairway-fantasy.service network-online.target
+Wants=network-online.target
+# Don't run if Fairway itself isn't up — curl would just fail.
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+# Hits the loopback (no nginx, no cert involved) — Fairway is bound
+# to 0.0.0.0:3000. CRON_SECRET comes from .env.local. The endpoint
+# refuses any request without the right Bearer header.
+ExecStart=/usr/bin/curl -fsS --max-time 60 \
+  -X GET \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/sync-scores/rankings
+
+# Don't fail the unit on transient curl errors — just log + move on.
+SuccessExitStatus=0

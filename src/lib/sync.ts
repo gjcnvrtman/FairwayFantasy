@@ -41,13 +41,31 @@ export interface SyncSummary {
  */
 export async function runScoreSync(): Promise<SyncSummary> {
   try {
+    // Tournaments that should be syncing right now:
+    //   - start_date has passed (tournament has begun)
+    //   - end_date hasn't passed by more than 24h (still relevant)
+    //   - status isn't already `complete` (no point re-syncing finished events)
+    //
+    // The previous version filtered to `status in ('active', 'cut_made')`
+    // which created a chicken-and-egg bug: rankings sync inserts new
+    // tournaments with default status `upcoming`, but nothing flipped
+    // them to `active` when their start_date arrived. So timers fired
+    // dutifully but found nothing to do during real tournaments.
+    // Now any tournament whose start_date has passed gets a sync;
+    // syncTournament() inside fetches live data from ESPN and updates
+    // the status field appropriately.
+    const now        = new Date();
+    const oneDayAgo  = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
     const activeTournaments = await db.selectFrom('tournaments')
       .selectAll()
-      .where('status', 'in', ['active', 'cut_made'])
+      .where('start_date', '<=', now.toISOString())
+      .where('end_date',   '>=', oneDayAgo.toISOString())
+      .where('status', '!=', 'complete')
       .execute();
 
     if (activeTournaments.length === 0) {
-      return { ok: true, message: 'No active tournaments', touched: 0, results: [] };
+      return { ok: true, message: 'No tournaments in active window', touched: 0, results: [] };
     }
 
     const results: SyncResult[] = [];
