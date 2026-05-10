@@ -120,9 +120,9 @@ export default function HomePage() {
             <Link href="/auth/signup" className="btn btn-brass btn-lg" aria-label="Create a new league">
               Create a League →
             </Link>
-            <a href="#demo-preview" className="btn btn-outline-white btn-lg" aria-label="View the demo league preview below">
+            <Link href="/demo" className="btn btn-outline-white btn-lg" aria-label="Open the demo league page">
               View Demo League
-            </a>
+            </Link>
           </div>
           <p style={{ marginTop: '2rem', fontSize: '0.78rem', color: 'rgba(255,255,255,0.45)' }}>
             No credit card. No paywall. Self-hostable. Open source.
@@ -387,9 +387,9 @@ export default function HomePage() {
             <Link href="/auth/signup" className="btn btn-brass btn-lg">
               Start Your League →
             </Link>
-            <a href="#demo-preview" className="btn btn-outline-white btn-lg">
+            <Link href="/demo" className="btn btn-outline-white btn-lg">
               See the Demo
-            </a>
+            </Link>
           </div>
         </div>
       </section>
