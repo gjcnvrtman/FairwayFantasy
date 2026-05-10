@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
   // ── Decide HTTP status ──
   // - 200 if at least one of the two sub-syncs produced data.
   // - 500 only if BOTH failed (genuinely no progress).
-  const anyProgress = (rankingResult && rankingResult.updated + rankingResult.inserted > 0)
+  const anyProgress = (rankingResult && rankingResult.updated > 0)
                    || tournamentsSynced > 0;
 
   return NextResponse.json(

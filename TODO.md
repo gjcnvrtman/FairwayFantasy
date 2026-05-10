@@ -8,9 +8,8 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
-### ESPN rankings endpoint is dead — find a replacement source
-- [ ] **ESPN's `/pga/rankings` returns 500 across every URL variant tested in May 2026.** Body: `{"code":2404,"detail":"http error: not found"}`. ESPN removed/moved this endpoint. The schedule endpoint (`/pga/scoreboard`) still works — only rankings is gone. Workaround landed in `scripts/seed-golfers.ts` + `data/owgr-top.json` (manually-maintained top-24). Long-term: find a real source. Candidates: official OWGR site (no public API; they have a paid feed), DataGolf paid API, scrape pgatour.com leaderboard. Decision pending.
-- [ ] Update `src/lib/datagolf.ts` once a working source lands. The function name is already misleading (originally DataGolf, then ESPN, now broken); rename to `rankings.ts` while you're in there.
+- [x] **ESPN rankings dead → balldontlie integration landed.** ESPN's `/pga/rankings` returned 500 (`{"code":2404,"detail":"http error: not found"}`) in May 2026. Swapped rankings source to balldontlie's `/pga/v1/players` endpoint (free tier, 5 req/min). New file `src/lib/balldontlie.ts`. `src/lib/datagolf.ts` refactored — keeps the name + `syncRankingsToDatabase()` signature, now UPDATE-only (balldontlie has no ESPN ID, so we can't insert new golfers; ESPN's leaderboard / `scripts/seed-golfers.ts --from-event` is the source for new rows). Hand-maintained `data/owgr-top.json` + the `--apply-ranks` flag of seed-golfers remain as emergency fallback. ✓
+- [ ] **(P2) Rename `src/lib/datagolf.ts` → `src/lib/rankings.ts`** — has been misleading since the DataGolf days; balldontlie is the third source. Cosmetic.
 
 ### ESPN data + sync timers (action: run install.sh on .160)
 - [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:

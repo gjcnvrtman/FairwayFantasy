@@ -1,159 +1,112 @@
 // ============================================================
-// WORLD RANKINGS CLIENT — powered by ESPN (free, no API key)
-// Replaces DataGolf — no Scratch Plus membership needed.
+// WORLD RANKINGS SYNC — now backed by balldontlie.
 //
-// ESPN endpoint:
-//   https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/rankings
+// History:
+//   - Originally DataGolf (Scratch Plus paid).
+//   - Migrated to ESPN's /pga/rankings (free) — that endpoint died
+//     in May 2026 with `{"code":2404,"detail":"http error: not found"}`.
+//   - Now balldontlie's /pga/v1/players (free tier — 5 req/min,
+//     plenty for a weekly sync). See `src/lib/balldontlie.ts`.
 //
-// Called once per week by the /api/sync-scores/rankings cron job.
+// File name kept as `datagolf.ts` to avoid a sweeping rename across
+// imports — TODO P1 has an entry to rename this to `rankings.ts`
+// once we're stable.
+//
+// BEHAVIOR vs the old ESPN-backed version:
+//   - balldontlie has NO espn_id and NO headshot URL.
+//   - We UPDATE existing golfers (matched by name) with the
+//     OWGR rank + country code.
+//   - We can NOT INSERT new golfers — `golfers.espn_id` is
+//     `NOT NULL UNIQUE`, and we don't have that ID from balldontlie.
+//     New golfers land in the table via ESPN's leaderboard /
+//     field endpoints (score sync, or `scripts/seed-golfers.ts
+//     --from-event <id>` for the next upcoming tournament).
+//   - The returned `skipped` count tells operators how many ranked
+//     players from balldontlie had no matching row in `golfers` —
+//     usually the fix is to run an event-field sync first so those
+//     players exist locally.
 // ============================================================
 
 import { db } from './db';
-
-const ESPN_RANKINGS_URL =
-  'https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/rankings';
-
-// ── Types ────────────────────────────────────────────────────
-
-interface ESPNRankingEntry {
-  current: number;          // OWGR rank
-  athlete: {
-    id: string;             // ESPN player ID
-    displayName: string;    // "Scottie Scheffler"
-    flag?: { alt?: string }; // country abbreviation
-    headshot?: { href: string };
-  };
-}
-
-interface ESPNRankingsResponse {
-  rankings: ESPNRankingEntry[];
-}
-
-// ── Fetch ────────────────────────────────────────────────────
+import { fetchWorldRankings } from './balldontlie';
 
 /**
- * Fetch current OWGR rankings from ESPN's public API.
- * No API key required.
- */
-export async function fetchWorldRankings(): Promise<ESPNRankingEntry[]> {
-  const res = await fetch(ESPN_RANKINGS_URL, {
-    cache: "force-cache",
-  });
-
-  if (!res.ok) {
-    throw new Error(`ESPN rankings fetch failed: ${res.status} ${res.statusText}`);
-  }
-
-  const data: ESPNRankingsResponse = await res.json();
-
-  if (!data?.rankings?.length) {
-    throw new Error('ESPN rankings response was empty or malformed');
-  }
-
-  return data.rankings;
-}
-
-// ── Sync to database ─────────────────────────────────────────
-
-/**
- * Fetch rankings from ESPN and upsert into the golfers table.
- * Matches players by ESPN ID first, then by name as fallback.
- * Inserts new players if not found.
+ * Pull current OWGR rankings from balldontlie and update matching
+ * rows in `golfers`. Idempotent — re-running just re-applies the
+ * same ranks.
+ *
+ * Match strategy: exact `display_name` first, then case-insensitive
+ * (`ILIKE`) fallback for minor spelling differences between sources.
  */
 export async function syncRankingsToDatabase(): Promise<{
-  updated: number;
-  inserted: number;
-  errors: number;
+  fetched: number;      // total ranked players received from balldontlie
+  updated: number;      // golfers rows whose owgr_rank we wrote
+  skipped: number;      // ranked players we couldn't find in golfers
+  errors:  number;      // DB write failures
 }> {
-  const rankings = await fetchWorldRankings();
+  const players = await fetchWorldRankings({ topN: 200 });
 
-  let updated  = 0;
-  let inserted = 0;
-  let errors   = 0;
+  let updated = 0;
+  let skipped = 0;
+  let errors  = 0;
+  const skippedNames: string[] = [];
 
-  for (const entry of rankings) {
-    const { current: owgrRank, athlete } = entry;
-    const espnId  = athlete.id;
-    const name    = athlete.displayName;
-    const country = athlete.flag?.alt ?? null;
-    const headshot = athlete.headshot?.href ?? null;
-
+  for (const p of players) {
+    if (p.owgr === null) continue;
     try {
-      // 1. Try to find by ESPN ID (most reliable)
-      const byId = await db.selectFrom('golfers')
-        .select('id')
-        .where('espn_id', '=', espnId)
+      const country = p.country_code ?? p.country ?? null;
+
+      // Exact match first.
+      let r = await db.updateTable('golfers')
+        .set({
+          owgr_rank:  p.owgr,
+          country,
+          updated_at: new Date().toISOString(),
+        })
+        .where('name', '=', p.display_name)
         .executeTakeFirst();
 
-      if (byId) {
-        // Update existing record
-        await db.updateTable('golfers')
+      // Fallback: case-insensitive (handles "Ludvig Aberg" vs "Ludvig Åberg" — sort of).
+      if (Number(r?.numUpdatedRows ?? 0) === 0) {
+        r = await db.updateTable('golfers')
           .set({
-            owgr_rank:    owgrRank,
+            owgr_rank:  p.owgr,
             country,
-            headshot_url: headshot,
-            updated_at:   new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           })
-          .where('id', '=', byId.id)
-          .execute();
+          .where('name', 'ilike', p.display_name)
+          .executeTakeFirst();
+      }
+
+      if (Number(r?.numUpdatedRows ?? 0) > 0) {
         updated++;
-        continue;
+      } else {
+        skipped++;
+        if (skippedNames.length < 25) skippedNames.push(`#${p.owgr} ${p.display_name}`);
       }
-
-      // 2. Fallback: match by name (handles players added via score sync
-      //    before rankings sync ran).
-      const byName = await db.selectFrom('golfers')
-        .select('id')
-        .where('name', 'ilike', name)
-        .executeTakeFirst();
-
-      if (byName) {
-        await db.updateTable('golfers')
-          .set({
-            espn_id:      espnId,   // backfill ESPN ID
-            owgr_rank:    owgrRank,
-            country,
-            headshot_url: headshot,
-            updated_at:   new Date().toISOString(),
-          })
-          .where('id', '=', byName.id)
-          .execute();
-        updated++;
-        continue;
-      }
-
-      // 3. New player — insert fresh row
-      try {
-        await db.insertInto('golfers')
-          .values({
-            espn_id:      espnId,
-            name,
-            owgr_rank:    owgrRank,
-            country,
-            headshot_url: headshot,
-          })
-          .execute();
-        inserted++;
-      } catch (insertErr) {
-        console.error(`Insert failed for ${name}:`, insertErr);
-        errors++;
-      }
-
     } catch (err) {
-      console.error(`Rankings sync error for ${name}:`, err);
+      console.error(`Rankings update failed for ${p.display_name}:`, err);
       errors++;
     }
   }
 
-  return { updated, inserted, errors };
+  if (skipped > 0) {
+    console.warn(
+      `[rankings] ${skipped} ranked players have no matching row in golfers ` +
+      `— they need to land via an ESPN event-field sync first. ` +
+      `First few: ${skippedNames.slice(0, 10).join('; ')}`,
+    );
+  }
+
+  return { fetched: players.length, updated, skipped, errors };
 }
 
-// ── Dark horse helpers ───────────────────────────────────────
+// ── Dark-horse helpers (used at pick-validation time) ────────
 
-/** Players ranked 25 or beyond are considered dark horses. */
+/** Players ranked 25 or beyond are dark horses. Unranked = dark horse too. */
 export const DARK_HORSE_CUTOFF = 25;
 
 export function isDarkHorse(owgrRank: number | null): boolean {
-  if (owgrRank === null) return true; // Unranked counts as dark horse
+  if (owgrRank === null) return true;
   return owgrRank >= DARK_HORSE_CUTOFF;
 }
