@@ -152,30 +152,174 @@ npm run build
 * Backups: `pg_dump fairway | gzip > /backups/fairway-$(date +%F).sql.gz`
   on a daily cron. Off-machine copy is your call.
 
-### Data migration from Supabase Cloud (Phase 5 cutover)
+### Phase 5 cutover — full runbook
 
-Run ONCE, when ready to flip from Supabase Cloud to local Postgres:
+This is the actual flip from Supabase Cloud to local Postgres + the
+new NextAuth Credentials provider. Plan for ~30 minutes of downtime
+on the Fairway side; everything else (golf-czar, etc.) is unaffected.
+
+**Before you start, on the LAN box:**
+```bash
+# Paste these into your shell once. Use openssl rand -base64 32 for
+# the new auth secret if you don't already have one.
+export SOURCE_DATABASE_URL='postgresql://postgres:CLOUDPASS@db.xxx.supabase.co:5432/postgres'
+export DATABASE_URL='postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway'
+export NEXTAUTH_SECRET='replace-with-output-of-openssl-rand-base64-32'
+```
+
+#### Step 1 — Stand up local Postgres
+
+```bash
+cd /opt/fairway-fantasy/infra/postgres
+cp .env.example .env
+$EDITOR .env                              # set POSTGRES_PASSWORD (and DB port if needed)
+docker compose up -d
+docker compose ps                         # wait for "(healthy)"
+docker compose logs postgres | tail -40   # confirm schema applied — look for
+                                          # "CREATE TABLE" lines, no errors
+```
+
+Verify connectivity from the Fairway side:
+```bash
+psql "$DATABASE_URL" -c '\dt'             # should list 12 tables
+```
+
+#### Step 2 — Pre-flight check
+
+Run BEFORE the migration. Catches the common failures (bad creds,
+missing schema, wrong project, target already populated).
 
 ```bash
 cd /opt/fairway-fantasy
-
-# 1. Dry-run first — counts rows, doesn't write anything.
-SOURCE_DATABASE_URL='postgresql://postgres:CLOUDPASS@db.xxx.supabase.co:5432/postgres' \
-DATABASE_URL='postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway' \
-  npx tsx scripts/migrate-from-supabase.ts --dry-run
-
-# 2. Real run.
-SOURCE_DATABASE_URL='postgresql://postgres:CLOUDPASS@db.xxx.supabase.co:5432/postgres' \
-DATABASE_URL='postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway' \
-  npx tsx scripts/migrate-from-supabase.ts
+npx tsx scripts/preflight-check.ts
 ```
 
-The script copies `profiles`, `golfers`, `tournaments`, `leagues`,
-`league_members`, `picks`, `scores`, `fantasy_results`,
-`season_standings`, `reminder_preferences`, `reminder_log` — and
-pulls bcrypt password hashes from Supabase's `auth.users` into the
-new `auth_credentials` table so existing users keep their passwords.
-Idempotent (`ON CONFLICT DO NOTHING`).
+Expected output: every line ✓, exit 0. If any line ✗, fix it
+before continuing — the migration itself won't help diagnose.
+
+#### Step 3 — Migration dry run
+
+```bash
+npx tsx scripts/migrate-from-supabase.ts --dry-run
+```
+
+Prints "would copy N rows" per table, no writes. Sanity-check the
+counts against your Supabase project's row counts.
+
+#### Step 4 — Real migration
+
+```bash
+npx tsx scripts/migrate-from-supabase.ts
+```
+
+Idempotent. Re-running is safe but won't UPDATE existing rows
+(it skips via `ON CONFLICT DO NOTHING`). For a clean re-run:
+`docker compose down -v && docker compose up -d` — this DESTROYS
+the local DB.
+
+#### Step 5 — Post-migration smoke test
+
+Run AFTER migration but BEFORE flipping prod's env. Validates row
+parity, auth coverage, bcrypt hash shape, no orphan FKs.
+
+```bash
+npx tsx scripts/post-migration-check.ts
+```
+
+Every line should be ✓. A `!` is a warning (e.g. target had pre-existing
+rows) — review, but it's usually fine. Any ✗ → DO NOT cutover yet.
+
+#### Step 6 — Flip Fairway env to local Postgres
+
+```bash
+cd /opt/fairway-fantasy
+$EDITOR .env.local
+```
+Update:
+```
+DATABASE_URL=postgresql://fairway:LOCALPASS@127.0.0.1:5432/fairway
+NEXTAUTH_SECRET=...                       # the one from above
+NEXTAUTH_URL=http://fairway.golf-czar.com  # or whatever the public URL is
+```
+Remove (no longer used):
+```
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY
+```
+
+#### Step 7 — Restart Fairway
+
+```bash
+sudo systemctl restart fairway-fantasy
+sudo journalctl -fu fairway-fantasy       # watch for startup errors
+```
+A clean start prints "▲ Next.js 14.2.35 - Local: http://0.0.0.0:3000".
+If `NEXTAUTH_SECRET` is too weak, you'll see the
+`FATAL: NEXTAUTH_SECRET …` guard — fix and restart.
+
+#### Step 8 — End-to-end smoke from a browser
+
+1. Hit `http://fairway.golf-czar.com/`. Landing page renders.
+2. Click "Sign In". Use an existing account's email + password.
+   - Should land on `/dashboard` with the user's leagues visible.
+3. Click into a league → confirm leaderboard, season standings, roster all populate.
+4. Open a private/incognito window → public landing only. No session
+   leaks across browsers.
+5. Try signing up with a new email → should auto-login, land on dashboard.
+
+#### Step 9 — Decommission
+
+Once you've used the new stack for a couple of days without incident:
+
+* Cancel the Supabase Cloud project's pro plan (if any).
+* Delete the project (or pause it — Supabase keeps backups for 7 days
+  on free plans).
+* Set up a `pg_dump` cron on the LAN box for backups:
+  ```bash
+  echo '0 3 * * * /usr/bin/docker exec fairway-postgres pg_dump -U fairway fairway | gzip > /backups/fairway-$(date +\%F).sql.gz' \
+    | sudo crontab -u greg -
+  ```
+
+### Rollback plan
+
+If anything goes wrong after Step 6:
+
+1. **Edit `.env.local`** — change `DATABASE_URL` back to the Supabase
+   Cloud connection string. Restore `NEXT_PUBLIC_SUPABASE_URL` /
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (you removed them in Step 6 — git
+   has the prior values, or pull from the Supabase dashboard).
+2. **`sudo systemctl restart fairway-fantasy`**.
+3. App is back on Supabase Cloud. Local Postgres remains stood-up;
+   wipe with `docker compose down -v` if you want a clean slate before
+   the next attempt.
+
+The auth provider swap (Supabase → NextAuth) is harder to roll back
+than the data swap because the code is now NextAuth-only. If you need
+to roll back the *code* too, `git revert` the Phase-4 commit (`ca0b280`)
+on a branch and deploy that — but it's much simpler to just fix
+forward. The most likely failure (bad `NEXTAUTH_SECRET`) is a one-line
+fix.
+
+### Common issues
+
+* **"FATAL: NEXTAUTH_SECRET is set but is too short"** — your secret
+  is < 32 chars or matches a placeholder. Generate a new one with
+  `openssl rand -base64 32`.
+* **Sign-in succeeds but `/dashboard` redirects to `/auth/signin`** —
+  Almost always cookie-domain mismatch. `NEXTAUTH_URL` must match the
+  hostname users actually visit (cookie domain is derived from it).
+* **"DATABASE_URL is required"** — Fairway tried to query before the
+  env was set. Confirm the systemd unit's `EnvironmentFile=` points at
+  the right `.env.local` and that the file is readable by the service
+  user (`chmod 600`, owned by `greg`).
+* **Sign-in always fails for everyone** — bcrypt hash mismatch.
+  `npx tsx scripts/post-migration-check.ts` should have caught the
+  shape, but verify by running:
+  ```bash
+  psql "$DATABASE_URL" -c "SELECT password_hash FROM auth_credentials LIMIT 1"
+  ```
+  Hash should start with `$2a$10$` or `$2b$10$`.
 
 ### Run as a service
 

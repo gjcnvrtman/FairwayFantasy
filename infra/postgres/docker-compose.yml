@@ -35,8 +35,12 @@ services:
     # Fairway connects over loopback. For ad-hoc queries from your
     # laptop, use:
     #   ssh -L 5432:127.0.0.1:5432 greg@192.168.1.160
+    #
+    # Host port is overridable via POSTGRES_HOST_PORT in .env
+    # (default 5432 for prod; bump for local dev to avoid colliding
+    # with another Postgres instance on the dev machine).
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
 
     volumes:
       - fairway-pgdata:/var/lib/postgresql/data

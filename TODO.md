@@ -78,6 +78,18 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 (Newest first.)
 
+### 2026-05-10 — golf-czar migration Phase 5: cutover tooling + runbook
+The actual cutover requires running commands on the LAN box (Docker compose, real migration, prod env flip) and isn't something I can execute from a dev box. What I shipped: the operational tooling around the cutover so it's safe and rollback-able when Greg runs it.
+
+- [x] **`scripts/preflight-check.ts`** — runs BEFORE migration. Validates source + target reachable, source has Supabase auth schema, source has expected app tables, source row counts non-zero (catches "wrong cloud project" mistakes), target schema applied, target empty-or-known, `auth.users` has password hashes. Exit 0 = good to migrate.
+- [x] **`scripts/post-migration-check.ts`** — runs AFTER migration, BEFORE flipping prod's `DATABASE_URL`. Validates row-count parity (source vs target), every profile has matching `auth_credentials` (so users can sign in), bcrypt hash format looks right, no orphan FKs across `league_members`, `picks`, `scores`, `fantasy_results`. Exit 0 = safe to flip prod env.
+- [x] **`infra/postgres/docker-compose.yml`** — host port now configurable via `POSTGRES_HOST_PORT` env var (default 5432). Lets you stand it up locally on a different port without colliding with another Postgres.
+- [x] **`DEPLOYMENT.md` Phase-5 runbook** — 9-step walkthrough from Docker standup through end-to-end browser smoke test through Supabase decommission. Plus a "Rollback plan" section (just flip `DATABASE_URL` back, restart) and "Common issues" (NEXTAUTH_SECRET guard, cookie-domain mismatches, bcrypt shape).
+
+WHAT DIDN'T HAPPEN HERE
+- The actual data migration. That has to happen on the LAN box where Docker is running and where the prod systemd unit lives.
+- Local end-to-end test against a real Postgres. Tried — Docker daemon isn't running on the dev box. The runbook is the substitute; the scripts will fail loud with clear messages if anything's wrong.
+
 ### 2026-05-10 — golf-czar migration Phase 4: NextAuth + Credentials
 Replaces Supabase Auth with NextAuth v5 (Auth.js) using a Credentials provider against the local `auth_credentials` table. Bcrypt cost 10 — compatible with Supabase's hashes so existing users keep their passwords after Phase 5 migration.
 
