@@ -1,46 +1,29 @@
 // ============================================================
-// NEXTAUTH CONFIG (v5 / Auth.js)
+// NEXTAUTH — Node-runtime layer (Credentials provider + DB).
 //
-// Credentials provider — email + password against the local
-// `auth_credentials` table populated by Phase-3 schema and the
-// Phase-5 migration script.
+// Imports the shared edge-safe config from `auth.config.ts` and
+// adds the heavy stuff that can't live in the edge runtime:
+//   - Credentials provider's authorize() (bcrypt-compares against
+//     the auth_credentials table — uses Node `crypto` via bcryptjs
+//     and `pg` via kysely)
+//   - last_login_at writeback
 //
-// Export shape:
-//   - auth()   — server helper, used in pages / route handlers /
-//                middleware via `@/lib/current-user.ts`
-//   - signIn() / signOut() — server actions; the client-side
-//                versions live in `next-auth/react`
-//   - handlers — the App Router route exports
+// Used by:
+//   - src/lib/current-user.ts (auth() helper for RSCs / route handlers)
+//   - src/app/api/auth/[...nextauth]/route.ts (the catch-all routes)
+//
+// NOT imported by middleware — middleware uses authConfig directly.
 // ============================================================
 
-import NextAuth, { type DefaultSession } from 'next-auth';
+import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-
-// ── Module augmentation: extend the default User/Session shape ──
-declare module 'next-auth' {
-  interface User {
-    /** Always present on Fairway. Mirrors `profiles.display_name`. */
-    name?: string | null;
-  }
-
-  interface Session {
-    user: {
-      id:    string;          // profiles.id (UUID)
-      email: string;
-      name:  string;
-    } & DefaultSession['user'];
-  }
-}
-
-// (The JWT augmentation lives at @auth/core/jwt in v5; we don't
-//  bother — the callbacks below cast as needed since the surface is
-//  small.)
+import { authConfig } from './auth.config';
 
 // ── Strong-secret guard ──────────────────────────────────────
-// Match golf-czar's pattern: refuse to start with a weak/missing
-// secret. Auth.js v5 reads NEXTAUTH_SECRET (or AUTH_SECRET).
+// Refuse to start with a weak/missing secret (mirrors golf-czar's
+// pattern). Auth.js reads NEXTAUTH_SECRET (or AUTH_SECRET).
 const KNOWN_BAD_SECRETS = new Set([
   '',
   'change-me',
@@ -59,22 +42,12 @@ if (
     '`openssl rand -base64 32` and put it in .env.local.',
   );
 }
-// Note: we don't throw when the secret is *missing* — Auth.js does
-// that itself in production mode with a clear error. In development
-// it auto-generates a transient one.
+// We don't throw on MISSING — Auth.js handles that itself with a
+// clear production-mode error, and dev mode auto-generates one.
 
 // ── Provider setup ───────────────────────────────────────────
 export const { auth, handlers, signIn, signOut } = NextAuth({
-  // Credentials provider requires JWT sessions — DB sessions
-  // don't work because the provider is "stateless" in the Auth.js
-  // model. JWT is signed with NEXTAUTH_SECRET on every request.
-  session: { strategy: 'jwt' },
-
-  // Custom auth pages so we render Fairway's UI, not Auth.js defaults.
-  pages: {
-    signIn: '/auth/signin',
-    error:  '/auth/signin',  // surface errors on the same page
-  },
+  ...authConfig,
 
   providers: [
     Credentials({
@@ -88,11 +61,9 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         const password = String(credentials?.password ?? '');
         if (!email || !password) return null;
 
-        // One query: profile + creds. Returning null on any miss keeps
-        // the timing-attack surface narrow, but we DON'T do a full
-        // constant-time path here — bcrypt.compare itself is the
-        // slow part, so an attacker can't easily distinguish "no user"
-        // from "wrong password" by timing.
+        // One query: profile + creds. bcrypt.compare is the slow path,
+        // so the timing-attack surface is narrow even when the email
+        // doesn't exist (we run a throwaway compare in that branch).
         const row = await db.selectFrom('profiles')
           .innerJoin('auth_credentials', 'auth_credentials.user_id', 'profiles.id')
           .select([
@@ -105,9 +76,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
           .executeTakeFirst();
 
         if (!row) {
-          // Equalize timing roughly with the real-compare branch by
-          // running a throwaway compare against a known hash. (Not
-          // perfect, but better than returning instantly.)
+          // Equalize timing with the real-compare branch.
           await bcrypt.compare(
             password,
             '$2a$10$CwTycUXWue0Thq9StjUM0uJ8v.t7l4LZ3zJ9ZJZj8w8Z5w8O8w8O8',
@@ -133,25 +102,4 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       },
     }),
   ],
-
-  callbacks: {
-    // Persist user fields onto the JWT at sign-in time. The token's
-    // own type is opaque in v5; we just stash extra fields and read
-    // them back in `session()` with a cast.
-    async jwt({ token, user }) {
-      if (user) {
-        (token as Record<string, unknown>).id           = user.id;
-        (token as Record<string, unknown>).display_name = user.name ?? null;
-      }
-      return token;
-    },
-    // Surface those fields on the session object the app reads.
-    async session({ session, token }) {
-      const t = token as Record<string, unknown>;
-      if (typeof t.id           === 'string') session.user.id    = t.id;
-      if (typeof t.display_name === 'string') session.user.name  = t.display_name;
-      if (typeof t.email        === 'string') session.user.email = t.email;
-      return session;
-    },
-  },
 });

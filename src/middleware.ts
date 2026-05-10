@@ -1,9 +1,9 @@
 // ============================================================
-// MIDDLEWARE — protected-route guard backed by NextAuth.
+// MIDDLEWARE — protected-route guard, edge-runtime safe.
 //
-// Phase 4 swap: was Supabase ssr cookie-refresh; now reads the
-// NextAuth JWT cookie via `auth()`. Fewer moving parts — JWT is
-// stateless so there's no refresh dance.
+// CRITICAL: this file runs in the Edge Runtime. It cannot import
+// from `@/auth` (that pulls bcrypt + kysely + pg, all Node-only).
+// It uses ONLY `@/auth.config` which is bundler-safe.
 //
 // Behavior:
 //   - Protected paths (/league/, /dashboard, /create, /settings)
@@ -13,8 +13,14 @@
 //   - Everything else passes through.
 // ============================================================
 
-import { auth } from '@/auth';
+import NextAuth from 'next-auth';
+import { authConfig } from '@/auth.config';
 import { NextResponse } from 'next/server';
+
+// Edge-safe auth() — verifies the JWT cookie via Web Crypto, no DB,
+// no Node crypto. The Credentials provider in `auth.ts` is NOT
+// loaded here.
+const { auth } = NextAuth(authConfig);
 
 const PROTECTED_PREFIXES = ['/league/', '/dashboard', '/create', '/settings'];
 const AUTH_PAGES         = ['/auth/signin', '/auth/signup'];
