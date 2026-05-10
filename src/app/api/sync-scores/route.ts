@@ -41,6 +41,10 @@ async function syncTournament(tournament: any) {
     .update({ status: newStatus, cut_score: espnCut ?? cut_score }).eq('id', id);
 
   const effectiveCut = espnCut ?? cut_score;
+  // Bug #5.1: only apply the made-cut cap once the cut has been
+  // officially made (status `cut_made` or `complete`). During Round 1-2
+  // active play, scores are returned as-is.
+  const cutMade = newStatus !== 'active';
   const scoreUpdates: any[] = [];
 
   for (const c of competitors) {
@@ -58,7 +62,7 @@ async function syncTournament(tournament: any) {
     const espnStatus = c.status?.type?.name ?? 'active';
     const scoreStr   = c.score?.displayValue ?? 'E';
     const { fantasyScore, status: mappedStatus } = applyFantasyRules({
-      scoreToParRaw: scoreStr, espnStatus, cutScore: effectiveCut,
+      scoreToParRaw: scoreStr, espnStatus, cutScore: effectiveCut, cutMade,
     });
 
     const rounds = c.linescores?.map((ls: any) => ls.value) ?? [];

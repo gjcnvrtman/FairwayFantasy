@@ -99,12 +99,17 @@ export function parseESPNScore(displayValue: string): number {
 }
 
 // ── Map ESPN status to our status ───────────────────────────
+// ESPN status strings observed: "STATUS_ACTIVE", "STATUS_FINAL",
+// "STATUS_SCHEDULED", and shorter forms like "cut", "wd", "dq", "mc",
+// "f". See bug #5.10 for unmapped statuses (e.g. MDF "made cut, did
+// not finish") that currently fall through to 'active'.
 export function mapESPNStatus(espnStatus: string): Score['status'] {
   const s = espnStatus.toLowerCase();
-  if (s.includes('cut') || s === 'mc')        return 'missed_cut';
-  if (s.includes('wd') || s.includes('withdrew')) return 'withdrawn';
-  if (s.includes('dq'))                       return 'disqualified';
-  if (s.includes('complete') || s === 'f')    return 'complete';
+  if (s.includes('cut') || s === 'mc')                   return 'missed_cut';
+  if (s.includes('wd') || s.includes('withdrew'))         return 'withdrawn';
+  if (s.includes('dq'))                                  return 'disqualified';
+  if (s.includes('complete') || s.includes('final') || s === 'f')
+                                                         return 'complete';
   return 'active';
 }
 

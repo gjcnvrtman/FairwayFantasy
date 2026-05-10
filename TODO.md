@@ -42,11 +42,9 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## P2 — quality / monitoring / future-proofing
 
 - [ ] **TS strict mode + lint enforcement** *(P1 #4.10, #4.11)* — `next.config.js` has `typescript.ignoreBuildErrors: true` AND `eslint.ignoreDuringBuilds: true`. Real type/lint errors land silently. Set up ESLint config (currently absent — `next lint` prompts interactively), turn on strict TS, fix what surfaces.
-- [ ] **Made-cut cap fires mid-round** *(P1 #5.1)* — `src/lib/scoring.ts:applyFantasyRules`'s `Math.min(rawScore, cutScore)` caps active rounds too. Should only apply to FINAL scores or once a player officially makes the cut.
-- [ ] **Missed-cut with null cutScore returns wrong sign** *(P1 #5.2, pinned in `tests/picks.test.ts`)* — fallback `rawScore + 1` gives a -3 missed-cut golfer a fantasy score of -2, which beats legitimate cut survivors. Should be a high penalty number when cutScore is null.
-- [ ] **`calculateTop3` partial-data semantics ambiguous** *(P1 #5.3, pinned in `tests/picks.test.ts`)* — when fewer than 3 golfers have scored, returns sum of remaining. A user with 2 scored at -5 outranks a user with 3 scored at -4. Document or change to tied/pro-rated. Currently locked in by test so the next change surfaces explicitly.
+- [ ] **`calculateTop3` partial-data semantics ambiguous** *(P1 #5.3, pinned in `tests/picks.test.ts`)* — when fewer than 3 golfers have scored, returns sum of remaining. A user with 2 scored at -5 outranks a user with 3 scored at -4. Documented in `scoring.ts` JSDoc + locked by test. Decide between (a) keep current, (b) penalize with a high number per missing slot, (c) pro-rate. P5/P6 left as-is pending product decision.
 - [ ] **`isReplacementEligible` vs in-route inline check are different** *(P1 #5.6)* — `scoring.ts:isReplacementEligible` checks `!golfer.teed_off && golfer.status === 'active'`. The actual usage at `picks/route.ts:73-77` checks `repScore?.round_1 !== null`. Two truths. Pick one and delete the other.
-- [ ] **`mapESPNStatus` unhandled cases** *(P1 #5.10)* — `MDF` (made cut, did not finish) currently falls through to `active`. Other ESPN statuses also unmapped. Audit + add cases.
+- [ ] **`mapESPNStatus` MDF case** *(P1 #5.10 partial)* — P6 fixed `STATUS_FINAL` mapping, but `MDF` (made cut, did not finish) still falls through to `active`. Pinned by test so behavior is deliberate. Decide whether MDF → `complete` (final, score frozen) or stay `active`.
 - [ ] **Score-sync recomputeResults is O(N×M) per league per cycle** *(P1 #5.7)* — runs on every score update for every active tournament. Fine at small scale, would hit Vercel timeout at scale. Consider incremental updates or batch.
 - [ ] **`MAX_PLAYERS` not editable from UI after creation** *(P4 risks)* — schema supports it; commissioner admin should grow that field. Hint on create form notes it's not editable yet.
 - [ ] **Demo leaderboard sample data could collide with real PGA results** *(P3 risks)* — if a real Masters happens to produce identical names + scores, the demo will look stale. Low probability.
@@ -82,6 +80,14 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-10 — Prompt 6: scoring engine review + 2 bug fixes + 27 new tests
+- [x] **Named constants** in `src/lib/scoring.ts` — `MISSED_CUT_PENALTY_STROKES`, `MISSED_CUT_FALLBACK_SCORE`, `PICK_GOLFER_COUNT`, `COUNTING_GOLFER_COUNT`, `TOP_TIER_MAX_OWGR_RANK`. Hoisted from magic numbers; surfaced through tests.
+- [x] **Top-of-file canonical rules block** — every fantasy rule is documented in plain English at the top of `scoring.ts` with bug-reference back to TODO.
+- [x] **Bug #5.1 fixed** — `applyFantasyRules` now takes a `cutMade: boolean` param. Made-cut cap only fires during active play when the cut has officially been made (caller signal). `complete` always caps. `sync-scores/route.ts` passes `cutMade = newStatus !== 'active'`.
+- [x] **Bug #5.2 fixed** — missed-cut with null cutScore now returns `MISSED_CUT_FALLBACK_SCORE` (99) instead of `rawScore + 1`. A -3 missed-cut golfer no longer beats legitimate cut survivors.
+- [x] **`mapESPNStatus` `STATUS_FINAL` mapping** — `'final'` substring now correctly maps to `complete`. Was being routed to `active`, two truths between `sync-scores/route.ts:37` (knew final) and the central mapper. Fixed in `espn.ts`.
+- [x] **27 new tests** in `tests/picks.test.ts` (now 60 total, 96 across both test files). Cover: round-in-progress (#5.1), null-cutScore-missed-cut (#5.2), constants surfaces, `computeLeagueResults` end-to-end (all-completed, partial, none, replacement handling), tied users (1-2-2 and 1-1-1-4 patterns), unrankable users (all WD/DQ → null rank), ESPN status edge cases (MC, F, unknown→active).
 
 ### 2026-05-10 — Prompt 5: picks page mobile-first + unranked-tier bug fix + 33 tests
 - [x] **Picks page mobile-first rewrite** — replaced fixed `1fr 380px` grid with `flex-wrap` layout. Lock-deadline status row, "X of 4 selected" counter with progress bar, post-save confirmation panel, loading skeleton. Commit `ce91fb5`.

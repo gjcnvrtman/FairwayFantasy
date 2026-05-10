@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { validatePick, calculateTop3, applyFantasyRules } from '@/lib/scoring';
+import {
+  validatePick,
+  calculateTop3,
+  applyFantasyRules,
+  computeLeagueResults,
+  MISSED_CUT_PENALTY_STROKES,
+  MISSED_CUT_FALLBACK_SCORE,
+  PICK_GOLFER_COUNT,
+  COUNTING_GOLFER_COUNT,
+  TOP_TIER_MAX_OWGR_RANK,
+} from '@/lib/scoring';
+import type { Pick, Score } from '@/types';
 
 // ─────────────────────────────────────────────────────────────
 // Test fixtures — small, named so failures are easy to read.
@@ -307,23 +318,36 @@ describe('calculateTop3', () => {
   });
 });
 
-describe('applyFantasyRules', () => {
-  it('caps made-cut score at the cut line (cap rule)', () => {
-    // Player at +5 with cut at +3 → score capped at +3.
-    const r = applyFantasyRules({ scoreToParRaw: '+5', espnStatus: 'active', cutScore: 3 });
+describe('applyFantasyRules — core rules', () => {
+  it('caps made-cut score at the cut line once cut is made (cap rule)', () => {
+    // Player at +5, cut at +3, cut HAS been made → cap fires → +3.
+    const r = applyFantasyRules({
+      scoreToParRaw: '+5', espnStatus: 'active', cutScore: 3, cutMade: true,
+    });
     expect(r.fantasyScore).toBe(3);
     expect(r.status).toBe('active');
   });
 
+  it('caps complete-round score at the cut line', () => {
+    // Tournament-final cap always applies on `complete`, regardless
+    // of cutMade — being complete implies the cut was made.
+    const r = applyFantasyRules({
+      scoreToParRaw: '+5', espnStatus: 'final', cutScore: 3,
+    });
+    expect(r.fantasyScore).toBe(3);
+    expect(r.status).toBe('complete');
+  });
+
   it('keeps a better-than-cut active score as-is', () => {
-    // Player at -10 with cut at +3 → keep -10 (much better than cut).
-    const r = applyFantasyRules({ scoreToParRaw: '-10', espnStatus: 'active', cutScore: 3 });
+    const r = applyFantasyRules({
+      scoreToParRaw: '-10', espnStatus: 'active', cutScore: 3, cutMade: true,
+    });
     expect(r.fantasyScore).toBe(-10);
   });
 
-  it('missed-cut score = cutScore + 1', () => {
+  it('missed-cut score = cutScore + MISSED_CUT_PENALTY_STROKES', () => {
     const r = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 3 });
-    expect(r.fantasyScore).toBe(4);
+    expect(r.fantasyScore).toBe(3 + MISSED_CUT_PENALTY_STROKES);
     expect(r.status).toBe('missed_cut');
   });
 
@@ -339,21 +363,390 @@ describe('applyFantasyRules', () => {
     expect(r.status).toBe('disqualified');
   });
 
-  // Prompt 1 review #5.2: when cutScore is null but golfer missed cut,
-  // the formula falls back to rawScore + 1 — which is wrong for very
-  // good rounds (-3 → -2 still better than legit cut survivors). This
-  // test pins the CURRENT behavior so we notice if we fix #5.2 later.
-  it('missed-cut with null cutScore falls back to rawScore+1 (KNOWN BUG #5.2)', () => {
-    const r = applyFantasyRules({ scoreToParRaw: '-3', espnStatus: 'cut', cutScore: null });
-    // Documented bug: returns -2 (which is BETTER than legitimate cut
-    // survivors). Should arguably be a high penalty number. Pinning
-    // current behavior so the fix is intentional.
-    expect(r.fantasyScore).toBe(-2);
-    expect(r.status).toBe('missed_cut');
-  });
-
   it('parses "E" (even par) correctly', () => {
     const r = applyFantasyRules({ scoreToParRaw: 'E', espnStatus: 'active', cutScore: null });
     expect(r.fantasyScore).toBe(0);
+  });
+
+  it('parses "-" (no score yet) as 0', () => {
+    // Defensive — ESPN sometimes sends "-" early in a round.
+    const r = applyFantasyRules({ scoreToParRaw: '-', espnStatus: 'active', cutScore: null });
+    expect(r.fantasyScore).toBe(0);
+  });
+});
+
+describe('applyFantasyRules — round-in-progress (#5.1 fix)', () => {
+  it('does NOT cap during active live play before cut is made', () => {
+    // Round 1, player at +5, cut not yet made → score is +5, NOT
+    // capped. Earlier bug would have capped at +3. Locked in here.
+    const r = applyFantasyRules({
+      scoreToParRaw: '+5', espnStatus: 'active', cutScore: 3, cutMade: false,
+    });
+    expect(r.fantasyScore).toBe(5);
+    expect(r.status).toBe('active');
+  });
+
+  it('defaults cutMade=false when omitted (back-compat behavior)', () => {
+    const r = applyFantasyRules({
+      scoreToParRaw: '+5', espnStatus: 'active', cutScore: 3,
+    });
+    expect(r.fantasyScore).toBe(5); // not capped — default cutMade=false
+  });
+
+  it('does NOT cap when cut hasn\'t been determined yet (cutScore=null)', () => {
+    // No cut data yet — leave score uncapped regardless of cutMade.
+    const r = applyFantasyRules({
+      scoreToParRaw: '+8', espnStatus: 'active', cutScore: null, cutMade: false,
+    });
+    expect(r.fantasyScore).toBe(8);
+  });
+
+  it('caps mid-round-3 if caller signals cut is made', () => {
+    // Post-cut, mid-round-3, made-cut golfer playing terribly.
+    // Once cut is made, the at-worst-cut-line guarantee kicks in.
+    const r = applyFantasyRules({
+      scoreToParRaw: '+12', espnStatus: 'active', cutScore: -1, cutMade: true,
+    });
+    expect(r.fantasyScore).toBe(-1);
+  });
+});
+
+describe('applyFantasyRules — null cutScore + missed cut (#5.2 fix)', () => {
+  it('uses MISSED_CUT_FALLBACK_SCORE when cutScore is null', () => {
+    // Was a pinned bug: rawScore+1 returned -2 for a -3 missed-cut
+    // round. Now returns MISSED_CUT_FALLBACK_SCORE (clearly losing).
+    const r = applyFantasyRules({ scoreToParRaw: '-3', espnStatus: 'cut', cutScore: null });
+    expect(r.fantasyScore).toBe(MISSED_CUT_FALLBACK_SCORE);
+    expect(r.status).toBe('missed_cut');
+  });
+
+  it('still uses cutScore + penalty when cutScore is known', () => {
+    // Don't accidentally regress the happy path.
+    const r = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 5 });
+    expect(r.fantasyScore).toBe(6);
+  });
+
+  it('fallback does not affect non-missed-cut statuses', () => {
+    // Active with null cutScore → score as-is, no fallback applied.
+    const r = applyFantasyRules({ scoreToParRaw: '+2', espnStatus: 'active', cutScore: null });
+    expect(r.fantasyScore).toBe(2);
+  });
+});
+
+describe('exported constants', () => {
+  it('PICK_GOLFER_COUNT = 4 (always 4 golfers per pick)', () => {
+    expect(PICK_GOLFER_COUNT).toBe(4);
+  });
+
+  it('COUNTING_GOLFER_COUNT = 3 (best 3 of 4)', () => {
+    expect(COUNTING_GOLFER_COUNT).toBe(3);
+  });
+
+  it('TOP_TIER_MAX_OWGR_RANK = 24', () => {
+    expect(TOP_TIER_MAX_OWGR_RANK).toBe(24);
+  });
+
+  it('MISSED_CUT_PENALTY_STROKES = 1', () => {
+    expect(MISSED_CUT_PENALTY_STROKES).toBe(1);
+  });
+
+  it('MISSED_CUT_FALLBACK_SCORE is high enough to lose to any realistic cut', () => {
+    // Cut lines on PGA tour rarely go above +10. Fallback should be
+    // clearly worse than cut+1 in any realistic scenario.
+    expect(MISSED_CUT_FALLBACK_SCORE).toBeGreaterThan(20);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// computeLeagueResults — full-league rank/score pipeline
+// ─────────────────────────────────────────────────────────────
+
+/** Build a partial Pick cast-as-Pick for tests. */
+function makePick(p: {
+  user_id: string;
+  g1: string | null;
+  g2: string | null;
+  g3: string | null;
+  g4: string | null;
+  league_id?: string;
+  tournament_id?: string;
+}): Pick {
+  return {
+    id:           `pick-${p.user_id}`,
+    league_id:     p.league_id     ?? 'lg1',
+    tournament_id: p.tournament_id ?? 'tour1',
+    user_id:       p.user_id,
+    golfer_1_id:   p.g1,
+    golfer_2_id:   p.g2,
+    golfer_3_id:   p.g3,
+    golfer_4_id:   p.g4,
+    is_locked:     true,
+    submitted_at:  '2026-04-10T00:00:00Z',
+  } as Pick;
+}
+
+/** Build a partial Score cast-as-Score for tests. */
+function makeScore(p: {
+  golfer_id: string;
+  fantasy_score: number | null;
+  status?: Score['status'];
+  was_replaced?: boolean;
+  replaced_by_golfer_id?: string | null;
+}): Score {
+  return {
+    id:                    `score-${p.golfer_id}`,
+    tournament_id:         'tour1',
+    golfer_id:              p.golfer_id,
+    espn_golfer_id:         p.golfer_id,
+    round_1: null, round_2: null, round_3: null, round_4: null,
+    total_strokes:          null,
+    score_to_par:           p.fantasy_score,
+    position:               null,
+    status:                 p.status ?? 'active',
+    fantasy_score:          p.fantasy_score,
+    was_replaced:           p.was_replaced ?? false,
+    replaced_by_golfer_id:  p.replaced_by_golfer_id ?? null,
+    last_synced:           '2026-04-10T12:00:00Z',
+  } as Score;
+}
+
+function buildScoreMap(scores: Score[]): Map<string, Score> {
+  const m = new Map<string, Score>();
+  for (const s of scores) m.set(s.golfer_id, s);
+  return m;
+}
+
+describe('computeLeagueResults — all four golfers completed', () => {
+  it('picks best 3 of 4 and ranks single user #1', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +4 }), // dropped
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r).toHaveLength(1);
+    expect(r[0].total_score).toBe(-2); // -3 + -1 + +2
+    expect(r[0].counting_golfers).toEqual([1, 2, 3]);
+    expect(r[0].rank).toBe(1);
+  });
+
+  it('worst-slot drop is position-independent', () => {
+    // The worst slot is g1 here; should still be dropped.
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: +10 }), // dropped
+      makeScore({ golfer_id: 'b', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'c', fantasy_score: -4 }),
+      makeScore({ golfer_id: 'd', fantasy_score: -1 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(-7); // -2 + -4 + -1
+    // Slot 1 (a) is dropped; counting are 2, 3, 4
+    expect(r[0].counting_golfers.sort()).toEqual([2, 3, 4]);
+  });
+});
+
+describe('computeLeagueResults — only some completed', () => {
+  it('uses only valid scores when 1 golfer is null/missing', () => {
+    // Per #5.3 spec: 3 valid → sum of 3
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      // d: no score row at all
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(-2); // sum of 3 valid
+    expect(r[0].golfer_4_score).toBeNull();
+  });
+
+  it('uses partial scores when 2+ golfers WD/DQ (per #5.3 spec)', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'c', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'd', fantasy_score: null, status: 'disqualified' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // Only 2 valid → sum of those 2 (no penalty per current spec).
+    expect(r[0].total_score).toBe(-5);
+    expect(r[0].golfer_3_score).toBeNull();
+    expect(r[0].golfer_4_score).toBeNull();
+  });
+
+  it('returns total_score=null and rank=null when ALL golfers WD/DQ', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'b', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'c', fantasy_score: null, status: 'disqualified' }),
+      makeScore({ golfer_id: 'd', fantasy_score: null, status: 'withdrawn' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBeNull();
+    expect(r[0].rank).toBeNull();
+  });
+});
+
+describe('computeLeagueResults — no score yet', () => {
+  it('returns total_score=null when scoreMap is empty (tournament not started)', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const r = computeLeagueResults(picks, new Map());
+    expect(r[0].total_score).toBeNull();
+    expect(r[0].rank).toBeNull();
+    expect(r[0].golfer_1_score).toBeNull();
+  });
+
+  it('handles a pick with null golfer slots gracefully', () => {
+    // User submitted a partial pick (shouldn't happen in prod —
+    // validatePick would reject it — but defensive against bad data).
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: null, g3: 'c', g4: null })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(-1); // -3 + 2
+    expect(r[0].golfer_2_score).toBeNull();
+    expect(r[0].golfer_4_score).toBeNull();
+  });
+});
+
+describe('computeLeagueResults — tied users', () => {
+  it('assigns the same rank to tied total_scores (1, 2, 2, 4 pattern)', () => {
+    // Three users tied at 2nd place → ranks 1, 2, 2, 2, 5? No —
+    // standard golf: 1, 2, 2, 2 (skip to next available rank for the
+    // next distinct score). Confirm.
+    const picks = [
+      makePick({ user_id: 'best',   g1: 'a', g2: 'b', g3: 'c', g4: 'd' }),
+      makePick({ user_id: 'tied1', g1: 'a', g2: 'b', g3: 'c', g4: 'e' }),
+      makePick({ user_id: 'tied2', g1: 'a', g2: 'b', g3: 'c', g4: 'f' }),
+      makePick({ user_id: 'last',  g1: 'g', g2: 'h', g3: 'i', g4: 'j' }),
+    ];
+    const scoreMap = buildScoreMap([
+      // best: -3, -2, -1, dropped(+5) → -6
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'c', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +5 }),
+      // tied1+tied2 share a/b/c with best, only the 4th differs:
+      makeScore({ golfer_id: 'e', fantasy_score: 0 }),  // tied1 → -6, but counting set is a,b,c → -6 (tied with best!)
+      makeScore({ golfer_id: 'f', fantasy_score: 0 }),  // tied2 → -6 same
+      // last: all positive, dropped one
+      makeScore({ golfer_id: 'g', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'h', fantasy_score: +3 }),
+      makeScore({ golfer_id: 'i', fantasy_score: +5 }),
+      makeScore({ golfer_id: 'j', fantasy_score: +9 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    const byUser = Object.fromEntries(r.map(x => [x.user_id, x]));
+    expect(byUser.best.total_score).toBe(-6);
+    expect(byUser.tied1.total_score).toBe(-6);
+    expect(byUser.tied2.total_score).toBe(-6);
+    expect(byUser.last.total_score).toBe(+10); // +2 + +3 + +5
+
+    // All three tied at rank 1
+    expect(byUser.best.rank).toBe(1);
+    expect(byUser.tied1.rank).toBe(1);
+    expect(byUser.tied2.rank).toBe(1);
+    // Last gets rank 4 (skipping 2 and 3 because of the 3-way tie)
+    expect(byUser.last.rank).toBe(4);
+  });
+
+  it('gives ranks 1, 2, 2 (skip 3) when 2 tie at second', () => {
+    const picks = [
+      makePick({ user_id: 'first',  g1: 'a', g2: 'b', g3: 'c', g4: 'd' }),
+      makePick({ user_id: 'second', g1: 'e', g2: 'f', g3: 'g', g4: 'h' }),
+      makePick({ user_id: 'third',  g1: 'i', g2: 'j', g3: 'k', g4: 'l' }),
+    ];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -5 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'c', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: 0 }),  // total -10 (dropped 0)
+      makeScore({ golfer_id: 'e', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'f', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'g', fantasy_score: 0 }),
+      makeScore({ golfer_id: 'h', fantasy_score: +1 }),  // total -3
+      makeScore({ golfer_id: 'i', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'j', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'k', fantasy_score: 0 }),
+      makeScore({ golfer_id: 'l', fantasy_score: +1 }),  // total -3 (tie with second)
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    const byUser = Object.fromEntries(r.map(x => [x.user_id, x]));
+    expect(byUser.first.rank).toBe(1);
+    expect(byUser.second.rank).toBe(2);
+    expect(byUser.third.rank).toBe(2);  // tied with second
+    // Note: there's no 4th user, but if there were they'd be rank 4.
+  });
+
+  it('does not rank users whose total is null (all WD/DQ)', () => {
+    const picks = [
+      makePick({ user_id: 'real',  g1: 'a', g2: 'b', g3: 'c', g4: 'd' }),
+      makePick({ user_id: 'all-wd', g1: 'e', g2: 'f', g3: 'g', g4: 'h' }),
+    ];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'b', fantasy_score: 0 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +1 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'e', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'f', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'g', fantasy_score: null, status: 'disqualified' }),
+      makeScore({ golfer_id: 'h', fantasy_score: null, status: 'withdrawn' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    const byUser = Object.fromEntries(r.map(x => [x.user_id, x]));
+    expect(byUser.real.rank).toBe(1);
+    expect(byUser['all-wd'].rank).toBeNull();
+    expect(byUser['all-wd'].total_score).toBeNull();
+  });
+});
+
+describe('computeLeagueResults — replacement handling', () => {
+  it('uses the replacement\'s fantasy_score when was_replaced=true', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      // 'orig' withdrew; was_replaced flag points to 'rep'
+      makeScore({
+        golfer_id: 'orig', fantasy_score: null, status: 'withdrawn',
+        was_replaced: true, replaced_by_golfer_id: 'rep',
+      }),
+      makeScore({ golfer_id: 'rep', fantasy_score: -4 }),  // replacement's score
+      makeScore({ golfer_id: 'b',   fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c',   fantasy_score: 0 }),
+      makeScore({ golfer_id: 'd',   fantasy_score: +3 }),  // dropped
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].golfer_1_score).toBe(-4);  // pulled from replacement
+    expect(r[0].total_score).toBe(-5); // -4 + -1 + 0
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Adjacent: ESPN-status edge cases not yet covered
+// ─────────────────────────────────────────────────────────────
+
+describe('applyFantasyRules — ESPN status edge cases', () => {
+  it('treats "MC" as missed_cut', () => {
+    const r = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'mc', cutScore: 3 });
+    expect(r.status).toBe('missed_cut');
+  });
+
+  it('treats "F" (final) as complete', () => {
+    const r = applyFantasyRules({ scoreToParRaw: '-2', espnStatus: 'f', cutScore: 3 });
+    expect(r.status).toBe('complete');
+  });
+
+  it('treats unknown status as active (fail-soft default)', () => {
+    // bug #5.10 — MDF (made cut, did not finish) etc. Currently
+    // unmapped statuses fall through to active. Pinning behavior.
+    const r = applyFantasyRules({ scoreToParRaw: '+2', espnStatus: 'MDF', cutScore: 3 });
+    expect(r.status).toBe('active');
   });
 });
