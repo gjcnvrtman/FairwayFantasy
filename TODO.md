@@ -14,6 +14,21 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ### Live-scoring risk for PGA Championship (Thu May 14) — high P0
 - [ ] **`fetchLiveLeaderboard` in `src/lib/espn.ts` has the SAME bugs as the old `seed-golfers.ts`** — uses the broken `/pga/leaderboard?event=` endpoint (404s) AND reads `c.displayName` which ESPN now returns null. Apply the same fixes: fall back to `/pga/scoreboard?event=`, read name from `c.athlete?.displayName ?? c.athlete?.fullName`. Without this, the score-sync timer fires faithfully every 10 min Thu-Sun starting May 14 but updates no live scores. Verify Thursday morning by manually triggering `sudo systemctl start fairway-scores.service` and watching journalctl.
 
+### Truist Championship still marked 'active' after final round ended
+- [ ] On Sunday May 10 the Truist Championship final round ended but its status stayed `active` in the DB. The picks page was showing it as "next event" Monday morning. Greg pulled the self-healing fix (commit `65f78f9`) which adds status maintenance to the rankings sync route, but the rankings.service start failed (race with fairway-fantasy restart). Resume on next session: retry `sudo systemctl start fairway-rankings.service` after confirming Fairway is up; the new rankings route flips stale `upcoming`/`active` rows to `complete` when their end_date has passed. Alternative quick fix: direct SQL `UPDATE tournaments SET status='complete' WHERE end_date < NOW() AND status != 'complete';`
+
+### Cert reissue replaced the SAN list — golf-czar.com broken in browser (CERT_COMMON_NAME_INVALID)
+- [ ] Running certbot for fairway.golf-czar.com on .150 today **replaced** the existing golf-czar.com cert (which had golf-czar.com / league / weekend) with one whose only SAN entry is fairway.golf-czar.com. Every non-fairway *.golf-czar.com hostname is now serving the wrong cert. Recovery is one command on .150:
+  ```bash
+  sudo certbot --nginx --cert-name golf-czar.com --force-renewal \
+    -d golf-czar.com -d league.golf-czar.com \
+    -d weekend.golf-czar.com -d fairway.golf-czar.com
+  ```
+  Greg paused before running this to switch to golf-czar work. **Run on .150 before resuming Fairway testing.** Note that .160's local cert is the older (still-valid) golf-czar.com / league / weekend bundle — stale but harmless since .160 doesn't field public traffic. After the fix on .150, rsync `/etc/letsencrypt/live/golf-czar.com/` + `/etc/letsencrypt/archive/golf-czar.com/` to .160 (or wait for whatever sync mechanism normally mirrors them).
+
+### Runbook hygiene
+- [ ] Add to DEPLOYMENT.md: **when modifying a SAN cert, always include every existing domain in the `-d` list, OR use `--expand`.** The `--cert-name X -d Y` form with neither flag is a "replace" in modern certbot. Add the pre-flight `sudo certbot certificates` + post-check `openssl x509 -ext subjectAltName` as required steps.
+
 ### ESPN data + sync timers (action: run install.sh on .160)
 - [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:
   ```bash
