@@ -498,11 +498,19 @@ function LeaderboardRow({
           borderTop: '1px solid var(--cream-dark)',
           display: 'flex', flexDirection: 'column', gap: '0.3rem',
         }}>
-          {[1, 2, 3, 4].map(slot => {
-            const g = pick[`golfer_${slot}`];
-            if (!g) return null;
+          {[1, 2, 3, 4]
+            .map(slot => ({
+              slot,
+              g: pick[`golfer_${slot}`],
+              fantasy: result[`golfer_${slot}_score`] as number | null,
+            }))
+            .filter(e => e.g)
+            // Sort by fantasy score, lower = better (golf scoring).
+            // Nulls (un-scored golfer) go last so they don't display
+            // above golfers with real numbers.
+            .sort((a, b) => (a.fantasy ?? Infinity) - (b.fantasy ?? Infinity))
+            .map(({ slot, g, fantasy }) => {
             const isCounting = counting.has(slot);
-            const fantasy    = result[`golfer_${slot}_score`] as number | null;
             const scoreRow   = scoresByGolferId.get(g.id);
             const status     = scoreRow?.status as string | undefined;
             const isMC       = status === 'missed_cut';
