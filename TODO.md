@@ -24,23 +24,26 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
     -d golf-czar.com -d league.golf-czar.com \
     -d weekend.golf-czar.com -d fairway.golf-czar.com
   ```
-  Greg paused before running this to switch to golf-czar work. **Run on .150 before resuming Fairway testing.** Note that .160's local cert is the older (still-valid) golf-czar.com / league / weekend bundle — stale but harmless since .160 doesn't field public traffic. After the fix on .150, rsync `/etc/letsencrypt/live/golf-czar.com/` + `/etc/letsencrypt/archive/golf-czar.com/` to .160 (or wait for whatever sync mechanism normally mirrors them).
+  Greg paused before running this to switch to golf-czar work. **Run on .150 before resuming Fairway testing.** (Note: .160 is now decommissioned — no rsync target. Fairway runs entirely on .150 as of the consolidation captured in Done.)
 
 ### Runbook hygiene
 - [ ] Add to DEPLOYMENT.md: **when modifying a SAN cert, always include every existing domain in the `-d` list, OR use `--expand`.** The `--cert-name X -d Y` form with neither flag is a "replace" in modern certbot. Add the pre-flight `sudo certbot certificates` + post-check `openssl x509 -ext subjectAltName` as required steps.
 
-### ESPN data + sync timers (action: run install.sh on .160)
-- [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. One command on .160:
+### ESPN data + sync timers (action: run install.sh on .150)
+- [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. **As of 2026-05-14 only `fairway-fantasy.service` is loaded on .150 — neither `fairway-rankings.timer` nor `fairway-scores.timer` exists**, so every score update has been manual since the .160 → .150 consolidation. One command on .150:
   ```bash
   cd /opt/fairway-fantasy
   git pull origin main
   sudo ./infra/systemd/install.sh --populate
   ```
-  - `--populate` runs the rankings sync once immediately to fill the empty DB (~200 golfers + ~40 tournaments).
+  - `--populate` runs the rankings sync once immediately to fill the empty DB (~200 golfers + ~40 tournaments). On .150 today both tables are already populated — safe to run, but `--populate` becomes a no-op refresh rather than a first-time fill.
   - Without `--populate` it just installs the timers; you can populate later with `sudo systemctl start fairway-rankings.service`.
   - Timers installed: `fairway-rankings.timer` (Mondays 06:00 — keeps OWGR + schedule current) + `fairway-scores.timer` (every 10 min Thu–Sun — pulls live scores during play).
-  - Verify after install: `systemctl list-timers fairway-*` and `psql -c 'SELECT COUNT(*) FROM golfers'`.
+  - Verify after install: `systemctl list-timers fairway-*` and `sudo docker exec fairway-postgres psql -U fairway -d fairway -c 'SELECT COUNT(*) FROM golfers'` (DB is in Docker on .150 now, not bare-metal).
 - [x] **Bug fix bundled in:** runScoreSync now queries by `start_date <= now AND end_date >= now-1d AND status != 'complete'` instead of the previous `status IN ('active', 'cut_made')`. The old version had a chicken-and-egg bug: rankings sync inserts new tournaments with default status `upcoming`, but nothing flipped them to `active` when start_date arrived, so the score sync skipped them forever. Now any tournament whose start_date has passed gets a sync; syncTournament() updates the status field from ESPN's response.
+
+### Per-golfer status missing when scoreboard fallback used (cut-day risk for PGA Championship)
+- [ ] **`fetchLiveLeaderboard` scoreboard branch can't read missed_cut / WD / DQ per golfer** — 2026-05-14. ESPN's `/pga/leaderboard?event=` is currently 404'ing for event 401811947 (PGA Championship), so today's commit `f066737` makes `fetchLiveLeaderboard` fall back to `/pga/scoreboard?event=` and normalize the differing shape. Limitation: scoreboard competitors don't include a `status` field, so `normalizeScoreboardCompetitor` defaults every golfer to `status: 'active'`. Harmless through Round 1-2 active play, but on cut day (Fri evening) and beyond, any golfer who missed the cut, withdrew, or was DQ'd will still be reported as `active`, which means `applyFantasyRules` won't apply the made-cut cap or the missed-cut +1-stroke penalty correctly. **Impact:** wrong fantasy scores from Friday evening onward IF the leaderboard endpoint is still 404 by then. **Mitigations to add:** (a) try the `?contestId=` variant of the leaderboard URL — some clients route around the 404; (b) parse `competition.status.type.name` for `STATUS_FINAL` cases so at least the tournament-level cut_made transition still triggers (already works — `syncTournament` sets `cut_made` / `complete` from `competition.status`); (c) cross-reference round_2 score against `cut_score` after Round 2 finishes and auto-mark golfers above the line as missed_cut at the consumer level. Files: `src/lib/espn.ts:normalizeScoreboardCompetitor`, `src/lib/sync.ts:syncTournament`. Test on Friday once Round 2 wraps before deciding if (c) is needed. **Verify before Friday afternoon.**
 
 ### Open signup since deployment went public
 - [ ] **Public-internet exposure now real, not LAN** — these were P3 ("LAN-only mitigates") but the mitigation no longer applies:
@@ -85,6 +88,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [ ] **`MAX_PLAYERS` not editable from UI after creation** *(P4 risks)* — schema supports it; commissioner admin should grow that field. Hint on create form notes it's not editable yet.
 - [ ] **Demo leaderboard sample data could collide with real PGA results** *(P3 risks)* — if a real Masters happens to produce identical names + scores, the demo will look stale. Low probability.
 - [ ] **Relative-time label not live-updating** *(P5 risks)* — `formatRelativeTime` in picks page is computed at render, not live. "in 2d 4h" stays static if user sits on the page. Acceptable for now since saves reload the page.
+- [ ] **No tests for `src/lib/espn.ts`** — 2026-05-14. Added `normalizeScoreboardCompetitor` in commit `f066737` without unit tests because there's no `tests/espn.test.ts` file (espn.ts has never had test coverage). Verified at deploy time against live PGA Championship JSON, but the normalizer has several branches (athlete.displayName vs fullName vs displayName fallback chain, raw-string vs object score, linescores filter for un-played rounds, sortOrder vs order). Should land a `tests/espn.test.ts` with fixtures for: (a) scoreboard Round 1 in-progress, (b) scoreboard Round 4 with WD/missed-cut entries, (c) leaderboard endpoint (when it comes back) to confirm pass-through. Capture a real ESPN JSON sample under `tests/fixtures/` for each case.
 
 ---
 
@@ -101,6 +105,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. Consider SVG icons.
 - [ ] **No PWA manifest, no offline fallback** *(P1 #6.8)* — "Install to home screen" experience absent.
 - [ ] **`vercel.json` cleanup post-migration** — once we move off Vercel, the file is dead. Decide whether to delete or keep for future re-deploy parity.
+- [ ] **Stray typo'd filenames in `/opt/fairway-fantasy` on .150** — 2026-05-14. `git status` on the production checkout shows two untracked files: `"eep 65"` and `"udo systemctl start fairway-rankings.service"` — clearly leftovers from `sleep 65` and `sudo systemctl ...` commands that got typo'd into the shell with stray spaces or redirections. Harmless (not in git, not referenced), but worth `rm` on next visit so `git status` is clean for the next deploy.
 - [x] **`.eslintrc` setup** — done in P10. Added `.eslintrc.json` extending `next/core-web-vitals`, pinned `eslint@^8.57.0` + `eslint-config-next@^14.2.35`. ✓
 
 ---
@@ -116,6 +121,39 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-14 — PGA Championship Round 1 live leaderboard unblocked; .160 confirmed gone
+Greg loaded the league page Thursday morning and got "No Active Tournament" even though PGA Championship Round 1 had teed off. Two root causes, both fixed on .150 today; .160 is fully decommissioned and Fairway runs only on .150 now.
+
+**What was wrong (both confirmed against the live DB on .150):**
+- `getActiveTournament` in `src/lib/db/queries.ts` filtered strictly on `status IN ('active', 'cut_made')`. PGA Championship was sitting at `status='upcoming'` despite start_date being today, because no rankings sync had run on .150 since the .160 → .150 consolidation (the rankings sync is what flips `upcoming` → `active`). Query returned null → page rendered the empty-state.
+- Even after fixing the query, the score sync via `/api/sync-scores` failed with `ESPN leaderboard fetch failed for event 401811947`. ESPN's `/pga/leaderboard?event=` endpoint is currently 404 for this event; only `/pga/scoreboard?event=` returns 200. The seed-golfers fix (commit `61850d9`) only handles the player-roster shape — `fetchLiveLeaderboard` had to be adapted properly because the scoreboard response has different field names AND types (`c.score` is a raw string, not an object; `c.linescores[i].displayValue` is score-to-par, `c.linescores[i].value` is total strokes; per-golfer `c.status` is absent).
+
+**Patches landed today:**
+- `0d075df` — `getActiveTournament` uses time-based filter mirroring `runScoreSync` (`start_date <= now AND end_date >= now - 24h AND status != 'complete'`). The page and the score-sync now agree on what's "active right now" regardless of stored status drift.
+- `f066737` — `fetchLiveLeaderboard` falls back to `/pga/scoreboard?event=` when `/pga/leaderboard?event=` 404s, with a dedicated `normalizeScoreboardCompetitor` that converts the scoreboard shape into `ESPNCompetitor` so `sync.ts` doesn't have to branch. Documented the per-golfer-status limitation (see new P0 entry above — cut-day risk).
+
+**Operational changes (no commit):**
+- Ran `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/sync-scores` on .150 to trigger one manual sync. Result: 156 competitors, currentRound=1, status flipped `upcoming` → `active`.
+- DB state confirmed: Royal Duffers shows Greg @ -1 (rank 1), MJ @ +1 (rank 2). Royal Duffers2 shows Marge @ -1 (rank 1). Top-5 leaders all at -3 (Potgieter / Min Woo Lee / Bhatia / Hisatsune / Jaeger).
+
+**VERIFICATION**
+- npm run lint: not run (no changes that would surface new lint issues; existing baseline of 0 errors / 1 warning unchanged)
+- npm test: 181 / 181 passing (no new tests added for the espn.ts changes — tracked as P2 gap)
+- npx tsc --noEmit: clean
+- npm run build: 24 routes, 0 errors
+- Live end-to-end DB verification: pass (numbers above)
+- Browser end-to-end: PENDING — Greg to load `https://fairway.golf-czar.com/league/royal-duffers` and confirm UI matches the DB numbers above.
+
+**Topology now (replaces the 2026-05-10 deployment entry's two-box topology):**
+- `192.168.1.150` only — nginx + Let's Encrypt + Fairway Next.js (`fairway-fantasy.service`) on port 3000 + Postgres in Docker (`fairway-postgres` container, `127.0.0.1:5434`).
+- `192.168.1.160` decommissioned (no route to host). Migration off .160 was already complete before today; this session just confirmed it and corrected stale .160 references in this file's P0 section.
+
+**Still open after today** (added as their own P0/P2/P3 items above):
+- Install `fairway-rankings.timer` + `fairway-scores.timer` on .150 via `sudo ./infra/systemd/install.sh` — sync is manual-only right now.
+- Per-golfer cut/WD/DQ status when sync uses the scoreboard fallback (risk by Friday afternoon when Round 2 ends).
+- No unit tests for `normalizeScoreboardCompetitor`.
+- Stray typo'd files (`"eep 65"`, `"udo systemctl start fairway-rankings.service"`) in `/opt/fairway-fantasy` working tree.
 
 ### 2026-05-10 — Data plumbing complete: 48 tournaments + 195 golfers + 155 ranked
 End-to-end ESPN + balldontlie integration shipped. Picks page is functional. Currently showing Truist Championship (in final round) as "current event."
