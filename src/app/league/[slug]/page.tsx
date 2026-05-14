@@ -10,6 +10,7 @@ import {
   getSeasonStandings,
   getUpcomingTournaments,
   getPicksForTournament,
+  getScoresForTournament,
 } from '@/lib/db/queries';
 import { formatScore } from '@/lib/scoring';
 import {
@@ -56,18 +57,25 @@ export default async function LeaguePage({ params }: Props) {
     getSeasonStandings(league.id, new Date().getFullYear()),
   ]);
 
-  const [leaderboard, allPicks] = activeTournament
+  const [leaderboard, allPicks, scoresRows] = activeTournament
     ? await Promise.all([
         getFantasyLeaderboard(league.id, activeTournament.id),
         getPicksForTournament(league.id, activeTournament.id),
+        getScoresForTournament(activeTournament.id),
       ])
-    : [[], []];
+    : [[], [], []];
 
   // Build a per-user pick map so the leaderboard rows can render the
   // foursome inline (post-lock) without an extra query per row.
   const picksByUser = new Map<string, any>();
   for (const p of allPicks) picksByUser.set(p.user_id, p);
   const myPick = picksByUser.get(user.id) ?? null;
+
+  // Build a per-golfer scores map so the leaderboard can show each
+  // golfer's status (active / missed_cut / withdrawn / etc.) alongside
+  // their fantasy score from fantasy_results.golfer_N_score.
+  const scoresByGolferId = new Map<string, any>();
+  for (const s of scoresRows) scoresByGolferId.set(s.golfer_id, s);
 
   // ── Derived UI state (pure helpers in @/lib/league-dashboard) ──
   const lock        = deriveLockStatus(activeTournament);
@@ -148,6 +156,7 @@ export default async function LeaguePage({ params }: Props) {
                   myPick={myPick}
                   leaderboard={leaderboard}
                   picksByUser={picksByUser}
+                  scoresByGolferId={scoresByGolferId}
                   revealPicks={revealPicks}
                   currentUserId={user.id}
                   slug={params.slug}
@@ -330,6 +339,7 @@ function ActiveTournamentSection({
   myPick,
   leaderboard,
   picksByUser,
+  scoresByGolferId,
   revealPicks,
   currentUserId,
   slug,
@@ -338,6 +348,7 @@ function ActiveTournamentSection({
   myPick: any;
   leaderboard: any[];
   picksByUser: Map<string, any>;
+  scoresByGolferId: Map<string, any>;
   revealPicks: boolean;
   currentUserId: string;
   slug: string;
@@ -396,43 +407,38 @@ function ActiveTournamentSection({
         </div>
       )}
 
-      {/* Leaderboard */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <table className="lb-table">
-          <thead>
-            <tr>
-              <th style={{ width: 48 }}>#</th>
-              <th>Player</th>
-              <th className="hide-mobile">Golfers</th>
-              <th>Score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaderboard.length === 0 ? (
-              <tr>
-                <td colSpan={4} style={{ textAlign: 'center', padding: '3rem', color: 'var(--slate-mid)' }}>
-                  No picks submitted yet — be the first!
-                </td>
-              </tr>
-            ) : leaderboard.map((r: any, i: number) => {
-              const rowPick = picksByUser.get(r.user_id);
-              const isMe    = r.user_id === currentUserId;
-              // Show foursome inline only after lock OR if it's the current user's own pick.
-              const canReveal = revealPicks || isMe;
-              return (
-                <LeaderboardRow
-                  key={r.user_id}
-                  result={r}
-                  pick={rowPick}
-                  index={i}
-                  isMe={isMe}
-                  reveal={canReveal && !!rowPick}
-                />
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* Leaderboard — always-expanded cards. Each card shows the user's
+          combined fantasy score on top, then their 4 picked golfers
+          below with per-golfer fantasy score (post-rules) + status badge
+          (MC / WD / DQ when applicable). The 3 counting toward the
+          combined score are marked with ✓; the dropped 4th is dimmed. */}
+      {leaderboard.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--slate-mid)' }}>
+          No picks submitted yet — be the first!
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {leaderboard.map((r: any, i: number) => {
+            const rowPick = picksByUser.get(r.user_id);
+            const isMe    = r.user_id === currentUserId;
+            // Pre-lock privacy: hide other players' foursomes. The
+            // leaderboard generally only renders post-lock anyway, but
+            // guard so an unlocked state still respects privacy.
+            const canReveal = revealPicks || isMe;
+            return (
+              <LeaderboardRow
+                key={r.user_id}
+                result={r}
+                pick={rowPick}
+                index={i}
+                isMe={isMe}
+                reveal={canReveal && !!rowPick}
+                scoresByGolferId={scoresByGolferId}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {!revealPicks && leaderboard.length > 0 && (
         <p style={{ marginTop: '0.5rem', fontSize: '0.78rem', color: 'var(--slate-light)', textAlign: 'right' }}>
@@ -444,62 +450,117 @@ function ActiveTournamentSection({
 }
 
 function LeaderboardRow({
-  result, pick, index, isMe, reveal,
+  result, pick, index, isMe, reveal, scoresByGolferId,
 }: {
   result: any;
   pick:   any;
   index:  number;
   isMe:   boolean;
   reveal: boolean;
+  scoresByGolferId: Map<string, any>;
 }) {
-  // The reveal block is a native <details> sitting inside the same
-  // table row's name cell — no JS needed. When `reveal === false` we
-  // show the row but skip the disclosure.
+  const totalClass =
+    result.total_score < 0 ? 'score-under'
+    : result.total_score > 0 ? 'score-over' : 'score-even';
+
+  // counting_golfers is a Postgres int[] of slot indexes (1..4) that
+  // contribute to the user's combined fantasy score. computeLeagueResults
+  // picks the best 3 of 4 per pick after applyFantasyRules.
+  const counting = new Set<number>(result.counting_golfers ?? []);
 
   return (
-    <>
-      <tr className={`rank-${index + 1}`}>
-        <td><span className="rank-num">{result.rank ?? index + 1}</span></td>
-        <td>
-          <strong style={{ fontSize: '0.95rem' }}>{result.profile?.display_name ?? 'Player'}</strong>
-          {isMe && <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: 'var(--brass)' }}>← you</span>}
-          {reveal && pick && (
-            <details style={{ marginTop: '0.35rem' }}>
-              <summary style={{
-                fontSize: '0.72rem', color: 'var(--slate-mid)', cursor: 'pointer',
-                listStyle: 'revert',
-              }}>
-                Show foursome
-              </summary>
-              <div style={{
-                marginTop: '0.4rem', display: 'flex', flexDirection: 'column',
-                gap: '0.25rem', fontSize: '0.78rem',
-              }}>
-                {[pick.golfer_1, pick.golfer_2, pick.golfer_3, pick.golfer_4].map((g: any, gi: number) => g && (
-                  <div key={gi} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <span className={`badge ${gi < 2 ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.58rem' }}>
-                      {gi < 2 ? 'Top' : 'DH'}
-                    </span>
-                    <span style={{ fontWeight: 600, color: 'var(--slate)' }}>{g.name}</span>
-                    <span style={{ color: 'var(--slate-mid)', fontSize: '0.72rem' }}>
-                      {g.owgr_rank ? `#${g.owgr_rank}` : 'Unranked'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </td>
-        <td className="hide-mobile" style={{ fontSize: '0.78rem', color: 'var(--slate-mid)' }}>
-          {result.counting_golfers?.length ? `Top ${result.counting_golfers.length} counting` : '—'}
-        </td>
-        <td style={{ textAlign: 'right' }}>
-          <strong className={result.total_score < 0 ? 'score-under' : result.total_score > 0 ? 'score-over' : 'score-even'}>
-            {formatScore(result.total_score)}
+    <div className={`card lb-card rank-${index + 1}`} style={{
+      padding: '0.9rem 1rem',
+      borderLeft: isMe ? '4px solid var(--brass)' : undefined,
+    }}>
+      {/* Header: rank + name + combined score */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '0.75rem', flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+          <span className="rank-num" style={{ flexShrink: 0 }}>{result.rank ?? index + 1}</span>
+          <strong style={{ fontSize: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {result.profile?.display_name ?? 'Player'}
           </strong>
-        </td>
-      </tr>
-    </>
+          {isMe && <span style={{ fontSize: '0.72rem', color: 'var(--brass)', flexShrink: 0 }}>← you</span>}
+        </div>
+        <strong className={totalClass} style={{ fontSize: '1.15rem', flexShrink: 0 }}>
+          {formatScore(result.total_score)}
+        </strong>
+      </div>
+
+      {/* Foursome list — always visible when reveal permitted */}
+      {reveal && pick && (
+        <div style={{
+          marginTop: '0.6rem',
+          paddingTop: '0.6rem',
+          borderTop: '1px solid var(--cream-dark)',
+          display: 'flex', flexDirection: 'column', gap: '0.3rem',
+        }}>
+          {[1, 2, 3, 4].map(slot => {
+            const g = pick[`golfer_${slot}`];
+            if (!g) return null;
+            const isCounting = counting.has(slot);
+            const fantasy    = result[`golfer_${slot}_score`] as number | null;
+            const scoreRow   = scoresByGolferId.get(g.id);
+            const status     = scoreRow?.status as string | undefined;
+            const isMC       = status === 'missed_cut';
+            const isWD       = status === 'withdrawn';
+            const isDQ       = status === 'disqualified';
+            const fClass =
+              fantasy == null ? 'score-even'
+              : fantasy < 0 ? 'score-under'
+              : fantasy > 0 ? 'score-over' : 'score-even';
+            return (
+              <div key={slot} style={{
+                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                fontSize: '0.85rem',
+                opacity: isCounting ? 1 : 0.5,
+              }}>
+                <span style={{
+                  width: 14, flexShrink: 0, fontSize: '0.85rem',
+                  color: isCounting ? 'var(--green-mid)' : 'var(--slate-light)',
+                }} aria-label={isCounting ? 'counting' : 'dropped'}>
+                  {isCounting ? '✓' : '·'}
+                </span>
+                <span className={`badge ${slot <= 2 ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.58rem', flexShrink: 0 }}>
+                  {slot <= 2 ? 'Top' : 'DH'}
+                </span>
+                <span style={{
+                  fontWeight: 600, color: 'var(--slate)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  flex: '1 1 auto', minWidth: 0,
+                }}>
+                  {g.name}
+                </span>
+                <span style={{ color: 'var(--slate-mid)', fontSize: '0.72rem', flexShrink: 0 }}>
+                  {g.owgr_rank ? `#${g.owgr_rank}` : 'Unranked'}
+                </span>
+                {(isMC || isWD || isDQ) && (
+                  <span
+                    className="badge"
+                    style={{
+                      fontSize: '0.58rem',
+                      flexShrink: 0,
+                      background: '#fef3c7',  // matches --brass-pale
+                      color: '#92400e',
+                      border: '1px solid #fcd34d',
+                    }}
+                    title={isMC ? 'Missed cut' : isWD ? 'Withdrew' : 'Disqualified'}
+                  >
+                    {isMC ? 'MC' : isWD ? 'WD' : 'DQ'}
+                  </span>
+                )}
+                <strong className={fClass} style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                  {fantasy == null ? '—' : formatScore(fantasy)}
+                </strong>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
