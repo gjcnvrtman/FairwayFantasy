@@ -15,7 +15,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [x] **`fetchLiveLeaderboard` in `src/lib/espn.ts` has the SAME bugs as the old `seed-golfers.ts`** — shipped 2026-05-14 in commit `f066737`. `fetchLiveLeaderboard` now falls back to `/pga/scoreboard?event=` when leaderboard 404s, with a `normalizeScoreboardCompetitor` helper that maps the shape differences (`athlete.displayName`, score as raw string, linescores `displayValue`, missing per-golfer status). Verified by triggering a manual sync against PGA Championship event 401811947 — 156 competitors processed, status flipped to `active`, fantasy_results rows populated for all 3 leagues. ✓ See Done 2026-05-14.
 
 ### Truist Championship still marked 'active' after final round ended
-- [ ] On Sunday May 10 the Truist Championship final round ended but its status stayed `active` in the DB. The picks page was showing it as "next event" Monday morning. Greg pulled the self-healing fix (commit `65f78f9`) which adds status maintenance to the rankings sync route, but the rankings.service start failed (race with fairway-fantasy restart). Resume on next session: retry `sudo systemctl start fairway-rankings.service` after confirming Fairway is up; the new rankings route flips stale `upcoming`/`active` rows to `complete` when their end_date has passed. Alternative quick fix: direct SQL `UPDATE tournaments SET status='complete' WHERE end_date < NOW() AND status != 'complete';`
+- [x] On Sunday May 10 the Truist Championship final round ended but its status stayed `active` in the DB. Resolved 2026-05-14 by three things compounding: (a) Truist row was already manually flipped to `complete` in the DB by the time we revisited; (b) the page is now time-based (`getActiveTournament` commit `0d075df`) so stored status drift doesn't affect rendering; (c) the rankings sync route's status maintenance (commit `65f78f9`) now runs weekly via the freshly-installed `fairway-rankings.timer` — first manual fire reported `statusFixes:0` confirming no stale rows remain. ✓
 
 ### Cert reissue replaced the SAN list — golf-czar.com broken in browser (CERT_COMMON_NAME_INVALID)
 - [ ] Running certbot for fairway.golf-czar.com on .150 today **replaced** the existing golf-czar.com cert (which had golf-czar.com / league / weekend) with one whose only SAN entry is fairway.golf-czar.com. Every non-fairway *.golf-czar.com hostname is now serving the wrong cert. Recovery is one command on .150:
@@ -29,17 +29,8 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ### Runbook hygiene
 - [x] Add to DEPLOYMENT.md: **when modifying a SAN cert, always include every existing domain in the `-d` list, OR use `--expand`.** Shipped 2026-05-14 as DEPLOYMENT.md §7 — covers pre-flight `sudo certbot certificates`, post-check `openssl x509 -ext subjectAltName`, and the two correct forms (`-d ... -d ...` explicit, or `--expand`). ✓
 
-### ESPN data + sync timers (action: run install.sh on .150)
-- [ ] **Install + run the ESPN sync timers.** Unit files + helper script shipped at `infra/systemd/`. **As of 2026-05-14 only `fairway-fantasy.service` is loaded on .150 — neither `fairway-rankings.timer` nor `fairway-scores.timer` exists**, so every score update has been manual since the .160 → .150 consolidation. One command on .150:
-  ```bash
-  cd /opt/fairway-fantasy
-  git pull origin main
-  sudo ./infra/systemd/install.sh --populate
-  ```
-  - `--populate` runs the rankings sync once immediately to fill the empty DB (~200 golfers + ~40 tournaments). On .150 today both tables are already populated — safe to run, but `--populate` becomes a no-op refresh rather than a first-time fill.
-  - Without `--populate` it just installs the timers; you can populate later with `sudo systemctl start fairway-rankings.service`.
-  - Timers installed: `fairway-rankings.timer` (Mondays 06:00 — keeps OWGR + schedule current) + `fairway-scores.timer` (every 10 min Thu–Sun — pulls live scores during play).
-  - Verify after install: `systemctl list-timers fairway-*` and `sudo docker exec fairway-postgres psql -U fairway -d fairway -c 'SELECT COUNT(*) FROM golfers'` (DB is in Docker on .150 now, not bare-metal).
+### ESPN data + sync timers — installed on .150
+- [x] **Installed 2026-05-14.** `sudo ./infra/systemd/install.sh` (no `--populate` — DB was already populated) copied the 4 unit files to `/etc/systemd/system/`, daemon-reloaded, and `enable --now`-ed both timers. Validated end-to-end: manual `fairway-rankings.service` run reported `fetched:200, updated:169, errors:0, tournaments:48, statusFixes:0`; manual `fairway-scores.service` run reported `{competitors:156, currentRound:1, status:'active'}` and refreshed `fantasy_results.updated_at`. `systemctl list-timers fairway-*` confirms `fairway-rankings.timer` next fires Mon 06:00 and `fairway-scores.timer` next fires every 10 min on Thu-Sun 06-23. ✓
 - [x] **Bug fix bundled in:** runScoreSync now queries by `start_date <= now AND end_date >= now-1d AND status != 'complete'` instead of the previous `status IN ('active', 'cut_made')`. The old version had a chicken-and-egg bug: rankings sync inserts new tournaments with default status `upcoming`, but nothing flipped them to `active` when start_date arrived, so the score sync skipped them forever. Now any tournament whose start_date has passed gets a sync; syncTournament() updates the status field from ESPN's response.
 
 ### Per-golfer status missing when scoreboard fallback used (cut-day risk for PGA Championship)
@@ -53,15 +44,16 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
   - Email verification non-blocking — anyone can register with someone else's email.
 
 ### Backups
-- [ ] **Daily `pg_dump` cron + off-machine copy** — no automated backup. The moment real picks land, the data is irreplaceable. One-line cron ships ~5 minutes of work.
+- [x] **Daily `pg_dump` cron — local rotation.** Shipped 2026-05-14. `scripts/backup-db.sh` (committed) dumps the Postgres container, gzips, retains 7 days under `/opt/fairway-fantasy/backups/`. Greg's crontab entry `30 23 * * * /opt/fairway-fantasy/scripts/backup-db.sh >> ... 2>&1`. Validated by running once manually: wrote a 26 KB gzipped dump, rotation logic ran with zero deletes (no old files yet). ✓
+- [ ] **Off-machine backup copy still pending.** The 2026-05-14 backup script only writes to `.150` itself — if the disk dies, the dumps go with it. With `.160` decommissioned there's no obvious mirror box. Options: (a) rsync to the DayTrader box's `/var/backups/` if disk space permits (same hardware risk, different filesystem), (b) push to a cloud bucket (S3/B2/Wasabi), or (c) borg/restic to a second disk on `.150`. Pick one before the picks pool gets big enough that recovery would hurt.
 
 ### Security
 - [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — fixed in P8. New `/api/admin/sync-scores` endpoint is commissioner-authed via session cookie (no shared secret). Sync engine extracted to `src/lib/sync.ts`; the cron-secret-authed `/api/sync-scores` still exists for the systemd timer but no client code references it. ✓
 - [x] **Server Component onClick at `src/app/league/[slug]/page.tsx:267`** *(P1 #4.9, B-series #B4)* — fixed in P7. Extracted to `<InviteCard>` client component with proper `'use client'` + `navigator.clipboard.writeText` + `execCommand('copy')` fallback for non-HTTPS LAN. ✓
 
 ### Correctness
-- [ ] **Season standings cross-tournament/season bleed** *(P1 #3.3)* — `src/app/api/sync-scores/route.ts:112-129` `recomputeResults` updates `season_standings` from `from('fantasy_results').select(...)` with NO `tournament_id`/`season` filter. Pulls ALL rows globally, so standings accumulate across seasons. Add the proper filters before the next score sync runs.
-- [ ] **`best_finish = 999` garbage initialization** *(P1 #3.4)* — `sync-scores/route.ts:120`: initial branch sets `e.best = r.rank ?? 999` but the later branch only updates `best` when `r.rank` is truthy, so 999 sticks for any user whose first row has null rank.
+- [x] **Season standings cross-tournament/season bleed** *(P1 #3.3)* — Fixed 2026-05-14 in commit `3a8595d`. `recomputeResults` (which now lives in `src/lib/sync.ts`, not the old `sync-scores/route.ts` path) joins `fantasy_results` against `tournaments` and filters by `tournaments.season = t.season`, so each season's standings only fold in that season's rows. ✓
+- [x] **`best_finish = 999` garbage initialization** *(P1 #3.4)* — Fixed 2026-05-14 in commit `3a8595d`. The map's `best` field is now typed `number | null` with `null` as the initial sentinel; the update branch only mutates when `r.rank` is non-null, and `e.best = e.best == null ? r.rank : Math.min(e.best, r.rank)` handles the first-real-rank case. Persists as NULL in `season_standings.best_finish` (which is nullable per schema). ✓
 - [ ] **Unique-foursome rule is app-only, not DB-backed** *(P1 #3.2 / P5 risks)* — `src/lib/scoring.ts:validatePick` rejects identical foursomes, but the schema's only constraint is `UNIQUE(league_id, tournament_id, user_id)`. Two users submitting identical 4-tuples concurrently both pass validation and both insert. Fix: deferred-uniqueness via a sorted-tuple hash column with `UNIQUE`, or wrap pick-insertion in a serializable transaction.
 
 ---
@@ -121,6 +113,29 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 ## Done
 
 (Newest first.)
+
+### 2026-05-14 — P0 cleanup: timers installed, backups wired, season-standings fixes, runbook hygiene
+Second pass of the day after the leaderboard fixes. Batched Batch A (code fixes + docs) + Batch B (infrastructure on .150).
+
+**Code (`3a8595d`)** — three correctness fixes in `src/lib/sync.ts` + one doc add:
+- Season-standings cross-season bleed fixed: `recomputeResults` joins `fantasy_results` against `tournaments` and filters by `tournaments.season = t.season`. Each season's standings only fold in that season's rows. (P0 #3.3)
+- `best_finish = 999` sticky-sentinel fixed: map field typed `number | null` with `null` as initial sentinel; min-comparison handles first-real-rank case correctly. Stores as NULL in `season_standings.best_finish`. (P0 #3.4)
+- DEPLOYMENT.md gains §7 "TLS / certbot hygiene" — the `--cert-name X -d Y` form is a replace, not an add; documents the `--expand` alternative and the pre-flight/post-check rules. Surfaces the lesson from this week's `golf-czar.com` SAN clobber.
+
+**Backup script (`ce18d6c`)** — `scripts/backup-db.sh` dumps the Fairway Postgres container, gzips, retains 7 days. Local socket inside the container has trust auth for the fairway user, so no password handling. Logs to `/opt/fairway-fantasy/logs/backup.log`.
+
+**Infrastructure on .150 (no commit, ssh-side):**
+- `sudo ./infra/systemd/install.sh` ran cleanly. 4 unit files installed under `/etc/systemd/system/`, both timers `enable --now`-ed. Manual rankings.service fire reported `{fetched:200, updated:169, errors:0, tournaments:48, statusFixes:0}` — confirms the rankings endpoint works AND that there are no stale-active tournaments. Manual scores.service fire reported `{competitors:156, currentRound:1, status:'active'}` and refreshed `fantasy_results.updated_at`. Next scheduled fires: rankings Mon 2026-05-18 06:00, scores every 10 min Thu–Sun 06–23.
+- `crontab -l | tail` shows new entry: `30 23 * * * /opt/fairway-fantasy/scripts/backup-db.sh >> ... 2>&1`. Test run wrote a 26 KB gzipped dump. Staggered 30 min after the existing DayTrader backup at 23:00.
+
+**Side effects (good):**
+- The Truist 'active' P0 (TODO line 17) is now retroactively addressed — the row in DB is already `complete`, the weekly rankings sync will keep status maintenance running, and the page is also time-based regardless. Statusfixes:0 from the manual rankings fire confirms no stale rows remain.
+
+**Still open:**
+- **Off-machine backup target** — the local-only retention is fine for disk-level recovery but won't survive a `.150` total loss. New TODO P0 entry tracks options (rsync to DayTrader box, cloud bucket, or borg/restic to a second disk).
+- **Cert recovery on .150** — `certbot --nginx --cert-name golf-czar.com --force-renewal -d golf-czar.com -d league -d weekend -d fairway`. Greg paused intentionally to do golf-czar work first. Untouched today.
+- **Public signup hardening** (4 sub-items) and **unique-foursome DB constraint** — deferred to focused sessions; too big to batch.
+- **Per-golfer cut-day status detection** — needs Friday's actual data to validate, deferred to Friday afternoon.
 
 ### 2026-05-14 — PGA Championship Round 1 live leaderboard unblocked; .160 confirmed gone
 Greg loaded the league page Thursday morning and got "No Active Tournament" even though PGA Championship Round 1 had teed off. Two root causes, both fixed on .150 today; .160 is fully decommissioned and Fairway runs only on .150 now.
