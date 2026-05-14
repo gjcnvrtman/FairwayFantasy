@@ -143,7 +143,10 @@ Greg loaded the league page Thursday morning and got "No Active Tournament" even
 - npx tsc --noEmit: clean
 - npm run build: 24 routes, 0 errors
 - Live end-to-end DB verification: pass (numbers above)
-- Browser end-to-end: PENDING — Greg to load `https://fairway.golf-czar.com/league/royal-duffers` and confirm UI matches the DB numbers above.
+- Browser end-to-end: PASS — Greg loaded the page and confirmed both (1) PGA Championship rendering as active and (2) the new per-golfer card layout (commit `1c839ba` below) matching expectations.
+
+**Bonus shipped same session — leaderboard card layout (`1c839ba`):**
+Greg asked for per-golfer scores visible with combined score on top. Replaced the table-row leaderboard with an always-expanded card per user: rank + name + combined fantasy score in the header, then the 4 golfers below with per-golfer fantasy score (from `fantasy_results.golfer_N_score`), OWGR rank, and Top/DH tier badge. Counting-3 marked with ✓; dropped 4th dimmed to 50%. Missed-cut / WD / DQ golfers tagged with a yellow MC/WD/DQ badge sourced from `scores.status`. The cut-rule itself was left as `cut_score + 1` per Greg's decision — UI changes only. MC badge code path is shipped but not exercised by today's data (Round 1 still live, no cut made yet); will see its first real test Friday evening.
 
 **Topology now (replaces the 2026-05-10 deployment entry's two-box topology):**
 - `192.168.1.150` only — nginx + Let's Encrypt + Fairway Next.js (`fairway-fantasy.service`) on port 3000 + Postgres in Docker (`fairway-postgres` container, `127.0.0.1:5434`).
