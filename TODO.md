@@ -18,13 +18,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 - [x] On Sunday May 10 the Truist Championship final round ended but its status stayed `active` in the DB. Resolved 2026-05-14 by three things compounding: (a) Truist row was already manually flipped to `complete` in the DB by the time we revisited; (b) the page is now time-based (`getActiveTournament` commit `0d075df`) so stored status drift doesn't affect rendering; (c) the rankings sync route's status maintenance (commit `65f78f9`) now runs weekly via the freshly-installed `fairway-rankings.timer` — first manual fire reported `statusFixes:0` confirming no stale rows remain. ✓
 
 ### Cert reissue replaced the SAN list — golf-czar.com broken in browser (CERT_COMMON_NAME_INVALID)
-- [ ] Running certbot for fairway.golf-czar.com on .150 today **replaced** the existing golf-czar.com cert (which had golf-czar.com / league / weekend) with one whose only SAN entry is fairway.golf-czar.com. Every non-fairway *.golf-czar.com hostname is now serving the wrong cert. Recovery is one command on .150:
-  ```bash
-  sudo certbot --nginx --cert-name golf-czar.com --force-renewal \
-    -d golf-czar.com -d league.golf-czar.com \
-    -d weekend.golf-czar.com -d fairway.golf-czar.com
-  ```
-  Greg paused before running this to switch to golf-czar work. **Run on .150 before resuming Fairway testing.** (Note: .160 is now decommissioned — no rsync target. Fairway runs entirely on .150 as of the consolidation captured in Done.)
+- [x] Recovered 2026-05-14. Greg ran the certbot reissue on .150. Verified: `sudo certbot certificates --cert-name golf-czar.com` shows all four SAN entries restored — `golf-czar.com`, `fairway.golf-czar.com`, `league.golf-czar.com`, `weekend.golf-czar.com` — expiring 2026-08-09 (86 days valid). `openssl x509 -ext subjectAltName` on the live cert confirms the same list. Future-proofing landed same day as DEPLOYMENT.md §7 (TLS / certbot hygiene). ✓
 
 ### Runbook hygiene
 - [x] Add to DEPLOYMENT.md: **when modifying a SAN cert, always include every existing domain in the `-d` list, OR use `--expand`.** Shipped 2026-05-14 as DEPLOYMENT.md §7 — covers pre-flight `sudo certbot certificates`, post-check `openssl x509 -ext subjectAltName`, and the two correct forms (`-d ... -d ...` explicit, or `--expand`). ✓
