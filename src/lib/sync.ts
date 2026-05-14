@@ -230,7 +230,11 @@ async function recomputeResults(tournamentId: string) {
     }
   }
 
-  // Update season standings
+  // Update season standings — scoped to the tournament's own season
+  // (bug #3.3 fix). Previously selectFrom('fantasy_results') with no
+  // filter pulled every row across every tournament and season, so
+  // standings accumulated forever. Join via tournaments and filter on
+  // season=t.season to get just this season's contributions.
   const t = await db.selectFrom('tournaments')
     .select('season')
     .where('id', '=', tournamentId)
@@ -238,17 +242,23 @@ async function recomputeResults(tournamentId: string) {
   if (!t) return;
 
   const results = await db.selectFrom('fantasy_results')
-    .select(['league_id', 'user_id', 'total_score', 'rank'])
+    .innerJoin('tournaments', 'tournaments.id', 'fantasy_results.tournament_id')
+    .select([
+      'fantasy_results.league_id',
+      'fantasy_results.user_id',
+      'fantasy_results.total_score',
+      'fantasy_results.rank',
+    ])
+    .where('tournaments.season', '=', t.season)
     .execute();
 
-  // NOTE: bug #3.3 — this aggregator pulls EVERY fantasy_results row
-  // across ALL tournaments and seasons, then folds them into one
-  // standings row per (league, user). For correctness we should
-  // filter by season=t.season here (joined via tournaments) — left
-  // intact during P2 since the bug is tracked separately in TODO P0.
+  // best_finish starts as null instead of 999 sentinel (bug #3.4):
+  // the old code initialized to 999 when r.rank was null, then only
+  // updated when a later row had a rank — so a user whose first row
+  // had null rank kept best_finish=999 forever.
   const map = new Map<string, {
     league_id: string; user_id: string;
-    total: number; count: number; best: number;
+    total: number; count: number; best: number | null;
   }>();
   for (const r of results) {
     const k = `${r.league_id}:${r.user_id}`;
@@ -256,12 +266,14 @@ async function recomputeResults(tournamentId: string) {
     if (e) {
       e.total += r.total_score ?? 0;
       e.count++;
-      if (r.rank) e.best = Math.min(e.best, r.rank);
+      if (r.rank != null) {
+        e.best = e.best == null ? r.rank : Math.min(e.best, r.rank);
+      }
     } else {
       map.set(k, {
         league_id: r.league_id, user_id: r.user_id,
         total: r.total_score ?? 0, count: 1,
-        best: r.rank ?? 999,                     // bug #3.4
+        best: r.rank ?? null,
       });
     }
   }

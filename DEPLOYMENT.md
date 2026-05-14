@@ -526,7 +526,54 @@ role keys leaking via permissive perms is a real risk.
 
 ---
 
-## 7. Recommended next PRs (priority order)
+## 7. TLS / certbot hygiene (avoid clobbering a SAN cert)
+
+`fairway.golf-czar.com` is one of several names on a shared SAN cert
+(`golf-czar.com`, `league.golf-czar.com`, `weekend.golf-czar.com`,
+`fairway.golf-czar.com`). When you reissue or expand it, modern
+certbot's `--cert-name X -d Y` form is a **replace**, not an add —
+running
+
+```bash
+sudo certbot --nginx --cert-name golf-czar.com -d fairway.golf-czar.com
+```
+
+will hand you back a cert whose ONLY SAN entry is
+`fairway.golf-czar.com`. Every other hostname on that cert starts
+serving `CERT_COMMON_NAME_INVALID` in browsers immediately. This bit
+us in May 2026.
+
+**Rule:** when modifying a SAN cert, either
+
+- **Include every existing domain in the `-d` list** —
+  ```bash
+  sudo certbot --nginx --cert-name golf-czar.com --force-renewal \
+    -d golf-czar.com -d league.golf-czar.com \
+    -d weekend.golf-czar.com -d fairway.golf-czar.com
+  ```
+
+- **Or use `--expand`** — appends to the existing SAN set instead of
+  replacing it. Safer when you don't have the full list in your head.
+
+**Pre-flight (always):**
+
+```bash
+sudo certbot certificates                  # See current SAN entries
+```
+
+**Post-check (always):**
+
+```bash
+sudo openssl x509 -in /etc/letsencrypt/live/<cert-name>/fullchain.pem \
+  -noout -ext subjectAltName
+```
+
+The post-check is the only thing that catches a silent replace before
+your users do.
+
+---
+
+## 8. Recommended next PRs (priority order)
 
 These are the highest-leverage follow-ups based on what surfaced
 during this review:
@@ -553,7 +600,7 @@ during this review:
 
 ---
 
-## 8. Quick verification — run this exact sequence
+## 9. Quick verification — run this exact sequence
 
 ```bash
 cd /opt/fairway-fantasy
