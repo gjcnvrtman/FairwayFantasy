@@ -38,9 +38,19 @@ export async function getLeagueMembers(leagueId: string) {
 // ── tournaments ──────────────────────────────────────────────
 
 export async function getActiveTournament() {
+  // Time-based, not status-based. The rankings sync was supposed to flip
+  // `upcoming` → `active` when start_date arrived, but if that timer
+  // hasn't run (or hasn't run yet today), the row is still `upcoming`
+  // even when play is live. Mirrors the filter `runScoreSync` already
+  // uses (`src/lib/sync.ts:60`) so the two helpers agree on what
+  // "active right now" means regardless of stored status drift.
+  const now       = new Date();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   return await db.selectFrom('tournaments')
     .selectAll()
-    .where('status', 'in', ['active', 'cut_made'])
+    .where('start_date', '<=', now.toISOString())
+    .where('end_date',   '>=', oneDayAgo.toISOString())
+    .where('status', '!=', 'complete')
     .orderBy('start_date', 'asc')
     .limit(1)
     .executeTakeFirst() ?? null;
