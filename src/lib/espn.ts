@@ -36,31 +36,105 @@ function isMajor(name: string): boolean {
 }
 
 // ── Live Leaderboard ─────────────────────────────────────────
+// As of May 2026 ESPN's /pga/leaderboard endpoint returns 404 for some
+// events that ARE live (confirmed against PGA Championship event
+// 401811947 on the morning of Round 1). The /pga/scoreboard endpoint
+// returns 200 with the same event but a DIFFERENT competitor shape:
+//
+//   leaderboard:  c.displayName, c.score.displayValue, c.linescores[i].value (score-to-par)
+//   scoreboard:   c.athlete.displayName, c.score (raw string), c.linescores[i].displayValue
+//
+// Plus scoreboard doesn't provide per-golfer status (missed_cut / WD /
+// DQ) — that field is absent. We default normalized competitors from
+// scoreboard to status='active'. Fine for Round 1-2 active play; if
+// the leaderboard endpoint is still 404 on cut day, status detection
+// will need a different signal.
 export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
   competitors: ESPNCompetitor[];
   cutScore: number | null;
   status: string;
   currentRound: number;
 }> {
-  const res = await fetch(
-    `${ESPN_WEB}/pga/leaderboard?event=${espnEventId}`,
-    { cache: 'no-store' } as RequestInit // always fresh during tournament
-  );
+  const candidates: Array<{ url: string; shape: 'leaderboard' | 'scoreboard' }> = [
+    { url: `${ESPN_WEB}/pga/leaderboard?event=${espnEventId}`, shape: 'leaderboard' },
+    { url: `${ESPN_BASE}/pga/scoreboard?event=${espnEventId}`, shape: 'scoreboard' },
+  ];
 
-  if (!res.ok) throw new Error(`ESPN leaderboard fetch failed for event ${espnEventId}`);
-  const data: ESPNLeaderboard = await res.json();
+  let data: any = null;
+  let usedShape: 'leaderboard' | 'scoreboard' = 'leaderboard';
+  for (const { url, shape } of candidates) {
+    const res = await fetch(url, { cache: 'no-store' } as RequestInit);
+    if (res.ok) {
+      data = await res.json();
+      usedShape = shape;
+      break;
+    }
+  }
+  if (!data) {
+    throw new Error(`ESPN leaderboard+scoreboard both failed for event ${espnEventId}`);
+  }
 
   const competition = data.events?.[0]?.competitions?.[0];
   if (!competition) return { competitors: [], cutScore: null, status: 'unknown', currentRound: 0 };
 
-  // Parse cut score from ESPN's situation object
+  const rawCompetitors = competition.competitors ?? [];
+  const competitors: ESPNCompetitor[] = usedShape === 'scoreboard'
+    ? rawCompetitors
+        .map(normalizeScoreboardCompetitor)
+        .filter((c: ESPNCompetitor | null): c is ESPNCompetitor => c !== null)
+    : rawCompetitors;
+
   const cutRaw = competition.situation?.cutLine?.value ?? null;
 
   return {
-    competitors:  competition.competitors ?? [],
+    competitors,
     cutScore:     cutRaw !== null ? Math.round(cutRaw) : null,
-    status:       competition.status.type.name,
-    currentRound: competition.status.period,
+    status:       competition.status?.type?.name ?? 'unknown',
+    currentRound: competition.status?.period ?? 0,
+  };
+}
+
+// Convert a /pga/scoreboard competitor into an ESPNCompetitor so the
+// rest of the pipeline (`sync.ts`) doesn't have to branch on shape.
+// Returns null if the row lacks a name we can match against `golfers`.
+function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
+  const name = c?.athlete?.displayName ?? c?.athlete?.fullName ?? c?.displayName;
+  if (!name) return null;
+
+  // Scoreboard's `c.score` is the raw display string ("-3"); leaderboard
+  // wraps it as `{displayValue, value}`. Unify to the wrapped shape.
+  const rawScore = typeof c.score === 'string'
+    ? c.score
+    : (c.score?.displayValue ?? 'E');
+
+  // Per-round line scores: scoreboard puts the round's score-to-par in
+  // `displayValue` ("-3") and the total strokes in `value` (67).
+  // Historical leaderboard shape used `value` for score-to-par directly.
+  // We normalize so `value` carries the integer score-to-par, matching
+  // what `sync.ts` writes into the `scores.round_N` INT columns. Drop
+  // entries that have neither field (un-played future rounds) so they
+  // store as NULL via `rounds[i] ?? null` downstream.
+  const linescores = (c.linescores ?? [])
+    .filter((ls: any) => ls?.value !== undefined || ls?.displayValue !== undefined)
+    .map((ls: any) => {
+      const sp = ls.displayValue !== undefined
+        ? parseESPNScore(ls.displayValue)
+        : (ls.value as number);
+      return { value: sp, displayValue: ls.displayValue ?? String(sp) };
+    });
+
+  return {
+    id:          String(c.id),
+    displayName: name,
+    shortName:   c.athlete?.shortName ?? name,
+    headshot:    c.athlete?.headshot ?? c.headshot ?? undefined,
+    status:      c.status ?? { type: { name: 'active' }, thru: 0, currentRound: 0 },
+    score:       { displayValue: rawScore, value: parseESPNScore(rawScore) },
+    linescores,
+    statistics:  [],
+    sortOrder:   typeof c.sortOrder === 'number'
+      ? c.sortOrder
+      : typeof c.order === 'number' ? c.order : 0,
   };
 }
 
