@@ -128,18 +128,52 @@ CREATE TABLE golfers (
 -- PICKS
 -- ============================================================
 CREATE TABLE picks (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  league_id       UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
-  tournament_id   UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-  user_id         UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  golfer_1_id     UUID REFERENCES golfers(id),   -- Top tier
-  golfer_2_id     UUID REFERENCES golfers(id),   -- Top tier
-  golfer_3_id     UUID REFERENCES golfers(id),   -- Dark horse
-  golfer_4_id     UUID REFERENCES golfers(id),   -- Dark horse
-  is_locked       BOOLEAN DEFAULT FALSE,
-  submitted_at    TIMESTAMPTZ DEFAULT NOW(),
+  id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  league_id          UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  tournament_id      UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id            UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  golfer_1_id        UUID REFERENCES golfers(id),   -- Top tier
+  golfer_2_id        UUID REFERENCES golfers(id),   -- Top tier
+  golfer_3_id        UUID REFERENCES golfers(id),   -- Dark horse
+  golfer_4_id        UUID REFERENCES golfers(id),   -- Dark horse
+  -- Sorted-tuple hash for DB-backed uniqueness (P0 #3.2). Maintained
+  -- by trigger below; do not write directly. The partial unique
+  -- index further down enforces "no two users in the same league
+  -- can submit the same 4 golfers" even under concurrent inserts.
+  golfer_tuple_hash  TEXT,
+  is_locked          BOOLEAN DEFAULT FALSE,
+  submitted_at       TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(league_id, tournament_id, user_id)
 );
+
+-- Recompute golfer_tuple_hash on insert and whenever one of the
+-- golfer_N_id columns changes. Sorts the 4 IDs by their text repr
+-- so the hash is order-independent.
+CREATE OR REPLACE FUNCTION picks_compute_tuple_hash() RETURNS trigger AS $picks_hash$
+BEGIN
+  NEW.golfer_tuple_hash := (
+    SELECT string_agg(g::text, '|' ORDER BY g)
+    FROM unnest(ARRAY[NEW.golfer_1_id, NEW.golfer_2_id,
+                      NEW.golfer_3_id, NEW.golfer_4_id]) AS g
+  );
+  RETURN NEW;
+END;
+$picks_hash$ LANGUAGE plpgsql;
+
+CREATE TRIGGER picks_tuple_hash_trigger
+  BEFORE INSERT OR UPDATE OF golfer_1_id, golfer_2_id, golfer_3_id, golfer_4_id
+  ON picks
+  FOR EACH ROW
+  EXECUTE FUNCTION picks_compute_tuple_hash();
+
+-- Partial UNIQUE index — only enforced when all 4 golfers are
+-- non-null, so in-progress / partial picks don't collide.
+CREATE UNIQUE INDEX picks_unique_complete_foursome
+  ON picks (league_id, tournament_id, golfer_tuple_hash)
+  WHERE golfer_1_id IS NOT NULL
+    AND golfer_2_id IS NOT NULL
+    AND golfer_3_id IS NOT NULL
+    AND golfer_4_id IS NOT NULL;
 
 -- ============================================================
 -- SCORES

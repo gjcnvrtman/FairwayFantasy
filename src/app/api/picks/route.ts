@@ -81,10 +81,19 @@ export async function POST(req: NextRequest) {
       .executeTakeFirstOrThrow();
     return NextResponse.json({ pick, success: true });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
-      { status: 500 },
-    );
+    // The partial unique index `picks_unique_complete_foursome`
+    // closes the race window where two users in the same league
+    // submit identical foursomes concurrently. App-level
+    // `validatePick` catches the common case; this 409 handles the
+    // narrow race where both POSTs slip past validation.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('picks_unique_complete_foursome')) {
+      return NextResponse.json(
+        { error: 'Another player in your league already submitted that exact foursome. Pick a different combination.' },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 

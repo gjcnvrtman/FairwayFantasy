@@ -114,17 +114,22 @@ export interface GolfersTable {
 }
 
 // ── picks ────────────────────────────────────────────────────
+// `golfer_tuple_hash` is maintained by a BEFORE INSERT/UPDATE trigger
+// (see infra/postgres/init/00-schema.sql) — selectable but app code
+// must never write it, hence ColumnType<..., never, never> (same
+// pattern as golfers.is_dark_horse).
 export interface PicksTable {
-  id:            Generated<string>;
-  league_id:     string;
-  tournament_id: string;
-  user_id:       string;
-  golfer_1_id:   string | null;
-  golfer_2_id:   string | null;
-  golfer_3_id:   string | null;
-  golfer_4_id:   string | null;
-  is_locked:     Generated<boolean>;
-  submitted_at:  Generated<Timestamp>;
+  id:                 Generated<string>;
+  league_id:          string;
+  tournament_id:      string;
+  user_id:            string;
+  golfer_1_id:        string | null;
+  golfer_2_id:        string | null;
+  golfer_3_id:        string | null;
+  golfer_4_id:        string | null;
+  golfer_tuple_hash:  ColumnType<string | null, never, never>;
+  is_locked:          Generated<boolean>;
+  submitted_at:       Generated<Timestamp>;
 }
 
 // ── scores ───────────────────────────────────────────────────
