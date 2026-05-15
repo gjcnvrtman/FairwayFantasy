@@ -24,12 +24,14 @@ interface Member {
 }
 
 interface Tournament {
-  id:         string;
-  name:       string;
-  type:       'regular' | 'major';
-  start_date: string;
-  status:     'upcoming' | 'active' | 'cut_made' | 'complete';
-  cut_score:  number | null;
+  id:                      string;
+  name:                    string;
+  type:                    'regular' | 'major';
+  start_date:              string;
+  status:                  'upcoming' | 'active' | 'cut_made' | 'complete';
+  cut_score:               number | null;
+  pick_deadline:           string | null;
+  pick_deadline_override:  string | null;
 }
 
 interface Props {
@@ -137,6 +139,49 @@ export default function AdminPanel({
       setRegenErr(err instanceof Error ? err.message : String(err));
     } finally {
       setRegenWorking(false);
+    }
+  }
+
+  // ── Pick-deadline override handlers ───────────────────────
+  // Keyed by tournament id so multiple rows can edit independently.
+  const [deadlineInputs,  setDeadlineInputs]  = useState<Record<string, string>>({});
+  const [deadlineBusy,    setDeadlineBusy]    = useState<string | null>(null);
+  const [deadlineMsg,     setDeadlineMsg]     = useState<Record<string, string>>({});
+  const [deadlineErr,     setDeadlineErr]     = useState<Record<string, string>>({});
+
+  async function savePickDeadline(tournamentId: string, deadlineIso: string | null) {
+    setDeadlineBusy(tournamentId);
+    setDeadlineMsg(prev => ({ ...prev, [tournamentId]: '' }));
+    setDeadlineErr(prev => ({ ...prev, [tournamentId]: '' }));
+    try {
+      const res = await fetch('/api/admin/pick-deadline', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          slug:         league.slug,
+          tournamentId,
+          deadline:     deadlineIso,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDeadlineErr(prev => ({ ...prev, [tournamentId]: data.error ?? `Failed (HTTP ${res.status})` }));
+        return;
+      }
+      setDeadlineMsg(prev => ({
+        ...prev,
+        [tournamentId]: deadlineIso
+          ? `Override set → ${new Date(deadlineIso).toLocaleString()}`
+          : 'Override cleared — using default deadline',
+      }));
+      router.refresh();
+    } catch (err) {
+      setDeadlineErr(prev => ({
+        ...prev,
+        [tournamentId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setDeadlineBusy(null);
     }
   }
 
@@ -350,6 +395,123 @@ export default function AdminPanel({
         </table>
       </section>
 
+      {/* ── Pick-deadline overrides ─────────────────────────── */}
+      <section className="card" aria-labelledby="deadlines-h">
+        <h2 id="deadlines-h" style={{
+          fontFamily: "'Playfair Display', serif",
+          fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.4rem',
+        }}>
+          Pick Deadlines
+        </h2>
+        <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+          The auto-computed deadline (start date − 1h) is often wrong vs the real first
+          tee time. Override per tournament here — empty input + Save clears the override.
+          Affects all leagues.
+        </p>
+
+        {(() => {
+          const upcoming = tournaments.filter(t => t.status === 'upcoming');
+          if (upcoming.length === 0) {
+            return (
+              <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', fontStyle: 'italic' }}>
+                No upcoming tournaments — nothing to override.
+              </p>
+            );
+          }
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {upcoming.map(t => {
+                // Render the value as a local datetime-input string. The
+                // `<input type="datetime-local">` element wants
+                // 'YYYY-MM-DDTHH:MM' in the browser's local time.
+                const currentOverride = t.pick_deadline_override
+                  ? new Date(t.pick_deadline_override)
+                  : null;
+                const currentDefault = t.pick_deadline
+                  ? new Date(t.pick_deadline)
+                  : null;
+                const effective = currentOverride ?? currentDefault;
+                const inputVal  = deadlineInputs[t.id] ?? (currentOverride
+                  ? toLocalInputValue(currentOverride)
+                  : '');
+                const busy      = deadlineBusy === t.id;
+                const msg       = deadlineMsg[t.id];
+                const err       = deadlineErr[t.id];
+
+                return (
+                  <div key={t.id} style={{
+                    padding: '0.75rem 0.85rem',
+                    border: '1px solid var(--cream-dark)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '0.5rem',
+                      flexWrap: 'wrap', marginBottom: '0.5rem',
+                    }}>
+                      <strong style={{ fontSize: '0.9rem', flex: '1 1 200px', minWidth: 0 }}>
+                        {t.name}
+                      </strong>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--slate-mid)' }}>
+                        Starts {new Date(t.start_date).toLocaleString('en-US', {
+                          weekday: 'short', month: 'short', day: 'numeric',
+                          hour: 'numeric', minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--slate-mid)', marginBottom: '0.5rem' }}>
+                      Effective deadline:{' '}
+                      <strong style={{ color: 'var(--slate)' }}>
+                        {effective ? effective.toLocaleString() : 'none'}
+                      </strong>
+                      {currentOverride
+                        ? <span style={{ color: 'var(--brass)', marginLeft: '0.4rem' }}>(override)</span>
+                        : <span style={{ color: 'var(--slate-light)', marginLeft: '0.4rem' }}>(default)</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <input
+                        type="datetime-local"
+                        className="input"
+                        value={inputVal}
+                        onChange={e => setDeadlineInputs(prev => ({ ...prev, [t.id]: e.target.value }))}
+                        style={{ flex: '1 1 220px', minWidth: 0 }}
+                        disabled={busy}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={busy}
+                        aria-busy={busy}
+                        onClick={() => {
+                          const iso = inputVal ? new Date(inputVal).toISOString() : null;
+                          savePickDeadline(t.id, iso);
+                        }}
+                      >
+                        {busy ? 'Saving…' : 'Save'}
+                      </button>
+                      {currentOverride && (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          disabled={busy}
+                          onClick={() => {
+                            setDeadlineInputs(prev => ({ ...prev, [t.id]: '' }));
+                            savePickDeadline(t.id, null);
+                          }}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    {err && <p className="hint" style={{ color: 'var(--red)', marginTop: '0.4rem' }}>{err}</p>}
+                    {msg && <p className="hint" style={{ color: 'var(--green-mid)', marginTop: '0.4rem' }}>{msg}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </section>
+
       {/* ── Tournament status ──────────────────────────────── */}
       <section className="card" style={{ padding: 0, overflow: 'hidden' }} aria-labelledby="tourn-h">
         <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--cream-dark)' }}>
@@ -409,5 +571,21 @@ export default function AdminPanel({
         )}
       </section>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// `<input type="datetime-local">` wants 'YYYY-MM-DDTHH:MM' in the
+// browser's local time zone. Date.toISOString() gives UTC, which
+// renders correctly on its own but is shifted in the input. Build
+// the local-time string by hand.
+function toLocalInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear() + '-' +
+    pad(d.getMonth() + 1) + '-' +
+    pad(d.getDate()) + 'T' +
+    pad(d.getHours()) + ':' +
+    pad(d.getMinutes())
   );
 }

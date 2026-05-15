@@ -18,7 +18,8 @@ interface Tournament {
   name:         string;
   type:         string;
   start_date:   string;
-  pick_deadline: string | null;
+  pick_deadline:          string | null;
+  pick_deadline_override: string | null;
   status:       string;
   cut_score:    number | null;
   course_name?: string | null;
@@ -139,7 +140,13 @@ export default function PicksPage() {
   const allSelected   = selectedCount === 4;
   const isLocked      = tournament?.status !== 'upcoming';
   const lockDeadline  = useMemo(
-    () => (tournament?.pick_deadline ? new Date(tournament.pick_deadline) : null),
+    () => {
+      if (!tournament) return null;
+      // Override takes precedence (commissioner-set) over the
+      // auto-computed pick_deadline (start_date - 1h).
+      const raw = tournament.pick_deadline_override ?? tournament.pick_deadline;
+      return raw ? new Date(raw) : null;
+    },
     [tournament],
   );
 

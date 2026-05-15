@@ -94,19 +94,23 @@ CREATE TABLE league_members (
 -- TOURNAMENTS
 -- ============================================================
 CREATE TABLE tournaments (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  espn_event_id   TEXT NOT NULL UNIQUE,
-  name            TEXT NOT NULL,
-  type            TEXT DEFAULT 'regular' CHECK (type IN ('regular', 'major')),
-  season          INT NOT NULL,
-  start_date      TIMESTAMPTZ NOT NULL,
-  end_date        TIMESTAMPTZ NOT NULL,
-  pick_deadline   TIMESTAMPTZ,
-  cut_score       INT,
-  status          TEXT DEFAULT 'upcoming'
-                  CHECK (status IN ('upcoming','active','cut_made','complete')),
-  course_name     TEXT,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
+  id                     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  espn_event_id          TEXT NOT NULL UNIQUE,
+  name                   TEXT NOT NULL,
+  type                   TEXT DEFAULT 'regular' CHECK (type IN ('regular', 'major')),
+  season                 INT NOT NULL,
+  start_date             TIMESTAMPTZ NOT NULL,
+  end_date               TIMESTAMPTZ NOT NULL,
+  pick_deadline          TIMESTAMPTZ,
+  -- Commissioner override (Migration 003, P1). When non-null, takes
+  -- precedence over pick_deadline; effective deadline is
+  -- COALESCE(pick_deadline_override, pick_deadline).
+  pick_deadline_override TIMESTAMPTZ,
+  cut_score              INT,
+  status                 TEXT DEFAULT 'upcoming'
+                         CHECK (status IN ('upcoming','active','cut_made','complete')),
+  course_name            TEXT,
+  created_at             TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================

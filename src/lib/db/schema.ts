@@ -84,18 +84,20 @@ export interface LeagueMembersTable {
 
 // ── tournaments ──────────────────────────────────────────────
 export interface TournamentsTable {
-  id:              Generated<string>;
-  espn_event_id:   string;
-  name:            string;
-  type:            Generated<'regular' | 'major'>;
-  season:          number;
-  start_date:      Timestamp;
-  end_date:        Timestamp;
-  pick_deadline:   Timestamp | null;
-  cut_score:       number | null;
-  status:          Generated<'upcoming' | 'active' | 'cut_made' | 'complete'>;
-  course_name:     string | null;
-  created_at:      Generated<Timestamp>;
+  id:                      Generated<string>;
+  espn_event_id:           string;
+  name:                    string;
+  type:                    Generated<'regular' | 'major'>;
+  season:                  number;
+  start_date:              Timestamp;
+  end_date:                Timestamp;
+  pick_deadline:           Timestamp | null;
+  // Commissioner override — when set, takes precedence over pick_deadline.
+  pick_deadline_override:  Timestamp | null;
+  cut_score:               number | null;
+  status:                  Generated<'upcoming' | 'active' | 'cut_made' | 'complete'>;
+  course_name:             string | null;
+  created_at:              Generated<Timestamp>;
 }
 
 // ── golfers ──────────────────────────────────────────────────

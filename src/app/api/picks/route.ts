@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { validatePick } from '@/lib/scoring';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { isPickDeadlinePassed } from '@/lib/pick-deadline';
 
 // Per-IP rate limit on pick submission: 30 attempts per 10 min.
 // Legit users can iterate freely (edit picks multiple times before
@@ -41,13 +42,14 @@ export async function POST(req: NextRequest) {
 
   // Check tournament is still open
   const tournament = await db.selectFrom('tournaments')
-    .select(['pick_deadline', 'status', 'name'])
+    .select(['pick_deadline', 'pick_deadline_override', 'status', 'name'])
     .where('id', '=', tournamentId)
     .executeTakeFirst();
   if (!tournament) return NextResponse.json({ error: 'Tournament not found.' }, { status: 404 });
   if (tournament.status !== 'upcoming')
     return NextResponse.json({ error: 'Picks are locked — this tournament has started.' }, { status: 403 });
-  if (tournament.pick_deadline && new Date() > new Date(tournament.pick_deadline))
+  // Honor commissioner override (P1 — pick_deadline often wrong vs real tee time).
+  if (isPickDeadlinePassed(tournament))
     return NextResponse.json({ error: 'The pick deadline has passed.' }, { status: 403 });
 
   // Validate golfer tiers
