@@ -10,9 +10,11 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { db } from '@/lib/db';
 import { validateRegistration } from '@/lib/auth-validation';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { sendEmail, verificationEmail } from '@/lib/email';
 
 // Auth flow — never prerender.
 export const dynamic = 'force-dynamic';
@@ -103,6 +105,13 @@ export async function POST(req: NextRequest) {
 
   const password_hash = await bcrypt.hash(password, BCRYPT_COST);
 
+  // Generate a verify token for the email-verification gate. 32 bytes
+  // of url-safe hex = 64 chars, more than enough entropy. Expires in
+  // 7 days; user can request a fresh one via /api/auth/resend-verify
+  // before then.
+  const verify_token = randomBytes(32).toString('hex');
+  const verify_token_expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
   // Insert profile + auth_credentials + league_member atomically. If
   // any step fails, the user gets nothing and can retry cleanly.
   try {
@@ -114,9 +123,11 @@ export async function POST(req: NextRequest) {
 
       await tx.insertInto('auth_credentials')
         .values({
-          user_id:        profile.id,
+          user_id:              profile.id,
           password_hash,
-          // email_verified false by default — banner UX, not a login gate.
+          email_verified:       false,
+          verify_token,
+          verify_token_expires: verify_token_expires.toISOString(),
         })
         .execute();
 
@@ -135,5 +146,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ success: true });
+  // Best-effort verification email. We return success either way —
+  // the user can request a resend from the signin page if it doesn't
+  // arrive. Logged on failure so we can debug deliverability.
+  const baseUrl = process.env.NEXTAUTH_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? '';
+  const verifyUrl = `${baseUrl}/auth/verify?token=${verify_token}`;
+  const { subject, text, html } = verificationEmail({
+    displayName: display_name,
+    verifyUrl,
+  });
+  const emailSent = await sendEmail({ to: email, subject, text, html });
+
+  return NextResponse.json({ success: true, emailSent });
 }

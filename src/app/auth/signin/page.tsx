@@ -15,24 +15,62 @@ function SignInForm() {
   const params = useSearchParams();
   const redirect = params.get('redirect') || '/dashboard';
 
-  const [email, setEmail]     = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState('');
+  const [email, setEmail]         = useState('');
+  const [password, setPassword]   = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState('');
+  // Set to true when the signin failed specifically because the user
+  // hasn't verified their email yet — toggles the Resend UI.
+  const [needsVerify, setNeedsVerify] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendNote, setResendNote] = useState('');
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
-    setError(''); setLoading(true);
+    setError(''); setNeedsVerify(false); setResendNote(''); setLoading(true);
     // `redirect: false` lets us own the post-signin navigation
     // (and surface the error inline rather than via a query string).
     const res = await signIn('credentials', { email, password, redirect: false });
     setLoading(false);
     if (!res || res.error) {
+      // Auth.js v5 surfaces our CredentialsSignin subclass's `code`
+      // field as `res.code`. Distinguish unverified-email from generic
+      // bad-creds so users get actionable copy.
+      if ((res as { code?: string } | undefined)?.code === 'EmailNotVerified') {
+        setNeedsVerify(true);
+        setError('Please verify your email before signing in. Check your inbox for a link from Fairway Fantasy.');
+        return;
+      }
       setError('Invalid email or password.');
       return;
     }
     router.push(redirect);
     router.refresh();
+  }
+
+  async function handleResend() {
+    if (!email) {
+      setResendNote('Enter your email above first.');
+      return;
+    }
+    setResending(true); setResendNote('');
+    try {
+      const res = await fetch('/api/auth/resend-verify', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResendNote(data.error || `Couldn’t resend (HTTP ${res.status}).`);
+      } else {
+        setResendNote('If an account exists for that email and it isn’t already verified, a new link has been sent.');
+      }
+    } catch (err) {
+      setResendNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResending(false);
+    }
   }
 
   return (
@@ -54,7 +92,29 @@ function SignInForm() {
 
         <div className="card">
           <form onSubmit={handleSignIn}>
-            {error && <div className="alert alert-error">{error}</div>}
+            {error && (
+              <div className="alert alert-error">
+                {error}
+                {needsVerify && (
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={handleResend}
+                      disabled={resending}
+                      aria-busy={resending}
+                    >
+                      {resending ? 'Sending…' : 'Resend verification email'}
+                    </button>
+                    {resendNote && (
+                      <p className="hint" style={{ marginTop: '0.5rem', color: 'var(--slate-mid)' }}>
+                        {resendNote}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="field">
               <label className="label">Email</label>

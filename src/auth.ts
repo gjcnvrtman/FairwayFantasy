@@ -15,11 +15,18 @@
 // NOT imported by middleware — middleware uses authConfig directly.
 // ============================================================
 
-import NextAuth from 'next-auth';
+import NextAuth, { CredentialsSignin } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { authConfig } from './auth.config';
+
+// Surfaced to the signin page so it can render "please verify your
+// email" with a Resend button instead of the generic
+// "invalid credentials" copy. The signin form reads `error.code`.
+class EmailNotVerifiedError extends CredentialsSignin {
+  code = 'EmailNotVerified';
+}
 
 // ── Strong-secret guard ──────────────────────────────────────
 // Refuse to start with a weak/missing secret (mirrors golf-czar's
@@ -71,6 +78,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
             'profiles.email',
             'profiles.display_name',
             'auth_credentials.password_hash',
+            'auth_credentials.email_verified',
           ])
           .where('profiles.email', '=', email)
           .executeTakeFirst();
@@ -86,6 +94,14 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
 
         const ok = await bcrypt.compare(password, row.password_hash);
         if (!ok) return null;
+
+        // Email-verification gate (P0 hardening 2026-05-15). Existing
+        // pre-deploy users are backfilled to email_verified=true so
+        // they aren't locked out. New users must click the verify
+        // link in their welcome email before they can sign in.
+        if (!row.email_verified) {
+          throw new EmailNotVerifiedError();
+        }
 
         // Best-effort `last_login_at` update — never blocks login.
         db.updateTable('auth_credentials')

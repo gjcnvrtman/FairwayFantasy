@@ -2,7 +2,6 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { signIn } from 'next-auth/react';
 import { AUTH_LIMITS } from '@/lib/auth-validation';
 
 // `useSearchParams()` must be wrapped in a `<Suspense>` boundary or
@@ -34,6 +33,10 @@ function SignUpForm() {
   const [loading, setLoading]         = useState(false);
   const [topError, setTopError]       = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  // After a successful POST /api/auth/register we no longer auto-sign-in
+  // (the user is unverified and would just bounce off the verify gate).
+  // Show a "check your email" success panel instead.
+  const [registered, setRegistered]   = useState<{ email: string; emailSent: boolean } | null>(null);
 
   async function handleSignUp(e: React.FormEvent) {
     e.preventDefault();
@@ -60,26 +63,11 @@ function SignUpForm() {
         return;
       }
 
-      // ── 2. Auto-login ──
-      // The user just told us their password; signing them in now
-      // means they don't see "now log in" friction.
-      const signInRes = await signIn('credentials', {
-        email, password, redirect: false,
-      });
+      // ── 2. Show "check your email" — email verification gate
+      // means we can't auto-sign-in. The verify link in the email
+      // will land them on /auth/verify which then directs to /auth/signin.
       setLoading(false);
-      if (!signInRes || signInRes.error) {
-        // Account exists but login failed — surface and let them retry.
-        // Pass the redirect along so the signin page sends them back
-        // to the invite once they sort out the password.
-        setTopError(
-          `Account created, but sign-in failed. Try the sign-in page${
-            redirect !== '/dashboard' ? ' — your invite is waiting' : ''
-          }.`,
-        );
-        return;
-      }
-      router.push(redirect);
-      router.refresh();
+      setRegistered({ email, emailSent: !!data.emailSent });
     } catch (err) {
       setLoading(false);
       setTopError(err instanceof Error ? err.message : String(err));
@@ -118,6 +106,33 @@ function SignUpForm() {
           </p>
         </div>
 
+        {registered ? (
+          <div className="card" style={{ textAlign: 'center', padding: '2.5rem 1.5rem' }}>
+            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📧</div>
+            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+              Check your email
+            </h2>
+            <p style={{ color: 'var(--slate-mid)', marginBottom: '0.75rem' }}>
+              We sent a verification link to <strong>{registered.email}</strong>.
+              Click the link to activate your account.
+            </p>
+            {!registered.emailSent && (
+              <p className="alert alert-warn" style={{ fontSize: '0.85rem', textAlign: 'left' }}>
+                ⚠️ The email couldn&rsquo;t be sent right now (SMTP issue). Use the
+                &ldquo;Resend verification email&rdquo; option on the sign-in page once
+                you have your password handy.
+              </p>
+            )}
+            <p style={{ color: 'var(--slate-light)', fontSize: '0.85rem', marginTop: '1rem' }}>
+              Didn&rsquo;t get it? Check spam, or try sign-in to resend.
+            </p>
+            <div style={{ marginTop: '1.25rem' }}>
+              <Link href="/auth/signin" className="btn btn-primary btn-lg">
+                Go to Sign In →
+              </Link>
+            </div>
+          </div>
+        ) : (
         <div className="card">
           <form onSubmit={handleSignUp} noValidate>
             {topError && <div className="alert alert-error">{topError}</div>}
@@ -245,6 +260,7 @@ function SignUpForm() {
             </button>
           </form>
         </div>
+        )}
 
         <p style={{ textAlign: 'center', color: 'var(--slate-mid)', fontSize: '0.875rem', marginTop: '1.25rem' }}>
           Already have an account?{' '}
