@@ -34,6 +34,13 @@ interface ExistingPick {
   submitted_at: string;
 }
 
+interface ScoreRow {
+  golfer_id:    string;
+  status:       string;
+  round_1:      number | null;
+  score_to_par: number | null;
+}
+
 type Slot = 0 | 1 | 2 | 3;
 const SLOT_LABELS = ['Top Tier #1', 'Top Tier #2', 'Dark Horse #1', 'Dark Horse #2'];
 const SLOT_HELP   = ['OWGR ranked 1–24', 'OWGR ranked 1–24', 'OWGR ranked 25+ or unranked', 'OWGR ranked 25+ or unranked'];
@@ -58,6 +65,15 @@ export default function PicksPage() {
   const [savedGolfers, setSavedGolfers] = useState<Golfer[]>([]);
   const [leagueId, setLeagueId]     = useState('');
   const [alreadyPicked, setAlreadyPicked] = useState<string[]>([]);
+  const [existingPickId, setExistingPickId] = useState<string | null>(null);
+  const [scores, setScores]         = useState<ScoreRow[]>([]);
+  // Withdrawal-replacement state. `replaceTarget` = the WD'd golfer the
+  // user clicked Replace on; `replaceSearch` filters the candidate
+  // panel; `replacing` blocks double-submit while PUT is in flight.
+  const [replaceTarget, setReplaceTarget] = useState<Golfer | null>(null);
+  const [replaceSearch, setReplaceSearch] = useState('');
+  const [replacing,     setReplacing]     = useState(false);
+  const [replaceError,  setReplaceError]  = useState('');
 
   // ── Initial data load ─────────────────────────────────────
   useEffect(() => {
@@ -79,9 +95,11 @@ export default function PicksPage() {
         setGolfers(data.golfers ?? []);
         setLeagueId(data.leagueId);
         setAlreadyPicked(data.alreadyPickedIds ?? []);
+        setScores(data.scores ?? []);
 
         if (data.existingPick) {
           const ep: ExistingPick = data.existingPick;
+          setExistingPickId(ep.id ?? null);
           const findG = (id: string) =>
             (data.golfers ?? []).find((g: Golfer) => g.id === id) ?? null;
           setSelected([
@@ -180,6 +198,65 @@ export default function PicksPage() {
     }
   }
 
+  // ── Withdrawal-replacement helpers ────────────────────────
+  // Read each picked golfer's status from the scores rows the
+  // `/api/picks/setup` endpoint includes post-lock. Defaults to
+  // 'active' if no row exists yet (early in the tournament before
+  // scores have been written).
+  function getStatusFor(golferId: string): string {
+    return scores.find(s => s.golfer_id === golferId)?.status ?? 'active';
+  }
+
+  // Eligible replacements: golfers in the field who haven't teed
+  // off yet (round_1 still null) AND aren't already in this user's
+  // foursome. The PUT /api/picks endpoint re-validates this on
+  // submit, so this is purely UX filtering.
+  const eligibleReplacements: Golfer[] = useMemo(() => {
+    if (!replaceTarget) return [];
+    const inFieldNotTeedOff = new Set(
+      scores.filter(s => s.round_1 === null).map(s => s.golfer_id),
+    );
+    const pickedIds = new Set(selected.map(g => g?.id).filter(Boolean) as string[]);
+    const q = replaceSearch.toLowerCase().trim();
+    return golfers.filter(g =>
+      inFieldNotTeedOff.has(g.id) &&
+      !pickedIds.has(g.id) &&
+      (q === '' || g.name.toLowerCase().includes(q)),
+    );
+  }, [replaceTarget, scores, selected, golfers, replaceSearch]);
+
+  async function handleReplace(replacementGolferId: string) {
+    if (!replaceTarget || !existingPickId) return;
+    setReplaceError(''); setReplacing(true);
+    try {
+      const res = await fetch('/api/picks', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pickId:              existingPickId,
+          withdrawnGolferId:   replaceTarget.id,
+          replacementGolferId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReplaceError(data.error || `Replacement failed (HTTP ${res.status}).`);
+        return;
+      }
+      // Success — close modal and refresh so the new substitution
+      // shows. PUT marks the withdrawn golfer's score row as replaced;
+      // a re-fetch picks up the new state.
+      setReplaceTarget(null);
+      setReplaceSearch('');
+      router.refresh();
+      window.location.reload();
+    } catch (err) {
+      setReplaceError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReplacing(false);
+    }
+  }
+
   // ── Early-return states ───────────────────────────────────
   if (loading)   return <PageShell><LoadingState /></PageShell>;
   if (loadError) return <PageShell><ErrorState slug={String(slug)} message={loadError} /></PageShell>;
@@ -225,19 +302,54 @@ export default function PicksPage() {
                 </div>
               )}
 
+              {/* If any picked golfer has withdrawn, surface the
+                  action at the top of the slot list so the user sees
+                  it before scrolling. */}
+              {isLocked && existingPickId &&
+                selected.some(g => g && getStatusFor(g.id) === 'withdrawn') && (
+                  <div className="alert alert-warn" style={{ marginBottom: '1rem' }}>
+                    <strong>⚠ Withdrawal detected.</strong>{' '}
+                    One or more of your golfers has withdrawn from the tournament.
+                    Use the <em>Replace</em> button below to substitute a golfer
+                    who hasn&rsquo;t teed off yet.
+                  </div>
+                )}
+
               <div style={{ display: 'flex', flexDirection: 'column',
                              gap: '0.75rem', marginBottom: '1.25rem' }}>
-                {selected.map((g, i) => (
-                  <PickSlot
-                    key={i}
-                    slot={i as Slot}
-                    golfer={g}
-                    isActive={activeSlot === i}
-                    locked={isLocked}
-                    onOpen={() => openSlot(i as Slot)}
-                    onRemove={() => removeGolfer(i as Slot)}
-                  />
-                ))}
+                {selected.map((g, i) => {
+                  const status = g && isLocked ? getStatusFor(g.id) : null;
+                  return (
+                    <div key={i}>
+                      <PickSlot
+                        slot={i as Slot}
+                        golfer={g}
+                        isActive={activeSlot === i}
+                        locked={isLocked}
+                        onOpen={() => openSlot(i as Slot)}
+                        onRemove={() => removeGolfer(i as Slot)}
+                      />
+                      {g && isLocked && status && status !== 'active' && (
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: '0.5rem',
+                          padding: '0.4rem 0.75rem', marginTop: '0.25rem',
+                          fontSize: '0.78rem',
+                        }}>
+                          <StatusBadge status={status} />
+                          {status === 'withdrawn' && existingPickId && (
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => { setReplaceTarget(g); setReplaceSearch(''); setReplaceError(''); }}
+                            >
+                              Replace →
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {!isLocked && (
@@ -377,6 +489,21 @@ export default function PicksPage() {
           </div>
         </div>
       </div>
+
+      {/* Replacement modal — rendered at the page root so its overlay
+          covers everything. Only shows while replaceTarget is set. */}
+      {replaceTarget && (
+        <ReplacementModal
+          target={replaceTarget}
+          candidates={eligibleReplacements}
+          search={replaceSearch}
+          onSearch={setReplaceSearch}
+          onClose={() => { setReplaceTarget(null); setReplaceSearch(''); setReplaceError(''); }}
+          onSelect={handleReplace}
+          busy={replacing}
+          error={replaceError}
+        />
+      )}
     </PageShell>
   );
 }
@@ -760,4 +887,158 @@ function formatRelativeTime(d: Date): string {
   else if (minutes >= 1) label = `${minutes}m`;
   else label = '<1m';
   return past ? `${label} ago` : `in ${label}`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Withdrawal-replacement UI — small + focused
+// ─────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: string }) {
+  const label =
+    status === 'missed_cut'   ? 'MC — Missed Cut'
+  : status === 'withdrawn'    ? 'WD — Withdrew'
+  : status === 'disqualified' ? 'DQ — Disqualified'
+  : status === 'complete'     ? 'Complete'
+  : status;
+  return (
+    <span className="badge" style={{
+      background: '#fef3c7',  // --brass-pale
+      color:      '#92400e',
+      border:     '1px solid #fcd34d',
+      fontSize:   '0.65rem',
+      flexShrink: 0,
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function ReplacementModal({
+  target, candidates, search, onSearch, onClose, onSelect, busy, error,
+}: {
+  target:      Golfer;
+  candidates:  Golfer[];
+  search:      string;
+  onSearch:    (s: string) => void;
+  onClose:     () => void;
+  onSelect:    (golferId: string) => void;
+  busy:        boolean;
+  error:       string;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Replace withdrawn golfer"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 50,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '1rem',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card" style={{
+        width: '100%', maxWidth: 520, maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column',
+        padding: 0, overflow: 'hidden',
+      }}>
+        <div style={{
+          padding: '1rem 1.25rem',
+          borderBottom: '1px solid var(--cream-dark)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '0.75rem',
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.15rem' }}>
+              Replace {target.name}
+            </p>
+            <p style={{ fontSize: '0.78rem', color: 'var(--slate-mid)' }}>
+              Pick a golfer who hasn&rsquo;t teed off yet.
+            </p>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}
+                  aria-label="Close replacement dialog">
+            ✕
+          </button>
+        </div>
+
+        <div style={{ padding: '0.75rem 1.25rem',
+                       borderBottom: '1px solid var(--cream-dark)' }}>
+          <input
+            className="input"
+            type="text"
+            placeholder="Search candidates by name…"
+            value={search}
+            onChange={e => onSearch(e.target.value)}
+            autoFocus
+            aria-label="Search replacement candidates"
+          />
+        </div>
+
+        {error && (
+          <div className="alert alert-error" style={{ margin: '0.75rem 1.25rem 0' }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {candidates.length === 0 ? (
+            <div style={{ padding: '2rem', textAlign: 'center',
+                           color: 'var(--slate-mid)', fontSize: '0.875rem' }}>
+              No eligible replacements found.
+              {search && <><br/>Try a different search term.</>}
+            </div>
+          ) : candidates.slice(0, 50).map(g => (
+            <button
+              key={g.id}
+              type="button"
+              disabled={busy}
+              onClick={() => onSelect(g.id)}
+              style={{
+                width: '100%', textAlign: 'left',
+                padding: '0.75rem 1.25rem',
+                borderBottom: '1px solid var(--cream-dark)',
+                background: 'transparent', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: '0.75rem',
+              }}
+            >
+              {g.headshot_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={g.headshot_url} alt={g.name} width={36} height={36}
+                     style={{ borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+              ) : (
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%',
+                  background: 'var(--cream-dark)', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '0.75rem', color: 'var(--slate-mid)',
+                }}>{g.name.substring(0, 2).toUpperCase()}</div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {g.name}
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--slate-mid)' }}>
+                  {g.country || '—'}{' · '}{g.owgr_rank ? `#${g.owgr_rank}` : 'Unranked'}
+                </div>
+              </div>
+              <span style={{ fontSize: '0.78rem', color: 'var(--green-mid)', fontWeight: 700, flexShrink: 0 }}>
+                Pick →
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {busy && (
+          <div style={{ padding: '0.75rem 1.25rem', textAlign: 'center',
+                         fontSize: '0.85rem', color: 'var(--slate-mid)',
+                         borderTop: '1px solid var(--cream-dark)' }}>
+            Submitting replacement…
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

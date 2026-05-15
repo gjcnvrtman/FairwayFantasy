@@ -55,11 +55,29 @@ export async function GET(req: NextRequest) {
   // so `alreadyPickedIds` is informational only and currently empty.
   const alreadyPickedIds: string[] = [];
 
+  // Post-lock: include per-golfer scores so the picks page can render
+  // each picked golfer's current status (active / missed_cut / withdrawn /
+  // disqualified) + the user can identify candidates eligible for
+  // withdrawal replacement (golfers with no round_1 score yet).
+  let scores: Array<{
+    golfer_id:     string;
+    status:        string;
+    round_1:       number | null;
+    score_to_par:  number | null;
+  }> = [];
+  if (tournament.status !== 'upcoming') {
+    scores = await db.selectFrom('scores')
+      .select(['golfer_id', 'status', 'round_1', 'score_to_par'])
+      .where('tournament_id', '=', tournament.id)
+      .execute();
+  }
+
   return NextResponse.json({
     leagueId:    league.id,
     tournament,
     golfers,
     existingPick,
     alreadyPickedIds,
+    scores,
   });
 }
