@@ -136,13 +136,30 @@ async function syncTournament(tournament: {
     }
     if (!golfer) continue;
 
-    const espnStatus = c.status?.type?.name ?? 'active';
-    const scoreStr   = c.score?.displayValue ?? 'E';
+    let espnStatus  = c.status?.type?.name ?? 'active';
+    const scoreStr  = c.score?.displayValue ?? 'E';
+    const rounds    = c.linescores?.map(ls => ls.value) ?? [];
+
+    // Cut-day backstop for the scoreboard fallback (TODO P0 line 45).
+    // The /pga/scoreboard endpoint doesn't carry a per-golfer status
+    // field, so normalizeScoreboardCompetitor defaults every golfer
+    // to 'active'. Once the tournament's cut has been officially made
+    // (cutMade && effectiveCut != null), any golfer whose Round 1+2
+    // cumulative is above the cut line missed the cut regardless of
+    // what ESPN reported as the per-golfer status. Also serves as a
+    // defensive sanity check if the leaderboard endpoint comes back
+    // online — a post-cut 'active' golfer above the cut line is a
+    // data inconsistency we should correct.
+    if (cutMade && effectiveCut !== null && espnStatus === 'active') {
+      const r1 = rounds[0], r2 = rounds[1];
+      if (r1 != null && r2 != null && (r1 + r2) > effectiveCut) {
+        espnStatus = 'missed_cut';
+      }
+    }
+
     const { fantasyScore, status: mappedStatus } = applyFantasyRules({
       scoreToParRaw: scoreStr, espnStatus, cutScore: effectiveCut, cutMade,
     });
-
-    const rounds = c.linescores?.map(ls => ls.value) ?? [];
     scoreUpdates.push({
       tournament_id:  id,
       golfer_id:      golfer.id,

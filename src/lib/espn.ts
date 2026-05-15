@@ -97,7 +97,8 @@ export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
 // Convert a /pga/scoreboard competitor into an ESPNCompetitor so the
 // rest of the pipeline (`sync.ts`) doesn't have to branch on shape.
 // Returns null if the row lacks a name we can match against `golfers`.
-function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
+// Exported for unit tests (see tests/espn.test.ts).
+export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   const name = c?.athlete?.displayName ?? c?.athlete?.fullName ?? c?.displayName;
   if (!name) return null;
 
