@@ -18,9 +18,19 @@ function SignUpForm() {
   // not on the dashboard. signin/page.tsx does the same thing.
   const redirect = params.get('redirect') || '/dashboard';
 
+  // Parse the slug + invite code out of an invite-link redirect, if any.
+  // Pattern: /join/<slug>/<code>. Captures non-empty segments only.
+  const inviteFromRedirect = (() => {
+    const m = redirect.match(/^\/join\/([^/]+)\/([^/]+)/);
+    return m ? { slug: m[1], code: m[2] } : null;
+  })();
+
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail]             = useState('');
   const [password, setPassword]       = useState('');
+  // Pre-fill from the redirect path when arriving via an invite link.
+  const [leagueSlug, setLeagueSlug]   = useState(inviteFromRedirect?.slug ?? '');
+  const [inviteCode, setInviteCode]   = useState(inviteFromRedirect?.code ?? '');
   const [loading, setLoading]         = useState(false);
   const [topError, setTopError]       = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -38,6 +48,8 @@ function SignUpForm() {
           email,
           display_name: displayName,
           password,
+          leagueSlug,
+          inviteCode,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -109,6 +121,62 @@ function SignUpForm() {
         <div className="card">
           <form onSubmit={handleSignUp} noValidate>
             {topError && <div className="alert alert-error">{topError}</div>}
+
+            {/* Invite-only signup. If we arrived via /join/<slug>/<code>
+                the fields are pre-filled and read-only; otherwise the
+                user must paste a code from a commissioner's invite link. */}
+            {inviteFromRedirect ? (
+              <div className="alert alert-info" style={{ marginBottom: '1rem' }}>
+                ✓ Invite verified — you&rsquo;re joining{' '}
+                <strong>{inviteFromRedirect.slug}</strong>.
+                <input type="hidden" name="leagueSlug" value={leagueSlug} />
+                <input type="hidden" name="inviteCode" value={inviteCode} />
+              </div>
+            ) : (
+              <>
+                <div className="field">
+                  <label className="label" htmlFor="leagueSlug">League Slug</label>
+                  <input
+                    id="leagueSlug"
+                    className="input"
+                    type="text"
+                    required
+                    placeholder="e.g. the-boys"
+                    value={leagueSlug}
+                    onChange={e => setLeagueSlug(e.target.value)}
+                    aria-invalid={!!fieldErrors.leagueSlug}
+                  />
+                  {fieldErrors.leagueSlug ? (
+                    <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.leagueSlug}</p>
+                  ) : (
+                    <p className="hint" style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+                      From your commissioner&rsquo;s invite link: the part after <code>/join/</code>.
+                    </p>
+                  )}
+                </div>
+
+                <div className="field">
+                  <label className="label" htmlFor="inviteCode">Invite Code</label>
+                  <input
+                    id="inviteCode"
+                    className="input"
+                    type="text"
+                    required
+                    placeholder="e.g. ABC123"
+                    value={inviteCode}
+                    onChange={e => setInviteCode(e.target.value)}
+                    aria-invalid={!!fieldErrors.inviteCode}
+                  />
+                  {fieldErrors.inviteCode ? (
+                    <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.inviteCode}</p>
+                  ) : (
+                    <p className="hint" style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+                      Signup is invite-only. Ask a commissioner to share their link.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
 
             <div className="field">
               <label className="label" htmlFor="display_name">Your Name</label>
