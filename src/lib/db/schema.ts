@@ -206,6 +206,14 @@ export interface ReminderLogTable {
   sent_at:        Generated<Timestamp>;
 }
 
+// ── rate_limits (per-IP throttling, P0 hardening 2026-05-15) ────
+export interface RateLimitsTable {
+  key:           string;
+  window_start:  Generated<Timestamp>;
+  count:         Generated<number>;
+  updated_at:    Generated<Timestamp>;
+}
+
 // ── Database surface ─────────────────────────────────────────
 export interface Database {
   leagues:               LeaguesTable;
@@ -220,4 +228,5 @@ export interface Database {
   season_standings:      SeasonStandingsTable;
   reminder_preferences:  ReminderPreferencesTable;
   reminder_log:          ReminderLogTable;
+  rate_limits:           RateLimitsTable;
 }

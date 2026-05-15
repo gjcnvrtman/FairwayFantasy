@@ -12,13 +12,35 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { validateRegistration } from '@/lib/auth-validation';
+import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 
 // Auth flow — never prerender.
 export const dynamic = 'force-dynamic';
 
 const BCRYPT_COST = 10;
 
+// Per-IP rate limit: 5 registration attempts per 10 minutes. Tuned
+// for legitimate use (no one signs up 6 times in 10 min) while
+// blocking brute-force account enumeration / spam signup attempts.
+const RL_REGISTER_LIMIT  = 5;
+const RL_REGISTER_WINDOW = 600;
+
 export async function POST(req: NextRequest) {
+  // Rate limit before any work — cheap and means a scripted attacker
+  // can't exhaust the bcrypt pool or the DB connection pool.
+  const ip = clientIpFromHeaders(req.headers);
+  const rl = await checkRateLimit({
+    key:           `register:${ip}`,
+    limit:         RL_REGISTER_LIMIT,
+    windowSeconds: RL_REGISTER_WINDOW,
+  });
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: `Too many signup attempts. Try again in ${rl.retryAfterSeconds}s.` },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } },
+    );
+  }
+
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
 
   const email        = typeof body.email        === 'string' ? body.email.trim().toLowerCase() : '';

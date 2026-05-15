@@ -2,10 +2,32 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { validatePick } from '@/lib/scoring';
+import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+
+// Per-IP rate limit on pick submission: 30 attempts per 10 min.
+// Legit users can iterate freely (edit picks multiple times before
+// lock); scripted abuse gets shut down. Keyed by IP rather than
+// user_id so a single attacker can't burn through 30 different
+// invite-acquired accounts.
+const RL_PICKS_LIMIT  = 30;
+const RL_PICKS_WINDOW = 600;
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+  const ip = clientIpFromHeaders(req.headers);
+  const rl = await checkRateLimit({
+    key:           `picks:${ip}`,
+    limit:         RL_PICKS_LIMIT,
+    windowSeconds: RL_PICKS_WINDOW,
+  });
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: `Too many pick changes. Slow down and try again in ${rl.retryAfterSeconds}s.` },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } },
+    );
+  }
 
   const { leagueId, tournamentId, golferIds } = await req.json();
 

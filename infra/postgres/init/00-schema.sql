@@ -267,6 +267,17 @@ CREATE TABLE reminder_log (
 );
 
 -- ============================================================
+-- RATE_LIMITS (Migration 002 — per-IP rate limiting, P0 hardening)
+-- ============================================================
+CREATE TABLE rate_limits (
+  key           TEXT        PRIMARY KEY,
+  window_start  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  count         INT         NOT NULL DEFAULT 1,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_rate_limits_window_start ON rate_limits (window_start);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX idx_league_members_league          ON league_members(league_id);
