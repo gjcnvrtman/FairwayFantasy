@@ -155,15 +155,20 @@ function SignUpForm() {
                 type="password"
                 required
                 autoComplete="new-password"
-                placeholder={`Min. ${AUTH_LIMITS.PASSWORD_MIN} characters`}
+                placeholder={`Min. ${AUTH_LIMITS.PASSWORD_MIN} chars, mix of classes`}
                 minLength={AUTH_LIMITS.PASSWORD_MIN}
                 maxLength={AUTH_LIMITS.PASSWORD_MAX}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 aria-invalid={!!fieldErrors.password}
               />
-              {fieldErrors.password && (
+              {fieldErrors.password ? (
                 <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.password}</p>
+              ) : (
+                <p className="hint" style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+                  {AUTH_LIMITS.PASSWORD_MIN}+ characters with at least {AUTH_LIMITS.PASSWORD_MIN_CLASSES} of:
+                  lowercase, uppercase, digit, symbol.
+                </p>
               )}
             </div>
 

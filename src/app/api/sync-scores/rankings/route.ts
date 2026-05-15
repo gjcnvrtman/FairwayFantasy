@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { syncRankingsToDatabase } from '@/lib/datagolf';
+import { syncRankingsToDatabase } from '@/lib/rankings';
 import { db } from '@/lib/db';
 import { fetchPGASchedule } from '@/lib/espn';
 

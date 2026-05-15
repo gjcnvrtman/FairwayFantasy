@@ -242,7 +242,7 @@ export function computeLeagueResults(
  * (golfer.is_dark_horse)`` incorrectly let UNRANKED golfers slide into
  * top-tier slots.
  *
- * Source-of-truth alignment with ``data/datagolf.ts:isDarkHorse``
+ * Source-of-truth alignment with ``src/lib/rankings.ts:isDarkHorse``
  * which says "Unranked counts as dark horse" → unranked is NOT
  * top-tier eligible.
  */
@@ -255,7 +255,7 @@ function isTopTierEligible(golfer: { is_dark_horse: boolean | null; owgr_rank: n
 /**
  * Helper: is this golfer eligible for a dark-horse slot?
  * Unranked (is_dark_horse === null) is accepted as dark horse —
- * matches ``data/datagolf.ts:isDarkHorse(null) === true``.
+ * matches ``src/lib/rankings.ts:isDarkHorse(null) === true``.
  */
 function isDarkHorseEligible(golfer: { is_dark_horse: boolean | null }): boolean {
   return golfer.is_dark_horse === true || golfer.is_dark_horse === null;
