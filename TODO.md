@@ -39,7 +39,7 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ### Backups
 - [x] **Daily `pg_dump` cron — local rotation.** Shipped 2026-05-14. `scripts/backup-db.sh` (committed) dumps the Postgres container, gzips, retains 7 days under `/opt/fairway-fantasy/backups/`. Greg's crontab entry `30 23 * * * /opt/fairway-fantasy/scripts/backup-db.sh >> ... 2>&1`. Validated by running once manually: wrote a 26 KB gzipped dump, rotation logic ran with zero deletes (no old files yet). ✓
-- [ ] **Off-machine backup copy still pending.** The 2026-05-14 backup script only writes to `.150` itself — if the disk dies, the dumps go with it. With `.160` decommissioned there's no obvious mirror box. Options: (a) rsync to the DayTrader box's `/var/backups/` if disk space permits (same hardware risk, different filesystem), (b) push to a cloud bucket (S3/B2/Wasabi), or (c) borg/restic to a second disk on `.150`. Pick one before the picks pool gets big enough that recovery would hurt.
+- [x] **Off-machine backup — separate backup server now nightly.** Greg reported 2026-05-15: a dedicated backup server is up and configured to pull nightly backups off `.150`. Disk-loss-of-`.150` no longer takes the dumps with it. Off-site (geographic-disaster) backup remains a follow-up Greg is planning separately. ✓
 
 ### Security
 - [x] **`NEXT_PUBLIC_CRON_SECRET` exposed to client bundle** *(P1 #4.1)* — fixed in P8. New `/api/admin/sync-scores` endpoint is commissioner-authed via session cookie (no shared secret). Sync engine extracted to `src/lib/sync.ts`; the cron-secret-authed `/api/sync-scores` still exists for the systemd timer but no client code references it. ✓
