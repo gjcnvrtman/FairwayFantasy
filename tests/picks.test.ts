@@ -744,10 +744,21 @@ describe('applyFantasyRules — ESPN status edge cases', () => {
     expect(r.status).toBe('complete');
   });
 
-  it('treats unknown status as active (fail-soft default)', () => {
-    // bug #5.10 — MDF (made cut, did not finish) etc. Currently
-    // unmapped statuses fall through to active. Pinning behavior.
+  it('treats MDF (made cut, did not finish) as active per explicit rule', () => {
+    // Player survived the cut but pulled out mid-tournament. Score
+    // up to withdrawal is valid and continues to count in the user's
+    // foursome. mapESPNStatus has an explicit `if (s === 'mdf')`
+    // branch (espn.ts) so this is no longer a fall-through default —
+    // changing the rule requires editing that branch deliberately.
     const r = applyFantasyRules({ scoreToParRaw: '+2', espnStatus: 'MDF', cutScore: 3 });
+    expect(r.status).toBe('active');
+  });
+
+  it('still falls through to active for truly unknown statuses', () => {
+    // Defensive default for statuses we have never observed (ESPN
+    // could add new codes any day). Keeps the engine running on
+    // unknown input rather than throwing.
+    const r = applyFantasyRules({ scoreToParRaw: '+1', espnStatus: 'SUSPENDED', cutScore: 3 });
     expect(r.status).toBe('active');
   });
 });

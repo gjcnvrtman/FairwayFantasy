@@ -129,16 +129,26 @@ export function applyFantasyRules(params: {
  * Given 4 golfer scores, return the best COUNTING_GOLFER_COUNT (3)
  * and their sum. Lower = better (it's golf).
  *
- * Partial-data semantics (bug #5.3 — current spec):
- *   4 valid scores → best 3 sum
+ * Partial-data semantics:
+ *   4 valid scores → best 3 sum (the normal post-round case)
  *   3 valid scores → sum of all 3
- *   2 valid scores → sum of those 2 (no penalty)
- *   1 valid score  → that score
- *   0 valid scores → total = null (no rank)
+ *   2 valid scores → sum of those 2 (in-progress, no penalty)
+ *   1 valid score  → that score (in-progress, no penalty)
+ *   0 valid scores → total = null (no rank — display as "—")
  *
- * This is the "no penalty for missing data" approach. A user with
- * fewer valid scores can outrank a user with 3 valid scores. Pinned
- * by tests so any future change (e.g. to tied/pro-rated) surfaces.
+ * Why "no penalty for missing data" is intentional: submission-time
+ * validation in `validatePick` already rejects picks with fewer than
+ * 4 golfers, so the only way to land here with < 4 valid scores is
+ * the transient mid-tournament state where some of the user's 4
+ * picks have teed off and posted a `round_1` while others haven't.
+ * That window is short (a few hours Thursday morning) and self-
+ * resolves by end of round 1.
+ *
+ * Penalising unscored slots ("assume +N strokes per missing") would
+ * make Thursday-morning leaderboards meaningless — users whose picks
+ * happen to tee off later would look like big losers even when they
+ * are perfectly on-pace. Sum-of-scored gives an honest in-progress
+ * estimate. Pinned by tests so any future change surfaces.
  */
 export function calculateTop3(scores: (number | null)[]): {
   countingIndices: number[];  // Which slots are counting (0-indexed)

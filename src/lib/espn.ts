@@ -176,10 +176,18 @@ export function parseESPNScore(displayValue: string): number {
 // ── Map ESPN status to our status ───────────────────────────
 // ESPN status strings observed: "STATUS_ACTIVE", "STATUS_FINAL",
 // "STATUS_SCHEDULED", and shorter forms like "cut", "wd", "dq", "mc",
-// "f". See bug #5.10 for unmapped statuses (e.g. MDF "made cut, did
-// not finish") that currently fall through to 'active'.
+// "f", "mdf".
+//
+// MDF ("made cut, did not finish") = player survived the cut but
+// pulled out before the tournament ended. Their stroke total up to
+// the withdrawal point is valid, and the product call is to keep
+// scoring them as 'active' (their score continues to count in the
+// user's foursome rather than vanishing). The explicit branch below
+// pins that decision so future status additions can't accidentally
+// route MDF down a different path via ordering.
 export function mapESPNStatus(espnStatus: string): Score['status'] {
   const s = espnStatus.toLowerCase();
+  if (s === 'mdf')                                       return 'active';
   if (s.includes('cut') || s === 'mc')                   return 'missed_cut';
   if (s.includes('wd') || s.includes('withdrew'))         return 'withdrawn';
   if (s.includes('dq'))                                  return 'disqualified';
