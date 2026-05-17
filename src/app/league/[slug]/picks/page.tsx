@@ -569,6 +569,19 @@ function LockStatusRow({ isLocked, lockDeadline }: {
   isLocked: boolean;
   lockDeadline: Date | null;
 }) {
+  // Re-render every minute so the relative-time pill ("in 2d 4h")
+  // ticks down instead of staying stuck at the value it had on mount.
+  // 60s granularity matches the smallest unit formatRelativeTime
+  // emits; useState's setter doubles as the React re-render trigger
+  // (the value itself is unused). Skipped when there's nothing dynamic
+  // to display so the interval doesn't run unnecessarily.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (isLocked || !lockDeadline) return;
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [isLocked, lockDeadline]);
+
   if (isLocked) {
     return (
       <div className="alert alert-warn"
