@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { validatePick } from '@/lib/scoring';
+import { validatePick, isReplacementEligible } from '@/lib/scoring';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 import { isPickDeadlinePassed } from '@/lib/pick-deadline';
 
@@ -139,14 +139,20 @@ export async function PUT(req: NextRequest) {
   if (!pickGolferIds.includes(withdrawnGolferId))
     return NextResponse.json({ error: 'That golfer is not in your pick.' }, { status: 400 });
 
-  // Ensure replacement hasn't teed off (round_1 still null)
+  // Replacement must not have teed off AND must still be active.
+  // isReplacementEligible (src/lib/scoring.ts) is the single source of
+  // truth — checks both round_1 IS NULL and status='active' so a
+  // pre-tournament WD/DQ can't slip through.
   const repScore = await db.selectFrom('scores')
-    .select('round_1')
+    .select(['round_1', 'status'])
     .where('golfer_id',     '=', replacementGolferId)
     .where('tournament_id', '=', pick.tournament_id)
     .executeTakeFirst();
-  if (repScore?.round_1 !== null && repScore?.round_1 !== undefined)
-    return NextResponse.json({ error: 'That golfer has already teed off.' }, { status: 400 });
+  if (!repScore || !isReplacementEligible(repScore))
+    return NextResponse.json(
+      { error: 'That golfer is not eligible — either already teed off or no longer active in the field.' },
+      { status: 400 },
+    );
 
   await db.updateTable('scores')
     .set({ was_replaced: true, replaced_by_golfer_id: replacementGolferId })

@@ -345,18 +345,22 @@ export function validatePick(params: {
 // ── Replacement Validation ───────────────────────────────────
 /**
  * Check if a replacement golfer is eligible.
- * Rule: replacement must not have teed off yet.
  *
- * NOTE (bug #5.6): the inline check at `picks/route.ts:73-77` uses
- * `repScore?.round_1 !== null` instead of these fields. Two truths;
- * needs reconciliation. This is the canonical version per
- * `scoring.ts`.
+ * Rule: replacement must (a) not have teed off yet AND (b) still be in
+ * the field as active. round_1 IS NULL is the "hasn't teed off"
+ * predicate (no first-round score recorded). status must be 'active' so
+ * a withdrawn / disqualified / missed-cut golfer can't be selected as
+ * a replacement even if their round_1 column happens to be null
+ * (e.g. WD before play started).
+ *
+ * Signature mirrors the actual `scores` row shape so callers don't have
+ * to compute a synthetic `teed_off` flag.
  */
-export function isReplacementEligible(golfer: {
+export function isReplacementEligible(score: {
   status: string;
-  teed_off: boolean;
+  round_1: number | null;
 }): boolean {
-  return !golfer.teed_off && golfer.status === 'active';
+  return score.round_1 === null && score.status === 'active';
 }
 
 // ── Score Display Helpers ────────────────────────────────────

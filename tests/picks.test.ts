@@ -4,6 +4,7 @@ import {
   calculateTop3,
   applyFantasyRules,
   computeLeagueResults,
+  isReplacementEligible,
   MISSED_CUT_PENALTY_STROKES,
   MISSED_CUT_FALLBACK_SCORE,
   PICK_GOLFER_COUNT,
@@ -748,5 +749,42 @@ describe('applyFantasyRules — ESPN status edge cases', () => {
     // unmapped statuses fall through to active. Pinning behavior.
     const r = applyFantasyRules({ scoreToParRaw: '+2', espnStatus: 'MDF', cutScore: 3 });
     expect(r.status).toBe('active');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// isReplacementEligible — closes #5.6 (route + helper agree)
+// ─────────────────────────────────────────────────────────────
+
+describe('isReplacementEligible', () => {
+  it('allows active golfer who has not teed off', () => {
+    expect(isReplacementEligible({ status: 'active', round_1: null })).toBe(true);
+  });
+
+  it('rejects when round_1 is recorded (teed off)', () => {
+    expect(isReplacementEligible({ status: 'active', round_1: 70 })).toBe(false);
+  });
+
+  it('rejects withdrawn golfer even with round_1 null (pre-tournament WD)', () => {
+    // The previous inline-only check would have ALLOWED this — a
+    // golfer who withdrew before play started has round_1=null and
+    // would have passed. Helper catches it via status.
+    expect(isReplacementEligible({ status: 'withdrawn', round_1: null })).toBe(false);
+  });
+
+  it('rejects disqualified golfer with round_1 null', () => {
+    expect(isReplacementEligible({ status: 'disqualified', round_1: null })).toBe(false);
+  });
+
+  it('rejects missed_cut golfer even with round_1 null', () => {
+    expect(isReplacementEligible({ status: 'missed_cut', round_1: null })).toBe(false);
+  });
+
+  it('rejects complete golfer with round_1 null', () => {
+    expect(isReplacementEligible({ status: 'complete', round_1: null })).toBe(false);
+  });
+
+  it('rejects active golfer with round_1 = 0 (sentinel teed-off, unlikely but safe)', () => {
+    expect(isReplacementEligible({ status: 'active', round_1: 0 })).toBe(false);
   });
 });
