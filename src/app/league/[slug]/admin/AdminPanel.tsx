@@ -378,6 +378,7 @@ export default function AdminPanel({
         <InviteCard
           inviteUrl={effectiveUrl}
           invitePath={effectivePath}
+          slug={league.slug}
           title="Share to invite players"
           subhead="Anyone who clicks this link can join the league. Regenerate to invalidate it."
         />

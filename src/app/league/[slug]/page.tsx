@@ -193,6 +193,7 @@ export default async function LeaguePage({ params }: Props) {
               <InviteCard
                 inviteUrl={inviteUrl}
                 invitePath={invitePath}
+                slug={league.slug}
                 title={isCommissioner ? 'Invite Players' : 'Invite Friends'}
                 subhead={
                   isCommissioner

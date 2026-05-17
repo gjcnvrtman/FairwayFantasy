@@ -136,6 +136,73 @@ export async function requireCommissioner(args: {
   };
 }
 
+/**
+ * Same shape as ``requireCommissioner`` but accepts any league member
+ * (commissioner or rank-and-file). Use for actions that any member
+ * should be able to do — currently invite-by-email, which mirrors the
+ * link-copy button shown to everyone in the league sidebar.
+ *
+ * Status codes match the commissioner helper for consistency:
+ *   400 — neither slug nor leagueId provided
+ *   401 — no session
+ *   404 — league doesn't exist OR user isn't a member of it
+ *         (conflated so we don't leak league existence to non-members)
+ */
+export async function requireMember(args: {
+  slug?:     string | null;
+  leagueId?: string | null;
+}): Promise<LeagueAuthResult> {
+  const { slug, leagueId } = args;
+  if (!slug && !leagueId) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: 'Missing league identifier (slug or leagueId).' },
+        { status: 400 },
+      ),
+    };
+  }
+
+  const user = await getCurrentUser();
+  if (!user) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }),
+    };
+  }
+
+  let leagueQuery = db.selectFrom('leagues').selectAll();
+  if (leagueId) leagueQuery = leagueQuery.where('id',   '=', leagueId);
+  else          leagueQuery = leagueQuery.where('slug', '=', slug!);
+  const league = await leagueQuery.executeTakeFirst();
+  if (!league) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'League not found' }, { status: 404 }),
+    };
+  }
+
+  const membership = await db.selectFrom('league_members')
+    .select('role')
+    .where('league_id', '=', league.id)
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
+
+  if (!membership) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'League not found' }, { status: 404 }),
+    };
+  }
+
+  return {
+    ok: true,
+    user: { id: user.id },
+    league: league as LeagueRow,
+    role: membership.role,
+  };
+}
+
 // (Pure decision helpers — `decideCommissionerAuth`, `decideMemberAuth`,
 // `wouldOrphanLeague` — are imported above from `./auth-decisions`
 // and re-exported. They live there so unit tests can import them
