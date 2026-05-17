@@ -13,6 +13,7 @@ import {
   getTournamentLeaderboard,
   getCompletedTournamentsInRange,
   getFantasyResultsForTournaments,
+  isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney } from '@/lib/money';
 import { formatScore } from '@/lib/scoring';
@@ -54,9 +55,12 @@ export default async function LeaguePage({ params }: Props) {
     .executeTakeFirst();
 
   // League window — used by every "what tournaments count for this
-  // league" query. Stored as TIMESTAMPTZ → string when serialized.
-  const lgStart = league.start_date ? String(league.start_date) : null;
-  const lgEnd   = league.end_date   ? String(league.end_date)   : null;
+  // league" query. pg returns TIMESTAMPTZ as Date objects at runtime
+  // even though the kysely schema types it as `string`. Round-tripping
+  // back into a WHERE clause needs an ISO-8601 string or pg's parser
+  // chokes on `String(Date)` output (e.g. "GMT-0500" → DateTimeParseError).
+  const lgStart = isoOrNull(league.start_date);
+  const lgEnd   = isoOrNull(league.end_date);
 
   const [members, activeTournament, upcoming, completedTournaments] = await Promise.all([
     getLeagueMembers(league.id),

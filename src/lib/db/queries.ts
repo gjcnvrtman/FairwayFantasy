@@ -65,6 +65,20 @@ export async function getUpcomingTournaments(limit = 5) {
     .execute();
 }
 
+// ── Timestamp adapter ────────────────────────────────────────
+// pg-node returns TIMESTAMPTZ values as JavaScript `Date` objects
+// even though kysely's `Timestamp = string` type alias claims
+// otherwise. Round-tripping a Date back into a kysely WHERE clause
+// fails because `String(Date)` produces "Mon May 18 2026 ... GMT-0500
+// (Central Daylight Time)" which Postgres rejects with
+// `time zone "gmt-0500" not recognized`. This helper normalises to
+// an ISO-8601 string (or null) regardless of which form arrives.
+export function isoOrNull(v: unknown): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
+}
+
 // ── League-window-aware variants ─────────────────────────────
 // When a league sets start_date/end_date, callers want the same
 // queries restricted to tournaments inside that window. Each

@@ -5,6 +5,7 @@ import {
   getLeagueBySlug,
   getLeagueMembers,
   getCompletedTournamentsInRange,
+  isoOrNull,
 } from '@/lib/db/queries';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
@@ -36,8 +37,8 @@ export default async function HistoryPage({ params }: Props) {
 
   // Completed tournaments inside the league's window (start/end dates).
   // Legacy leagues with NULL dates fall back to unbounded.
-  const lgStart = league.start_date ? String(league.start_date) : null;
-  const lgEnd   = league.end_date   ? String(league.end_date)   : null;
+  const lgStart = isoOrNull(league.start_date);
+  const lgEnd   = isoOrNull(league.end_date);
   const completedTournaments = await getCompletedTournamentsInRange(lgStart, lgEnd);
 
   const members        = await getLeagueMembers(league.id);
