@@ -19,9 +19,14 @@ function SignUpForm() {
   const redirect = params.get('redirect') || '/dashboard';
 
   // Parse the slug + invite code out of an invite-link redirect, if any.
-  // Pattern: /join/<slug>/<code>. Captures non-empty segments only.
+  // Pattern: /join/<slug>/<code>. Stops at `/` AND `?` so a query
+  // string after the code (e.g. `?auto=1&email=foo%40bar.com`)
+  // doesn't get swallowed into the code group.
+  // Bug 2026-05-17: with the loose `[^/]+` group the code captured
+  // `F086Y9?auto=1&email=…` and register 403'd with "Invite link is
+  // invalid", silently failing the form for Greg.
   const inviteFromRedirect = (() => {
-    const m = redirect.match(/^\/join\/([^/]+)\/([^/]+)/);
+    const m = redirect.match(/^\/join\/([^/?]+)\/([^/?]+)/);
     return m ? { slug: m[1], code: m[2] } : null;
   })();
 
@@ -63,8 +68,23 @@ function SignUpForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (data.fieldErrors) setFieldErrors(data.fieldErrors);
-        else setTopError(data.error ?? `Registration failed (HTTP ${res.status}).`);
+        if (data.fieldErrors) {
+          // In invite-flow mode the slug + code fields are hidden,
+          // so a fieldErrors entry on leagueSlug / inviteCode would
+          // attach to an invisible input and silently swallow the
+          // error. Lift those messages to topError so the user
+          // sees what went wrong. (Bug 2026-05-17: Greg's 403
+          // signup attempts had no visible feedback.)
+          const fe = data.fieldErrors as Record<string, string>;
+          const inviteFieldMsgs = [
+            inviteFromRedirect && fe.inviteCode,
+            inviteFromRedirect && fe.leagueSlug,
+          ].filter(Boolean).join(' ');
+          if (inviteFieldMsgs) setTopError(inviteFieldMsgs);
+          setFieldErrors(fe);
+        } else {
+          setTopError(data.error ?? `Registration failed (HTTP ${res.status}).`);
+        }
         setLoading(false);
         return;
       }
