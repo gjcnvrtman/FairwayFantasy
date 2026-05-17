@@ -13,9 +13,12 @@ describe('validateCreateLeague', () => {
   // Reusable valid baseline; each failure test mutates one field
   // so a regression in one branch can't accidentally satisfy another.
   const valid = {
-    name: 'The Boys Golf Club',
-    slug: 'the-boys',
-    maxPlayers: 12,
+    name:            'The Boys Golf Club',
+    slug:            'the-boys',
+    maxPlayers:      12,
+    startDate:       '2026-05-14',
+    endDate:         '2026-12-31',
+    weeklyBetAmount: 10,
   };
 
   describe('happy path', () => {
@@ -172,12 +175,79 @@ describe('validateCreateLeague', () => {
     });
   });
 
+  describe('startDate / endDate', () => {
+    it('rejects missing startDate', () => {
+      const r = validateCreateLeague({ ...valid, startDate: '' });
+      expect(r.startDate).toBeDefined();
+    });
+    it('rejects missing endDate', () => {
+      const r = validateCreateLeague({ ...valid, endDate: '' });
+      expect(r.endDate).toBeDefined();
+    });
+    it('rejects malformed date strings', () => {
+      const a = validateCreateLeague({ ...valid, startDate: '05/14/2026' });
+      const b = validateCreateLeague({ ...valid, endDate: 'not-a-date' });
+      expect(a.startDate).toBeDefined();
+      expect(b.endDate).toBeDefined();
+    });
+    it('rejects endDate before startDate', () => {
+      const r = validateCreateLeague({
+        ...valid, startDate: '2026-12-01', endDate: '2026-01-01',
+      });
+      expect(r.endDate).toBeDefined();
+    });
+    it('accepts identical start and end dates (single-day window)', () => {
+      const r = validateCreateLeague({
+        ...valid, startDate: '2026-05-14', endDate: '2026-05-14',
+      });
+      expect(r.startDate).toBeUndefined();
+      expect(r.endDate).toBeUndefined();
+    });
+  });
+
+  describe('weeklyBetAmount', () => {
+    it('accepts default $10', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: 10 });
+      expect(r.weeklyBetAmount).toBeUndefined();
+    });
+    it('accepts $0 (free leagues)', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: 0 });
+      expect(r.weeklyBetAmount).toBeUndefined();
+    });
+    it('accepts $5.50 (2 decimals)', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: 5.5 });
+      expect(r.weeklyBetAmount).toBeUndefined();
+    });
+    it('rejects negative bet', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: -1 });
+      expect(r.weeklyBetAmount).toBeDefined();
+    });
+    it('rejects bet over BET_MAX', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: 5000 });
+      expect(r.weeklyBetAmount).toBeDefined();
+    });
+    it('rejects bet with more than 2 decimal places', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: 10.555 });
+      expect(r.weeklyBetAmount).toBeDefined();
+    });
+    it('rejects non-numeric bet', () => {
+      const r = validateCreateLeague({ ...valid, weeklyBetAmount: NaN });
+      expect(r.weeklyBetAmount).toBeDefined();
+    });
+  });
+
   describe('multi-field failures', () => {
     it('returns errors on every failing field at once', () => {
-      const r = validateCreateLeague({ name: '', slug: 'BAD', maxPlayers: 100 });
+      const r = validateCreateLeague({
+        name: '', slug: 'BAD', maxPlayers: 100,
+        startDate: '', endDate: 'bad', weeklyBetAmount: -5,
+      });
       expect(r.name).toBeDefined();
       expect(r.slug).toBeDefined();
       expect(r.maxPlayers).toBeDefined();
+      expect(r.startDate).toBeDefined();
+      expect(r.endDate).toBeDefined();
+      expect(r.weeklyBetAmount).toBeDefined();
     });
   });
 });

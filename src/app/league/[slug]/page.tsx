@@ -5,13 +5,16 @@ import { db } from '@/lib/db';
 import {
   getLeagueBySlug,
   getLeagueMembers,
-  getActiveTournament,
+  getActiveTournamentInRange,
   getFantasyLeaderboard,
-  getUpcomingTournaments,
+  getUpcomingTournamentsInRange,
   getPicksForTournament,
   getScoresForTournament,
   getTournamentLeaderboard,
+  getCompletedTournamentsInRange,
+  getFantasyResultsForTournaments,
 } from '@/lib/db/queries';
+import { computeLeagueMoney, formatMoney } from '@/lib/money';
 import { formatScore } from '@/lib/scoring';
 import {
   deriveLockStatus,
@@ -50,11 +53,42 @@ export default async function LeaguePage({ params }: Props) {
     .where('id', '=', user.id)
     .executeTakeFirst();
 
-  const [members, activeTournament, upcoming] = await Promise.all([
+  // League window — used by every "what tournaments count for this
+  // league" query. Stored as TIMESTAMPTZ → string when serialized.
+  const lgStart = league.start_date ? String(league.start_date) : null;
+  const lgEnd   = league.end_date   ? String(league.end_date)   : null;
+
+  const [members, activeTournament, upcoming, completedTournaments] = await Promise.all([
     getLeagueMembers(league.id),
-    getActiveTournament(),
-    getUpcomingTournaments(4),
+    getActiveTournamentInRange(lgStart, lgEnd),
+    getUpcomingTournamentsInRange(lgStart, lgEnd, 4),
+    getCompletedTournamentsInRange(lgStart, lgEnd),
   ]);
+
+  // Money summary for the sidebar card: per-user net across every
+  // completed in-range tournament. Pulled in parallel below where
+  // we already know which tournaments are in scope.
+  const completedIds   = completedTournaments.map(t => t.id);
+  const completedResults = await getFantasyResultsForTournaments(
+    league.id, completedIds,
+  );
+  const memberIds      = members.map((m: any) => m.user_id);
+  const betAmount      = Number(league.weekly_bet_amount ?? 0);
+  // Group the result rows by tournament so we can pass an ordered
+  // array into computeLeagueMoney that matches completedTournaments.
+  const resultsByTourn = new Map<string, Array<{ user_id: string; rank: number | null }>>();
+  for (const r of completedResults) {
+    if (!resultsByTourn.has(r.tournament_id)) resultsByTourn.set(r.tournament_id, []);
+    resultsByTourn.get(r.tournament_id)!.push({ user_id: r.user_id, rank: r.rank });
+  }
+  const moneySummary = computeLeagueMoney({
+    memberIds,
+    tournaments: completedTournaments.map(t => ({
+      memberIds:  [],   // overwritten inside computeLeagueMoney
+      betAmount,
+      results:    resultsByTourn.get(t.id) ?? [],
+    })),
+  });
 
   const [leaderboard, allPicks, scoresRows, tournamentLeaders] = activeTournament
     ? await Promise.all([
@@ -187,6 +221,19 @@ export default async function LeaguePage({ params }: Props) {
               {activeTournament && (
                 <TournamentLeaderboardCard leaders={tournamentLeaders} />
               )}
+
+              {/* League money card — cumulative $ won/lost per user
+                  across every completed tournament inside the league
+                  window. Always rendered when the league has played
+                  at least one tournament; empty-state copy otherwise. */}
+              <LeagueMoneyCard
+                totals={moneySummary.totals}
+                membersById={Object.fromEntries(members.map((m: any) => [m.user_id, m]))}
+                currentUserId={user.id}
+                betAmount={betAmount}
+                tournamentCount={completedTournaments.length}
+              />
+
 
               {/* Invite — client component, lifted out of the server tree
                   so the copy button's onClick actually works. Bug #4.9. */}
@@ -756,6 +803,79 @@ function TournamentLeaderboardCard({ leaders }: { leaders: TournamentLeader[] })
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── League money card ─────────────────────────────────────────
+// Sidebar summary of cumulative $ won/lost per league member across
+// every completed tournament inside the league's window. Empty-state
+// before any tournament has completed. Ordered winners-first so the
+// reader sees the standings at a glance.
+
+interface MoneyTotal { user_id: string; amount: number; }
+interface MemberLite { user_id: string; profile?: { display_name?: string } | null; }
+
+function LeagueMoneyCard({
+  totals, membersById, currentUserId, betAmount, tournamentCount,
+}: {
+  totals:          MoneyTotal[];
+  membersById:     Record<string, MemberLite>;
+  currentUserId:   string;
+  betAmount:       number;
+  tournamentCount: number;
+}) {
+  const ranked = [...totals].sort((a, b) => b.amount - a.amount);
+  return (
+    <div className="card">
+      <h3 style={{
+        fontFamily: "'Playfair Display', serif",
+        fontSize: '1rem', fontWeight: 700, marginBottom: '0.2rem',
+      }}>
+        Money — Season
+      </h3>
+      <p style={{ color: 'var(--slate-light)', fontSize: '0.72rem', marginBottom: '0.8rem' }}>
+        {tournamentCount === 0
+          ? `No tournaments completed yet · $${betAmount.toFixed(2)} per event`
+          : `${tournamentCount} tournament${tournamentCount === 1 ? '' : 's'} completed · $${betAmount.toFixed(2)} per event`}
+      </p>
+      {tournamentCount === 0 ? (
+        <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', fontStyle: 'italic' }}>
+          Money totals populate after the first in-window tournament finishes.
+        </p>
+      ) : (
+        <div>
+          {ranked.map((t, i) => {
+            const m = membersById[t.user_id];
+            const name = m?.profile?.display_name ?? 'Player';
+            const isMe = t.user_id === currentUserId;
+            const cls  =
+              t.amount > 0 ? 'score-under'   // green for winners
+            : t.amount < 0 ? 'score-over'    // red for losers
+            : 'score-even';
+            return (
+              <div key={t.user_id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '0.45rem 0',
+                borderBottom: i < ranked.length - 1 ? '1px solid var(--cream-dark)' : 'none',
+                fontSize: '0.88rem',
+              }}>
+                <span style={{
+                  fontWeight: isMe ? 700 : 500,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  flex: '1 1 auto', minWidth: 0,
+                }}>
+                  {name}
+                  {isMe && <span style={{ color: 'var(--brass)', marginLeft: '0.3rem', fontSize: '0.7rem' }}>you</span>}
+                </span>
+                <strong className={cls} style={{ fontSize: '0.95rem', flexShrink: 0 }}>
+                  {formatMoney(t.amount)}
+                </strong>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -12,22 +12,36 @@ export const LEAGUE_LIMITS = {
   MAX_PLAYERS_MIN: 4,
   MAX_PLAYERS_MAX: 50,
   MAX_PLAYERS_DEFAULT: 20,
+  BET_MIN:         0,         // free leagues allowed
+  BET_MAX:         1_000,     // sanity cap on stakes per tournament
+  BET_DEFAULT:     10,
 } as const;
 
 const SLUG_RE = /^[a-z0-9-]+$/;
+// ISO-date prefix (yyyy-mm-dd) — the <input type="date"> form value.
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface CreateLeagueInput {
   name:        string;
   slug:        string;
   maxPlayers:  number;
+  /** Tournament window start, ISO-8601 (yyyy-mm-dd). Required. */
+  startDate:   string;
+  /** Tournament window end, ISO-8601 (yyyy-mm-dd). Required. Must be ≥ startDate. */
+  endDate:     string;
+  /** Per-tournament stake in dollars. Default $10. Free leagues allowed (0). */
+  weeklyBetAmount: number;
 }
 
 export interface FieldErrors {
-  name?:       string;
-  slug?:       string;
-  maxPlayers?: string;
+  name?:            string;
+  slug?:            string;
+  maxPlayers?:      string;
+  startDate?:       string;
+  endDate?:         string;
+  weeklyBetAmount?: string;
   /** Cross-cutting issues that aren't tied to a single field. */
-  general?:    string;
+  general?:         string;
 }
 
 /**
@@ -40,7 +54,7 @@ export interface FieldErrors {
  */
 export function validateCreateLeague(input: CreateLeagueInput): FieldErrors {
   const errors: FieldErrors = {};
-  const { name, slug, maxPlayers } = input;
+  const { name, slug, maxPlayers, startDate, endDate, weeklyBetAmount } = input;
 
   // ── name ──
   const trimmedName = (name ?? '').trim();
@@ -75,6 +89,41 @@ export function validateCreateLeague(input: CreateLeagueInput): FieldErrors {
     errors.maxPlayers = `Max players must be at least ${LEAGUE_LIMITS.MAX_PLAYERS_MIN}.`;
   } else if (maxPlayers > LEAGUE_LIMITS.MAX_PLAYERS_MAX) {
     errors.maxPlayers = `Max players must be ${LEAGUE_LIMITS.MAX_PLAYERS_MAX} or fewer.`;
+  }
+
+  // ── startDate / endDate ──
+  // Both required and well-formed before we can compare them; only
+  // emit the cross-cutting "end must be after start" error if both
+  // sides parsed cleanly.
+  let startParsed: Date | null = null;
+  let endParsed:   Date | null = null;
+  if (!startDate || typeof startDate !== 'string' || !ISO_DATE_RE.test(startDate)) {
+    errors.startDate = 'Start date is required (YYYY-MM-DD).';
+  } else {
+    const d = new Date(startDate + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) errors.startDate = 'Invalid start date.';
+    else startParsed = d;
+  }
+  if (!endDate || typeof endDate !== 'string' || !ISO_DATE_RE.test(endDate)) {
+    errors.endDate = 'End date is required (YYYY-MM-DD).';
+  } else {
+    const d = new Date(endDate + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) errors.endDate = 'Invalid end date.';
+    else endParsed = d;
+  }
+  if (startParsed && endParsed && endParsed.getTime() < startParsed.getTime()) {
+    errors.endDate = 'End date must be on or after start date.';
+  }
+
+  // ── weekly_bet_amount ──
+  if (typeof weeklyBetAmount !== 'number' || !Number.isFinite(weeklyBetAmount)) {
+    errors.weeklyBetAmount = 'Weekly bet amount must be a number.';
+  } else if (weeklyBetAmount < LEAGUE_LIMITS.BET_MIN) {
+    errors.weeklyBetAmount = `Weekly bet amount cannot be negative.`;
+  } else if (weeklyBetAmount > LEAGUE_LIMITS.BET_MAX) {
+    errors.weeklyBetAmount = `Weekly bet amount cannot exceed $${LEAGUE_LIMITS.BET_MAX}.`;
+  } else if (Math.round(weeklyBetAmount * 100) !== weeklyBetAmount * 100) {
+    errors.weeklyBetAmount = 'Weekly bet amount cannot have more than 2 decimal places.';
   }
 
   return errors;

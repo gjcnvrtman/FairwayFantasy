@@ -65,6 +65,78 @@ export async function getUpcomingTournaments(limit = 5) {
     .execute();
 }
 
+// ── League-window-aware variants ─────────────────────────────
+// When a league sets start_date/end_date, callers want the same
+// queries restricted to tournaments inside that window. Each
+// helper accepts nullable bounds — null = unbounded on that side
+// (matches the schema: existing/legacy leagues with NULL dates
+// keep behaving as "all tournaments").
+
+export async function getActiveTournamentInRange(
+  start: string | null,
+  end:   string | null,
+) {
+  // Same time-based logic as getActiveTournament, layered with the
+  // league window. Returns null when no in-range tournament is live.
+  const now       = new Date();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  let q = db.selectFrom('tournaments').selectAll()
+    .where('start_date', '<=', now.toISOString())
+    .where('end_date',   '>=', oneDayAgo.toISOString())
+    .where('status', '!=', 'complete');
+  if (start) q = q.where('start_date', '>=', start);
+  if (end)   q = q.where('start_date', '<=', end);
+  return await q.orderBy('start_date', 'asc').limit(1).executeTakeFirst() ?? null;
+}
+
+export async function getUpcomingTournamentsInRange(
+  start: string | null,
+  end:   string | null,
+  limit = 5,
+) {
+  let q = db.selectFrom('tournaments').selectAll()
+    .where('status', '=', 'upcoming');
+  if (start) q = q.where('start_date', '>=', start);
+  if (end)   q = q.where('start_date', '<=', end);
+  return await q.orderBy('start_date', 'asc').limit(limit).execute();
+}
+
+/**
+ * Completed tournaments inside the league window — drives the money
+ * card on the sidebar + the history page's per-tournament breakdown.
+ * Ordered newest first so the history page reads chronologically
+ * top-to-bottom.
+ */
+export async function getCompletedTournamentsInRange(
+  start: string | null,
+  end:   string | null,
+) {
+  let q = db.selectFrom('tournaments').selectAll()
+    .where('status', '=', 'complete');
+  if (start) q = q.where('start_date', '>=', start);
+  if (end)   q = q.where('start_date', '<=', end);
+  return await q.orderBy('start_date', 'desc').execute();
+}
+
+/**
+ * Lightweight fantasy_results pull for the money math — only the
+ * columns we need (user_id + rank + tournament_id) for every
+ * fantasy_results row in this league across the given tournament
+ * IDs. Returns an empty array when `tournamentIds` is empty so the
+ * caller doesn't need to gate.
+ */
+export async function getFantasyResultsForTournaments(
+  leagueId: string,
+  tournamentIds: string[],
+) {
+  if (tournamentIds.length === 0) return [];
+  return await db.selectFrom('fantasy_results')
+    .select(['user_id', 'rank', 'tournament_id'])
+    .where('league_id', '=', leagueId)
+    .where('tournament_id', 'in', tournamentIds)
+    .execute();
+}
+
 // ── picks (with embedded golfer rows for all 4 slots) ────────
 
 export async function getPicksForTournament(leagueId: string, tournamentId: string) {

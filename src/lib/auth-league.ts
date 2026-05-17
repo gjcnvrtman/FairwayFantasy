@@ -26,13 +26,16 @@ export {
 import type { Role } from './auth-decisions';
 
 export interface LeagueRow {
-  id:              string;
-  slug:            string;
-  invite_code:     string;
-  commissioner_id: string;
-  max_players:     number;
-  name:            string;
-  created_at:      string;
+  id:                string;
+  slug:              string;
+  invite_code:       string;
+  commissioner_id:   string;
+  max_players:       number;
+  name:              string;
+  start_date:        string | null;
+  end_date:          string | null;
+  weekly_bet_amount: string;       // NUMERIC(10,2) → pg returns string
+  created_at:        string;
 }
 
 export type LeagueAuthOk   = { ok: true;  user: { id: string }; league: LeagueRow; role: Role };

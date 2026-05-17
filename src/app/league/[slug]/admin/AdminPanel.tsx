@@ -5,12 +5,15 @@ import { useRouter } from 'next/navigation';
 import InviteCard from '@/components/league/InviteCard';
 
 interface League {
-  id:           string;
-  slug:         string;
-  name:         string;
-  invite_code:  string;
-  max_players:  number;
-  created_at:   string;
+  id:                  string;
+  slug:                string;
+  name:                string;
+  invite_code:         string;
+  max_players:         number;
+  start_date:          string | null;
+  end_date:            string | null;
+  weekly_bet_amount:   string;       // pg NUMERIC → string
+  created_at:          string;
 }
 
 interface Member {
@@ -63,6 +66,26 @@ export default function AdminPanel({
   const [maxPlayersBusy, setMaxPlayersBusy]   = useState(false);
   const [maxPlayersMsg,  setMaxPlayersMsg]    = useState('');
   const [maxPlayersErr,  setMaxPlayersErr]    = useState('');
+
+  // ── Tournament window + weekly bet ────────────────────────
+  // ISO timestamps from the DB need to be sliced to yyyy-mm-dd for
+  // <input type="date">. Empty string when the column is null.
+  const [startDateInput, setStartDateInput] = useState<string>(
+    league.start_date ? league.start_date.slice(0, 10) : '',
+  );
+  const [endDateInput, setEndDateInput] = useState<string>(
+    league.end_date ? league.end_date.slice(0, 10) : '',
+  );
+  const [windowBusy, setWindowBusy] = useState(false);
+  const [windowMsg,  setWindowMsg]  = useState('');
+  const [windowErr,  setWindowErr]  = useState('');
+
+  const [betInput,  setBetInput]  = useState<string>(
+    Number(league.weekly_bet_amount).toFixed(2),
+  );
+  const [betBusy,   setBetBusy]   = useState(false);
+  const [betMsg,    setBetMsg]    = useState('');
+  const [betErr,    setBetErr]    = useState('');
 
   // Effective invite path (current code, or freshly regenerated one)
   const effectiveCode = newInvite || league.invite_code;
@@ -177,6 +200,72 @@ export default function AdminPanel({
       setMaxPlayersErr(err instanceof Error ? err.message : String(err));
     } finally {
       setMaxPlayersBusy(false);
+    }
+  }
+
+  async function saveTournamentWindow() {
+    setWindowBusy(true);
+    setWindowMsg('');
+    setWindowErr('');
+    if (!startDateInput || !endDateInput) {
+      setWindowErr('Both start and end dates are required.');
+      setWindowBusy(false);
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/league-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug: league.slug,
+          startDate: startDateInput,
+          endDate:   endDateInput,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWindowErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setWindowMsg('Saved — tournament window updated.');
+      router.refresh();
+    } catch (err) {
+      setWindowErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWindowBusy(false);
+    }
+  }
+
+  async function saveBetAmount() {
+    setBetBusy(true);
+    setBetMsg('');
+    setBetErr('');
+    const parsed = parseFloat(betInput);
+    if (!Number.isFinite(parsed)) {
+      setBetErr('Enter a valid dollar amount.');
+      setBetBusy(false);
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/league-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug: league.slug,
+          weeklyBetAmount: parsed,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBetErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setBetMsg(`Saved — weekly bet is now $${parsed.toFixed(2)}.`);
+      router.refresh();
+    } catch (err) {
+      setBetErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBetBusy(false);
     }
   }
 
@@ -305,6 +394,100 @@ export default function AdminPanel({
                 fontSize: '0.82rem',
               }}>
                 {maxPlayersErr || maxPlayersMsg}
+              </dd>
+            </>
+          )}
+
+          <dt style={{ color: 'var(--slate-mid)' }}>Tournament window</dt>
+          <dd style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+            <input
+              type="date"
+              value={startDateInput}
+              onChange={(e) => setStartDateInput(e.target.value)}
+              disabled={windowBusy}
+              aria-label="Start date"
+              style={{ padding: '0.25rem 0.4rem', fontSize: '0.88rem' }}
+            />
+            <span style={{ color: 'var(--slate-mid)' }}>→</span>
+            <input
+              type="date"
+              value={endDateInput}
+              min={startDateInput || undefined}
+              onChange={(e) => setEndDateInput(e.target.value)}
+              disabled={windowBusy}
+              aria-label="End date"
+              style={{ padding: '0.25rem 0.4rem', fontSize: '0.88rem' }}
+            />
+            <button
+              type="button"
+              onClick={saveTournamentWindow}
+              disabled={
+                windowBusy ||
+                !startDateInput || !endDateInput ||
+                (startDateInput === (league.start_date?.slice(0, 10) ?? '') &&
+                 endDateInput   === (league.end_date?.slice(0, 10) ?? ''))
+              }
+              aria-busy={windowBusy}
+              style={{ padding: '0.25rem 0.75rem', fontSize: '0.85rem' }}
+            >
+              {windowBusy ? 'Saving…' : 'Save'}
+            </button>
+          </dd>
+          {(windowMsg || windowErr) && (
+            <>
+              <dt />
+              <dd style={{
+                color: windowErr ? 'var(--red)' : 'var(--green)',
+                fontSize: '0.82rem',
+              }}>
+                {windowErr || windowMsg}
+              </dd>
+            </>
+          )}
+
+          <dt style={{ color: 'var(--slate-mid)' }}>Weekly bet</dt>
+          <dd style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--slate-mid)' }}>$</span>
+            <input
+              type="number"
+              min={0}
+              max={1000}
+              step={0.01}
+              inputMode="decimal"
+              value={betInput}
+              onChange={(e) => setBetInput(e.target.value)}
+              disabled={betBusy}
+              aria-label="Weekly bet amount in dollars"
+              style={{
+                width: '6rem', padding: '0.25rem 0.4rem',
+                fontFamily: 'monospace', fontSize: '0.88rem',
+              }}
+            />
+            <button
+              type="button"
+              onClick={saveBetAmount}
+              disabled={
+                betBusy ||
+                betInput.trim() === '' ||
+                parseFloat(betInput) === Number(league.weekly_bet_amount)
+              }
+              aria-busy={betBusy}
+              style={{ padding: '0.25rem 0.75rem', fontSize: '0.85rem' }}
+            >
+              {betBusy ? 'Saving…' : 'Save'}
+            </button>
+            <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+              per completed tournament
+            </span>
+          </dd>
+          {(betMsg || betErr) && (
+            <>
+              <dt />
+              <dd style={{
+                color: betErr ? 'var(--red)' : 'var(--green)',
+                fontSize: '0.82rem',
+              }}>
+                {betErr || betMsg}
               </dd>
             </>
           )}

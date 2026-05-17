@@ -10,16 +10,23 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
+  const name       = typeof body.name === 'string' ? body.name.trim() : '';
+  const slug       = typeof body.slug === 'string' ? body.slug.trim() : '';
   const maxPlayers = typeof body.maxPlayers === 'number'
     ? body.maxPlayers
     : LEAGUE_LIMITS.MAX_PLAYERS_DEFAULT;
+  const startDate  = typeof body.startDate === 'string' ? body.startDate.trim() : '';
+  const endDate    = typeof body.endDate   === 'string' ? body.endDate.trim()   : '';
+  const weeklyBetAmount = typeof body.weeklyBetAmount === 'number'
+    ? body.weeklyBetAmount
+    : LEAGUE_LIMITS.BET_DEFAULT;
 
   // Same validation the form uses client-side — single source of truth.
   // Errors come back as a field-keyed object so the form can highlight
   // the specific input(s) that failed.
-  const fieldErrors = validateCreateLeague({ name, slug, maxPlayers });
+  const fieldErrors = validateCreateLeague({
+    name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
+  });
   if (Object.keys(fieldErrors).length > 0) {
     return NextResponse.json({ fieldErrors }, { status: 400 });
   }
@@ -41,9 +48,17 @@ export async function POST(req: NextRequest) {
     league = await db.insertInto('leagues')
       .values({
         name, slug,
-        invite_code:     inviteCode,
-        commissioner_id: user.id,
-        max_players:     maxPlayers,
+        invite_code:       inviteCode,
+        commissioner_id:   user.id,
+        max_players:       maxPlayers,
+        // Tournament eligibility window. ISO date strings get coerced
+        // to TIMESTAMPTZ by pg using the server's TZ — that's fine for
+        // a yyyy-mm-dd window comparison.
+        start_date:        new Date(startDate + 'T00:00:00Z').toISOString(),
+        end_date:          new Date(endDate   + 'T23:59:59Z').toISOString(),
+        // NUMERIC(10,2) — pg adapter accepts string or number; format
+        // here so the stored value is exactly the validated number.
+        weekly_bet_amount: weeklyBetAmount.toFixed(2),
       })
       .returningAll()
       .executeTakeFirstOrThrow();

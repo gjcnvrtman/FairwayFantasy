@@ -1,10 +1,14 @@
 import { redirect, notFound } from 'next/navigation';
-import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { getLeagueBySlug } from '@/lib/db/queries';
+import {
+  getLeagueBySlug,
+  getLeagueMembers,
+  getCompletedTournamentsInRange,
+} from '@/lib/db/queries';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
+import { computeLeagueMoney, formatMoney } from '@/lib/money';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
 
@@ -30,12 +34,16 @@ export default async function HistoryPage({ params }: Props) {
     .where('id', '=', user.id)
     .executeTakeFirst();
 
-  // Get all completed tournaments with results for this league
-  const completedTournaments = await db.selectFrom('tournaments')
-    .selectAll()
-    .where('status', '=', 'complete')
-    .orderBy('start_date', 'desc')
-    .execute();
+  // Completed tournaments inside the league's window (start/end dates).
+  // Legacy leagues with NULL dates fall back to unbounded.
+  const lgStart = league.start_date ? String(league.start_date) : null;
+  const lgEnd   = league.end_date   ? String(league.end_date)   : null;
+  const completedTournaments = await getCompletedTournamentsInRange(lgStart, lgEnd);
+
+  const members        = await getLeagueMembers(league.id);
+  const memberIds      = members.map((m: any) => m.user_id);
+  const membersById    = Object.fromEntries(members.map((m: any) => [m.user_id, m]));
+  const betAmount      = Number(league.weekly_bet_amount ?? 0);
 
   // For each tournament, get the fantasy results for this league.
   // Embedding `profile` via jsonObjectFrom matches the old supabase-js
@@ -58,6 +66,25 @@ export default async function HistoryPage({ params }: Props) {
   );
 
   const withResults = tournamentResults.filter(t => t.results.length > 0);
+
+  // Per-tournament money deltas + cumulative totals, in the same
+  // order as `withResults`. computeLeagueMoney treats no-pick users
+  // as losers automatically.
+  const moneySummary = computeLeagueMoney({
+    memberIds,
+    tournaments: withResults.map(({ results }) => ({
+      memberIds: [],
+      betAmount,
+      results:   results.map((r: any) => ({ user_id: r.user_id, rank: r.rank })),
+    })),
+  });
+  // Quick lookup: tournament index → { user_id → amount }
+  const deltaByTourn = moneySummary.byTournament.map(deltas => {
+    const m = new Map<string, number>();
+    for (const d of deltas) m.set(d.user_id, d.amount);
+    return m;
+  });
+  const moneyTotalsRanked = [...moneySummary.totals].sort((a, b) => b.amount - a.amount);
 
   return (
     <div className="page-shell">
@@ -87,7 +114,51 @@ export default async function HistoryPage({ params }: Props) {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-              {withResults.map(({ tournament: t, results }) => {
+              {/* ── Cumulative money summary ─────────────────────── */}
+              <div className="card">
+                <h3 style={{
+                  fontFamily: "'Playfair Display', serif",
+                  fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.2rem',
+                }}>
+                  Money — Season Totals
+                </h3>
+                <p style={{ color: 'var(--slate-mid)', fontSize: '0.82rem', marginBottom: '1rem' }}>
+                  Net dollars across {withResults.length} completed event{withResults.length === 1 ? '' : 's'} at ${betAmount.toFixed(2)} per event.
+                  Losers each pay the bet; ties at #1 split the pot.
+                </p>
+                <div>
+                  {moneyTotalsRanked.map((t, i) => {
+                    const m  = membersById[t.user_id];
+                    const nm = m?.profile?.display_name ?? 'Player';
+                    const isMe = t.user_id === user.id;
+                    const cls = t.amount > 0 ? 'score-under'
+                              : t.amount < 0 ? 'score-over'
+                              : 'score-even';
+                    return (
+                      <div key={t.user_id} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '0.5rem 0',
+                        borderBottom: i < moneyTotalsRanked.length - 1 ? '1px solid var(--cream-dark)' : 'none',
+                        fontSize: '0.95rem',
+                      }}>
+                        <span style={{
+                          fontWeight: isMe ? 700 : 500,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          flex: '1 1 auto', minWidth: 0,
+                        }}>
+                          {nm}
+                          {isMe && <span style={{ color: 'var(--brass)', marginLeft: '0.4rem', fontSize: '0.72rem' }}>← you</span>}
+                        </span>
+                        <strong className={cls} style={{ fontSize: '1.05rem', flexShrink: 0 }}>
+                          {formatMoney(t.amount)}
+                        </strong>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {withResults.map(({ tournament: t, results }, tIdx) => {
                 const winner = results[0];
                 return (
                   <div key={t.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -130,10 +201,16 @@ export default async function HistoryPage({ params }: Props) {
                           <th className="hide-mobile">Golfer 3</th>
                           <th className="hide-mobile">Golfer 4</th>
                           <th>Total</th>
+                          <th style={{ textAlign: 'right' }}>$ Net</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {results.map((r: any, i: number) => (
+                        {results.map((r: any, i: number) => {
+                          const delta = deltaByTourn[tIdx]?.get(r.user_id) ?? 0;
+                          const moneyCls = delta > 0 ? 'score-under'
+                                         : delta < 0 ? 'score-over'
+                                         : 'score-even';
+                          return (
                           <tr key={r.user_id} className={`rank-${i + 1}`}>
                             <td><span className="rank-num">{r.rank ?? i + 1}</span></td>
                             <td>
@@ -159,8 +236,12 @@ export default async function HistoryPage({ params }: Props) {
                                 {formatScore(r.total_score)}
                               </strong>
                             </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <strong className={moneyCls}>{formatMoney(delta)}</strong>
+                            </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

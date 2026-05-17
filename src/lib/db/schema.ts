@@ -36,6 +36,16 @@ export interface LeaguesTable {
   invite_code:     string;
   commissioner_id: string | null;            // UUID FK (nullable per schema)
   max_players:     Generated<number>;
+  // Tournament-eligibility window. Tournaments with start_date inside
+  // [start_date, end_date] are the "in-range" set used for picks,
+  // dashboard, and money math. Nullable so legacy leagues created
+  // before this column landed default to "no filter" (caller treats
+  // null as unbounded on either side).
+  start_date:      Timestamp | null;
+  end_date:        Timestamp | null;
+  // Per-tournament stake in dollars. Each non-winner pays this to
+  // the (collective) winner; on ties the pot splits evenly.
+  weekly_bet_amount: Generated<string>;     // NUMERIC(10,2) — pg returns string for precision
   created_at:      Generated<Timestamp>;
 }
 
