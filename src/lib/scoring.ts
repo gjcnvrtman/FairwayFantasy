@@ -11,12 +11,17 @@
 //      may submit the identical *set* of 4 golfers (slot order
 //      doesn't matter; it's a set comparison).
 //   3. SCORING — for each golfer:
-//        a. MISSED CUT  → score = cut_line + MISSED_CUT_PENALTY_STROKES
+//        a. MISSED CUT  → fixed +MISSED_CUT_PENALTY_STROKES added to
+//                         the user's total as a separate "penalty"
+//                         line. The golfer is NOT eligible for the
+//                         top-3 pool. (Rule revised 2026-05-17.)
 //        b. MADE CUT    → final score capped at cut_line (can't be worse)
 //        c. ACTIVE      → live score as-is (no cap during live play)
 //        d. WD / DQ     → no score; eligible for replacement
-//   4. TOP 3 OF 4 — only your best 3 of 4 golfer scores count toward
-//      your total. Lower = better (it's golf).
+//   4. TOP 3 OF NON-MISSED-CUT — your best 3 made-cut/active/complete
+//      golfer scores sum into "top-3". A missed-cut golfer is excluded
+//      from this pool and adds the flat penalty above instead. Lower =
+//      better (it's golf). Total = top-3 sum + (missed-cut count × 1).
 //   5. REPLACEMENT — if a golfer withdraws or is DQ'd before teeing
 //      off, you may swap them out. Replacement must not have teed off.
 //
@@ -31,16 +36,17 @@ import type { Pick, Score, FantasyResult } from '@/types';
 import { parseESPNScore, mapESPNStatus } from './espn';
 
 // ── Named constants ──────────────────────────────────────────
-/** Strokes added to the cut line to compute a missed-cut fantasy score. */
-export const MISSED_CUT_PENALTY_STROKES = 1;
-
 /**
- * Fallback fantasy score used when ESPN reports a golfer as missed-cut
- * but we don't yet have a cut line value (rare race window during
- * sync, or a tournament with no cut-line data). A clearly losing
- * number — chosen so any realistic cut + 1 will beat it. Bug #5.2.
+ * Flat penalty (in strokes) added to the user's total for each
+ * golfer in their foursome who missed the cut.
+ *
+ * Revised 2026-05-17: previously this was added to the cut line to
+ * compute a per-golfer fantasy score (cut + 1), and that score went
+ * into the top-3 pool. The new rule: missed-cut golfers are excluded
+ * from top-3 entirely, and the penalty is summed into the total as
+ * a separate line item shown on the leaderboard ("Missed cut - X").
  */
-export const MISSED_CUT_FALLBACK_SCORE = 99;
+export const MISSED_CUT_PENALTY_STROKES = 1;
 
 /** Total golfers per pick (slots 1..4). */
 export const PICK_GOLFER_COUNT = 4;
@@ -66,10 +72,14 @@ export const TOP_TIER_MAX_OWGR_RANK = 24;
  * scores are returned as-is — the cap is reserved for `complete` or
  * post-cut play. This fixes bug #5.1 (cap firing mid-Round-1).
  *
- * Bug #5.2: when a golfer is missed-cut but `cutScore` is null, we
- * return MISSED_CUT_FALLBACK_SCORE rather than `rawScore + 1` (which
- * could produce a sub-par fantasy score that beats legitimate cut
- * survivors).
+ * Missed-cut handling (revised 2026-05-17): per-golfer `fantasyScore`
+ * is the flat `MISSED_CUT_PENALTY_STROKES` constant. The cut line
+ * doesn't enter the math anymore — every missed-cut golfer
+ * contributes the same penalty regardless of how far over the cut
+ * they were, and `computeLeagueResults` excludes these from the
+ * top-3 pool and sums the penalty separately. Closes #5.2 (null
+ * cut score) as a side effect — there's no longer a code path that
+ * needs a fallback score.
  */
 export function applyFantasyRules(params: {
   scoreToParRaw: string;   // ESPN string like "-4", "E", "+2"
@@ -86,13 +96,11 @@ export function applyFantasyRules(params: {
 
   switch (status) {
     case 'missed_cut':
-      // Rule 3a: missed cut = cut + penalty strokes.
-      // Bug #5.2 fix: when cutScore is null, use a clearly losing
-      // fallback rather than rawScore+1.
+      // Rule 3a (revised): flat penalty, independent of cut line and
+      // raw score. computeLeagueResults excludes this golfer from
+      // top-3 and sums the penalty separately into the total.
       return {
-        fantasyScore: cutScore !== null
-          ? cutScore + MISSED_CUT_PENALTY_STROKES
-          : MISSED_CUT_FALLBACK_SCORE,
+        fantasyScore: MISSED_CUT_PENALTY_STROKES,
         status: 'missed_cut',
       };
 
@@ -179,11 +187,24 @@ export function calculateTop3(scores: (number | null)[]): {
  *
  * Replacement handling: if a slot's primary golfer was replaced
  * (`was_replaced` + `replaced_by_golfer_id`), uses the replacement's
- * fantasy_score instead.
+ * fantasy_score AND status (so a replaced-by-missed-cut golfer is
+ * scored as missed-cut, not as the original WD/DQ).
+ *
+ * Total math (revised 2026-05-17):
+ *   total = top-3 sum + (missed-cut count × MISSED_CUT_PENALTY_STROKES)
+ *
+ *   Top-3 pool excludes missed-cut golfers — they contribute the flat
+ *   penalty instead. The dropped slot in the top-3-of-4 calc therefore
+ *   becomes whichever non-missed-cut golfer has the worst score (or
+ *   the slot is simply absent from the pool if the user has fewer
+ *   than 4 made-cut golfers).
+ *
+ *   total_score = null when no golfer has scored AND no golfer missed
+ *   cut (i.e. pre-Round-1, or all four WD/DQ).
  *
  * Rank assignment: lower total wins. Ties get the same rank — i.e.,
  * "1, 2, 2, 4" (skip 3 after a tie at 2). Players with `total = null`
- * (e.g. all four golfers WD/DQ) are not assigned a rank.
+ * are not assigned a rank.
  */
 export function computeLeagueResults(
   picks: Pick[],
@@ -197,29 +218,48 @@ export function computeLeagueResults(
       pick.golfer_4_id,
     ];
 
-    const scores = golferIds.map(id => {
-      if (!id) return null;
-      // If golfer was replaced, use replacement's score
+    const slotEntries = golferIds.map(id => {
+      if (!id) return { fantasy: null as number | null, missedCut: false };
       const score = scoreMap.get(id);
-      if (!score) return null;
-      if (score.was_replaced && score.replaced_by_golfer_id) {
-        return scoreMap.get(score.replaced_by_golfer_id)?.fantasy_score ?? null;
-      }
-      return score.fantasy_score;
+      if (!score) return { fantasy: null as number | null, missedCut: false };
+      // If the slot's primary golfer was replaced, the replacement's
+      // score AND status take over — both need to flow through so a
+      // replacement who themselves miss the cut counts as missed-cut.
+      const effective = (score.was_replaced && score.replaced_by_golfer_id)
+        ? scoreMap.get(score.replaced_by_golfer_id) ?? null
+        : score;
+      if (!effective) return { fantasy: null as number | null, missedCut: false };
+      return {
+        fantasy:   effective.fantasy_score,
+        missedCut: effective.status === 'missed_cut',
+      };
     });
 
-    const { countingIndices, total } = calculateTop3(scores);
+    // Top-3 pool: non-missed-cut only. A missed-cut golfer contributes
+    // through the penalty bucket below, never through the pool.
+    const top3Pool = slotEntries.map(e => e.missedCut ? null : e.fantasy);
+    const { countingIndices, total: top3Total } = calculateTop3(top3Pool);
+    const missedCutCount = slotEntries.filter(e => e.missedCut).length;
+    const penaltyTotal   = missedCutCount * MISSED_CUT_PENALTY_STROKES;
+
+    // null total only when nothing has happened — no scored golfers
+    // AND no missed cuts. Otherwise the penalty alone gives us a
+    // meaningful total (e.g. all 4 missed cut → total = 4).
+    let totalScore: number | null;
+    if (top3Total !== null)         totalScore = top3Total + penaltyTotal;
+    else if (missedCutCount > 0)    totalScore = penaltyTotal;
+    else                            totalScore = null;
 
     return {
       league_id:       pick.league_id,
       tournament_id:   pick.tournament_id,
       user_id:         pick.user_id,
-      golfer_1_score:  scores[0],
-      golfer_2_score:  scores[1],
-      golfer_3_score:  scores[2],
-      golfer_4_score:  scores[3],
+      golfer_1_score:  slotEntries[0].fantasy,
+      golfer_2_score:  slotEntries[1].fantasy,
+      golfer_3_score:  slotEntries[2].fantasy,
+      golfer_4_score:  slotEntries[3].fantasy,
       counting_golfers: countingIndices.map(i => i + 1), // 1-indexed for display
-      total_score:     total,
+      total_score:     totalScore,
       // Annotated as number|null so TS doesn't infer the literal `null`
       // and reject the rank assignment loop below under strictNullChecks.
       rank:            null as number | null,

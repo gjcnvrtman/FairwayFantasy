@@ -6,7 +6,6 @@ import {
   computeLeagueResults,
   isReplacementEligible,
   MISSED_CUT_PENALTY_STROKES,
-  MISSED_CUT_FALLBACK_SCORE,
   PICK_GOLFER_COUNT,
   COUNTING_GOLFER_COUNT,
   TOP_TIER_MAX_OWGR_RANK,
@@ -346,10 +345,21 @@ describe('applyFantasyRules — core rules', () => {
     expect(r.fantasyScore).toBe(-10);
   });
 
-  it('missed-cut score = cutScore + MISSED_CUT_PENALTY_STROKES', () => {
+  it('missed-cut per-golfer score is flat MISSED_CUT_PENALTY_STROKES (cut line ignored)', () => {
+    // Rule revised 2026-05-17: per-golfer fantasyScore is just the
+    // flat penalty regardless of the cut line OR how far over the
+    // golfer was. computeLeagueResults excludes missed-cut from
+    // top-3 and sums the penalty separately.
     const r = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 3 });
-    expect(r.fantasyScore).toBe(3 + MISSED_CUT_PENALTY_STROKES);
+    expect(r.fantasyScore).toBe(MISSED_CUT_PENALTY_STROKES);
     expect(r.status).toBe('missed_cut');
+  });
+
+  it('missed-cut score does not depend on cut line value', () => {
+    const a = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 0 });
+    const b = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 7 });
+    expect(a.fantasyScore).toBe(b.fantasyScore);
+    expect(a.fantasyScore).toBe(MISSED_CUT_PENALTY_STROKES);
   });
 
   it('withdrawn returns null score (eligible for replacement)', () => {
@@ -412,23 +422,20 @@ describe('applyFantasyRules — round-in-progress (#5.1 fix)', () => {
   });
 });
 
-describe('applyFantasyRules — null cutScore + missed cut (#5.2 fix)', () => {
-  it('uses MISSED_CUT_FALLBACK_SCORE when cutScore is null', () => {
-    // Was a pinned bug: rawScore+1 returned -2 for a -3 missed-cut
-    // round. Now returns MISSED_CUT_FALLBACK_SCORE (clearly losing).
+describe('applyFantasyRules — null cutScore + missed cut (was #5.2)', () => {
+  it('missed-cut with null cutScore returns flat penalty (closed by 2026-05-17 rule change)', () => {
+    // The old "fallback score" was needed because the previous rule
+    // (cut + 1) couldn't be evaluated without cut data. Under the
+    // flat-penalty rule, cut data is irrelevant for missed-cut
+    // scoring — the per-golfer score is always MISSED_CUT_PENALTY_STROKES.
     const r = applyFantasyRules({ scoreToParRaw: '-3', espnStatus: 'cut', cutScore: null });
-    expect(r.fantasyScore).toBe(MISSED_CUT_FALLBACK_SCORE);
+    expect(r.fantasyScore).toBe(MISSED_CUT_PENALTY_STROKES);
     expect(r.status).toBe('missed_cut');
   });
 
-  it('still uses cutScore + penalty when cutScore is known', () => {
-    // Don't accidentally regress the happy path.
-    const r = applyFantasyRules({ scoreToParRaw: '+8', espnStatus: 'cut', cutScore: 5 });
-    expect(r.fantasyScore).toBe(6);
-  });
-
-  it('fallback does not affect non-missed-cut statuses', () => {
-    // Active with null cutScore → score as-is, no fallback applied.
+  it('non-missed-cut statuses still ignore cutScore=null and pass raw score through', () => {
+    // Active with null cutScore → score as-is. Made-cut cap still
+    // applies only when cutScore is known.
     const r = applyFantasyRules({ scoreToParRaw: '+2', espnStatus: 'active', cutScore: null });
     expect(r.fantasyScore).toBe(2);
   });
@@ -449,12 +456,6 @@ describe('exported constants', () => {
 
   it('MISSED_CUT_PENALTY_STROKES = 1', () => {
     expect(MISSED_CUT_PENALTY_STROKES).toBe(1);
-  });
-
-  it('MISSED_CUT_FALLBACK_SCORE is high enough to lose to any realistic cut', () => {
-    // Cut lines on PGA tour rarely go above +10. Fallback should be
-    // clearly worse than cut+1 in any realistic scenario.
-    expect(MISSED_CUT_FALLBACK_SCORE).toBeGreaterThan(20);
   });
 });
 
@@ -726,6 +727,114 @@ describe('computeLeagueResults — replacement handling', () => {
     const r = computeLeagueResults(picks, scoreMap);
     expect(r[0].golfer_1_score).toBe(-4);  // pulled from replacement
     expect(r[0].total_score).toBe(-5); // -4 + -1 + 0
+  });
+
+  it('a replacement who themselves miss the cut counts as missed-cut', () => {
+    // Replacement's status flows through to top-3 eligibility — the
+    // slot is excluded from the pool and contributes the flat penalty.
+    const picks = [makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({
+        golfer_id: 'orig', fantasy_score: null, status: 'withdrawn',
+        was_replaced: true, replaced_by_golfer_id: 'rep',
+      }),
+      // Replacement missed cut — their per-golfer fantasy_score is +1,
+      // and the slot becomes a penalty slot (not a top-3 candidate).
+      makeScore({ golfer_id: 'rep', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'b',   fantasy_score: -3 }),
+      makeScore({ golfer_id: 'c',   fantasy_score: -2 }),
+      makeScore({ golfer_id: 'd',   fantasy_score: 0 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // Top-3 pool = (-3, -2, 0) — slot 1 (rep) is missed-cut, excluded
+    // Penalty = 1 × 1 = +1
+    // Total   = -5 + 1 = -4
+    expect(r[0].total_score).toBe(-4);
+    expect(r[0].counting_golfers.sort()).toEqual([2, 3, 4]);
+  });
+});
+
+describe('computeLeagueResults — missed-cut penalty scoring (rule revised 2026-05-17)', () => {
+  it('1 missed-cut + 3 made-cut: top-3 = made, penalty = +1', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: 1, status: 'missed_cut' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // Top-3 = -3 + -1 + 2 = -2;  penalty = +1;  total = -1.
+    expect(r[0].total_score).toBe(-1);
+    expect(r[0].counting_golfers.sort()).toEqual([1, 2, 3]);
+  });
+
+  it('2 missed-cut + 2 made-cut: top-3 sums the 2 made, penalty = +2', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'c', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'd', fantasy_score: 1, status: 'missed_cut' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // Top-3 of made-cut = -2 + -3 = -5;  penalty = +2;  total = -3.
+    expect(r[0].total_score).toBe(-3);
+    expect(r[0].counting_golfers.sort()).toEqual([1, 2]);
+  });
+
+  it('all 4 missed cut: top-3 = 0, total = +4', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'b', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'c', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'd', fantasy_score: 1, status: 'missed_cut' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // Top-3 pool empty (all missed cut); penalty = +4.
+    expect(r[0].total_score).toBe(4);
+    expect(r[0].counting_golfers).toEqual([]);
+  });
+
+  it('0 missed-cut: total matches plain top-3 (no penalty added)', () => {
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +4 }), // dropped
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(-2); // unchanged from baseline test above
+  });
+
+  it('missed-cut beats a worse made-cut: a +1 penalty outranks losing a stroke', () => {
+    // User 1: 3 made-cut at -2, -1, 0 (top-3 sum -3) + 1 missed-cut (penalty +1)
+    //         total = -3 + 1 = -2
+    // User 2: 4 made-cut at -2, -1, 0, +5 (drop +5; top-3 sum -3)
+    //         total = -3
+    // User 2 should still beat user 1 — but only by 1 stroke.
+    const picks = [
+      makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' }),
+      makePick({ user_id: 'u2', g1: 'e', g2: 'f', g3: 'g', g4: 'h' }),
+    ];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: 0 }),
+      makeScore({ golfer_id: 'd', fantasy_score: 1, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'e', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'f', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'g', fantasy_score: 0 }),
+      makeScore({ golfer_id: 'h', fantasy_score: +5 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    const byUser = Object.fromEntries(r.map(x => [x.user_id, x]));
+    expect(byUser.u1.total_score).toBe(-2);
+    expect(byUser.u2.total_score).toBe(-3);
+    expect(byUser.u2.rank).toBe(1);
+    expect(byUser.u1.rank).toBe(2);
   });
 });
 

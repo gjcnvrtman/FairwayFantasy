@@ -338,25 +338,46 @@ function ActiveTournamentSection({
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          {leaderboard.map((r: any, i: number) => {
-            const rowPick = picksByUser.get(r.user_id);
-            const isMe    = r.user_id === currentUserId;
-            // Pre-lock privacy: hide other players' foursomes. The
-            // leaderboard generally only renders post-lock anyway, but
-            // guard so an unlocked state still respects privacy.
-            const canReveal = revealPicks || isMe;
-            return (
-              <LeaderboardRow
-                key={r.user_id}
-                result={r}
-                pick={rowPick}
-                index={i}
-                isMe={isMe}
-                reveal={canReveal && !!rowPick}
-                scoresByGolferId={scoresByGolferId}
-              />
-            );
-          })}
+          {(() => {
+            // Post-cut surface: once the cut has been made (or the
+            // tournament is complete), the leaderboard row appends a
+            // "Missed cut penalties" section so users can see exactly
+            // which of their picks contribute the flat +1 penalty.
+            //
+            // We OR three signals so a partial sync-state can't hide
+            // the section: (a) tournament.status explicitly says
+            // cut_made/complete, OR (b) at least one golfer in the
+            // field has been classified missed_cut — which can only
+            // happen post-cut. Belt-and-suspenders for tournaments
+            // where ESPN doesn't return a cut_score (covers the
+            // 2026-05 PGA Championship's status-stuck-at-active case).
+            const tournamentSaysPostCut =
+              tournament.status === 'cut_made' || tournament.status === 'complete';
+            const dataSaysPostCut = Array
+              .from(scoresByGolferId.values())
+              .some((s: any) => s?.status === 'missed_cut');
+            const postCut = tournamentSaysPostCut || dataSaysPostCut;
+            return leaderboard.map((r: any, i: number) => {
+              const rowPick = picksByUser.get(r.user_id);
+              const isMe    = r.user_id === currentUserId;
+              // Pre-lock privacy: hide other players' foursomes. The
+              // leaderboard generally only renders post-lock anyway, but
+              // guard so an unlocked state still respects privacy.
+              const canReveal = revealPicks || isMe;
+              return (
+                <LeaderboardRow
+                  key={r.user_id}
+                  result={r}
+                  pick={rowPick}
+                  index={i}
+                  isMe={isMe}
+                  reveal={canReveal && !!rowPick}
+                  scoresByGolferId={scoresByGolferId}
+                  postCut={postCut}
+                />
+              );
+            });
+          })()}
         </div>
       )}
 
@@ -370,7 +391,7 @@ function ActiveTournamentSection({
 }
 
 function LeaderboardRow({
-  result, pick, index, isMe, reveal, scoresByGolferId,
+  result, pick, index, isMe, reveal, scoresByGolferId, postCut,
 }: {
   result: any;
   pick:   any;
@@ -378,6 +399,9 @@ function LeaderboardRow({
   isMe:   boolean;
   reveal: boolean;
   scoresByGolferId: Map<string, any>;
+  /** True once tournament.status flips to cut_made/complete — enables
+   *  the missed-cut summary section under the foursome rows. */
+  postCut: boolean;
 }) {
   const totalClass =
     result.total_score < 0 ? 'score-under'
@@ -486,6 +510,60 @@ function LeaderboardRow({
               </div>
             );
           })}
+
+          {/* Missed-cut penalty section — visible once the cut has
+              been made. Shows one row per missed-cut golfer in the
+              user's foursome (each contributing +1 to the total via
+              the penalty bucket in computeLeagueResults), or a single
+              "No players missed cut" summary line when nobody missed.
+              Total reconciles: top-3 sum + (rows shown here × +1). */}
+          {reveal && pick && postCut && (() => {
+            const mcPicks = [1, 2, 3, 4]
+              .map(slot => ({ slot, g: pick[`golfer_${slot}`] }))
+              .filter(e => {
+                if (!e.g) return false;
+                const s = scoresByGolferId.get(e.g.id);
+                return s?.status === 'missed_cut';
+              });
+            return (
+              <div style={{
+                marginTop: '0.5rem',
+                paddingTop: '0.5rem',
+                borderTop: '1px dashed var(--cream-dark)',
+                display: 'flex', flexDirection: 'column', gap: '0.25rem',
+              }}>
+                {mcPicks.length === 0 ? (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '0.5rem',
+                    fontSize: '0.82rem', color: 'var(--slate-mid)',
+                    fontStyle: 'italic',
+                  }}>
+                    <span style={{ flex: '1 1 auto' }}>No players missed cut</span>
+                    <strong className="score-even" style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                      0
+                    </strong>
+                  </div>
+                ) : (
+                  mcPicks.map(({ slot, g }) => (
+                    <div key={`mc-${slot}`} style={{
+                      display: 'flex', alignItems: 'center', gap: '0.5rem',
+                      fontSize: '0.82rem', color: 'var(--slate)',
+                    }}>
+                      <span style={{
+                        flex: '1 1 auto',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        Missed cut · {g.name}
+                      </span>
+                      <strong className="score-over" style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                        +1
+                      </strong>
+                    </div>
+                  ))
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
