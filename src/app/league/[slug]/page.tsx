@@ -7,10 +7,10 @@ import {
   getLeagueMembers,
   getActiveTournament,
   getFantasyLeaderboard,
-  getSeasonStandings,
   getUpcomingTournaments,
   getPicksForTournament,
   getScoresForTournament,
+  getTournamentLeaderboard,
 } from '@/lib/db/queries';
 import { formatScore } from '@/lib/scoring';
 import {
@@ -50,20 +50,20 @@ export default async function LeaguePage({ params }: Props) {
     .where('id', '=', user.id)
     .executeTakeFirst();
 
-  const [members, activeTournament, upcoming, standings] = await Promise.all([
+  const [members, activeTournament, upcoming] = await Promise.all([
     getLeagueMembers(league.id),
     getActiveTournament(),
     getUpcomingTournaments(4),
-    getSeasonStandings(league.id, new Date().getFullYear()),
   ]);
 
-  const [leaderboard, allPicks, scoresRows] = activeTournament
+  const [leaderboard, allPicks, scoresRows, tournamentLeaders] = activeTournament
     ? await Promise.all([
         getFantasyLeaderboard(league.id, activeTournament.id),
         getPicksForTournament(league.id, activeTournament.id),
         getScoresForTournament(activeTournament.id),
+        getTournamentLeaderboard(activeTournament.id, 25),
       ])
-    : [[], [], []];
+    : [[], [], [], []];
 
   // Build a per-user pick map so the leaderboard rows can render the
   // foursome inline (post-lock) without an extra query per row.
@@ -179,72 +179,14 @@ export default async function LeaguePage({ params }: Props) {
             {/* ── Sidebar ─────────────────────────────────────── */}
             <aside style={{ flex: '0 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
 
-              {/* Season standings */}
-              <div className="card">
-                <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>
-                  {new Date().getFullYear()} Standings
-                </h3>
-                {standings.length === 0 ? (
-                  <p style={{ color: 'var(--slate-mid)', fontSize: '0.875rem' }}>
-                    No results yet this season. Standings populate after the first tournament.
-                  </p>
-                ) : standings.map((s: any, i: number) => (
-                  <div key={s.user_id} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '0.6rem 0', borderBottom: i < standings.length - 1 ? '1px solid var(--cream-dark)' : 'none',
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', minWidth: 0 }}>
-                      <span style={{
-                        fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: '1rem', width: 18,
-                        flexShrink: 0,
-                        color: i === 0 ? '#b8860b' : i === 1 ? '#808080' : i === 2 ? '#a0522d' : 'var(--slate-mid)',
-                      }}>{i + 1}</span>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{
-                          fontSize: '0.875rem',
-                          fontWeight: s.user_id === user.id ? 700 : 500,
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
-                          {s.profile?.display_name ?? 'Player'}
-                          {s.user_id === user.id && <span style={{ color: 'var(--brass)', marginLeft: '0.3rem', fontSize: '0.7rem' }}>you</span>}
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--slate-mid)' }}>
-                          {s.tournaments_played} event{s.tournaments_played !== 1 ? 's' : ''}
-                        </div>
-                      </div>
-                    </div>
-                    <strong className={s.total_score < 0 ? 'score-under' : s.total_score > 0 ? 'score-over' : 'score-even'} style={{ fontSize: '0.95rem', flexShrink: 0 }}>
-                      {formatScore(s.total_score)}
-                    </strong>
-                  </div>
-                ))}
-              </div>
-
-              {/* Roster */}
-              <div className="card">
-                <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>
-                  League Roster
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {members.map((m: any) => (
-                    <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.875rem', gap: '0.5rem' }}>
-                      <span style={{
-                        fontWeight: m.user_id === user.id ? 700 : 400,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {m.profile?.display_name ?? 'Player'}
-                        {m.user_id === user.id && <span style={{ color: 'var(--slate-mid)', marginLeft: '0.3rem', fontSize: '0.75rem' }}>(you)</span>}
-                      </span>
-                      {m.role === 'commissioner' && <span className="badge badge-brass" style={{ fontSize: '0.62rem', flexShrink: 0 }}>★ Comm</span>}
-                    </div>
-                  ))}
-                </div>
-                {members.length < league.max_players && (
-                  <p style={{ marginTop: '0.75rem', fontSize: '0.72rem', color: 'var(--slate-light)' }}>
-                    Room for {league.max_players - members.length} more.
-                  </p>
-                )}
-              </div>
+              {/* Tournament leaderboard — top 25 of the actual PGA field.
+                  Replaces the previous "Season Standings" + "League Roster"
+                  sidebar cards (removed 2026-05-17). Shows everyone in the
+                  field regardless of whether they were picked, so the
+                  sidebar is useful even when your foursome flames out. */}
+              {activeTournament && (
+                <TournamentLeaderboardCard leaders={tournamentLeaders} />
+              )}
 
               {/* Invite — client component, lifted out of the server tree
                   so the copy button's onClick actually works. Bug #4.9. */}
@@ -372,35 +314,12 @@ function ActiveTournamentSection({
         <span className="badge badge-live">🔴 Live</span>
       </div>
 
-      {/* My pick summary (always visible to me, even pre-lock) */}
-      {myPick ? (
-        <div className="card" style={{ marginBottom: '1rem', borderLeft: '4px solid var(--green-mid)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-            <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>My Pick</p>
-            <Link href={`/league/${slug}/picks`} className="btn btn-ghost btn-sm">
-              {revealPicks ? 'Review' : 'Edit'}
-            </Link>
-          </div>
-          <div style={{ display: 'flex', flexFlow: 'row wrap', gap: '0.5rem' }}>
-            {[myPick.golfer_1, myPick.golfer_2, myPick.golfer_3, myPick.golfer_4].map((g: any, i: number) => g && (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: '0.4rem',
-                fontSize: '0.85rem', flex: '1 1 220px', minWidth: 0,
-              }}>
-                <span className={`badge ${i < 2 ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.62rem', flexShrink: 0 }}>
-                  {i < 2 ? 'Top' : 'DH'}
-                </span>
-                <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {g.name}
-                </span>
-                <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem', flexShrink: 0 }}>
-                  {g.owgr_rank ? `#${g.owgr_rank}` : 'Unranked'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
+      {/* My-pick preview card removed 2026-05-17 — the picks page is one
+          click away via the hero CTA and the post-lock fantasy leaderboard
+          below already reveals every user's foursome inline. Keep only the
+          missing-pick warning so the user is nudged when they haven't
+          submitted yet. */}
+      {!myPick && (
         <div className="alert alert-warn" style={{ marginBottom: '1rem' }}>
           ⚠️ You haven&rsquo;t submitted picks for this tournament yet.{' '}
           <Link href={`/league/${slug}/picks`} style={{ fontWeight: 700, color: 'inherit' }}>Submit now →</Link>
@@ -655,6 +574,99 @@ function SoloCommissionerCard({ isCommissioner }: { isCommissioner: boolean }) {
       {isCommissioner
         ? 'Use the invite link in the sidebar to get your buddies in.'
         : 'Standings will get more interesting once more friends join.'}
+    </div>
+  );
+}
+
+// ── Tournament leaderboard — top 25 of the actual PGA field ────
+// Drives the league sidebar after the dashboard redesign on 2026-05-17.
+// Sourced via `getTournamentLeaderboard` (scores ⨝ golfers, ordered
+// by score_to_par asc, limit 25). Rows include status badges for
+// non-active golfers (MC/WD/DQ) so the sidebar reads honestly during
+// cut day. Pre-round-1 (no score_to_par anywhere) the query returns
+// 0 rows and we show an empty-state hint.
+
+interface TournamentLeader {
+  golfer_id:     string;
+  golfer_name:   string;
+  owgr_rank:     number | null;
+  country:       string | null;
+  score_to_par:  number | null;
+  position:      string | null;
+  status:        'active' | 'missed_cut' | 'withdrawn' | 'disqualified' | 'complete';
+  total_strokes: number | null;
+}
+
+function TournamentLeaderboardCard({ leaders }: { leaders: TournamentLeader[] }) {
+  if (!leaders.length) {
+    return (
+      <div className="card">
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '0.6rem' }}>
+          Tournament Leaderboard
+        </h3>
+        <p style={{ color: 'var(--slate-mid)', fontSize: '0.875rem' }}>
+          No scores yet — leaderboard populates once round 1 tees off.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '0.2rem' }}>
+        Tournament Leaderboard
+      </h3>
+      <p style={{ color: 'var(--slate-light)', fontSize: '0.72rem', marginBottom: '0.8rem' }}>
+        Top {leaders.length} in the field
+      </p>
+      <div>
+        {leaders.map((g, i) => {
+          const posLabel = g.position?.trim() || String(i + 1);
+          const cutLabel =
+            g.status === 'missed_cut'   ? 'MC'
+          : g.status === 'withdrawn'    ? 'WD'
+          : g.status === 'disqualified' ? 'DQ'
+          : null;
+          return (
+            <div key={g.golfer_id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '0.4rem 0',
+              borderBottom: i < leaders.length - 1 ? '1px solid var(--cream-dark)' : 'none',
+              opacity: cutLabel ? 0.65 : 1,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', minWidth: 0, flex: 1 }}>
+                <span style={{
+                  fontFamily: 'monospace', fontWeight: 700, fontSize: '0.78rem',
+                  width: 26, flexShrink: 0, color: 'var(--slate-mid)', textAlign: 'right',
+                }}>
+                  {posLabel}
+                </span>
+                <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                  <span style={{
+                    fontSize: '0.85rem', fontWeight: 500,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {g.golfer_name}
+                  </span>
+                  {(g.owgr_rank || cutLabel) && (
+                    <span style={{ fontSize: '0.7rem', color: 'var(--slate-mid)', display: 'flex', gap: '0.4rem' }}>
+                      {g.owgr_rank && <span>OWGR #{g.owgr_rank}</span>}
+                      {cutLabel && <span style={{ color: 'var(--red)', fontWeight: 700 }}>{cutLabel}</span>}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <strong className={
+                g.score_to_par === null      ? 'score-even'
+              : g.score_to_par < 0           ? 'score-under'
+              : g.score_to_par > 0           ? 'score-over'
+              : 'score-even'
+              } style={{ fontSize: '0.9rem', flexShrink: 0, marginLeft: '0.5rem' }}>
+                {formatScore(g.score_to_par)}
+              </strong>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

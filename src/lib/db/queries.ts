@@ -106,6 +106,44 @@ export async function getScoresForTournament(tournamentId: string) {
     .execute();
 }
 
+// ── tournament leaderboard ───────────────────────────────────
+// Top `limit` players in the actual PGA event for a tournament,
+// ordered by score_to_par ascending (lower = better in golf), with
+// golfer name + OWGR rank joined in. Includes everyone in the field,
+// not just golfers somebody picked. Used by the league dashboard's
+// sidebar leaderboard card.
+//
+// `position` ties (T15) come straight from ESPN's `scores.position`
+// string; the caller renders it verbatim. Golfers without a recorded
+// `score_to_par` (haven't teed off yet) are excluded so the table
+// stays a meaningful "currently best in the field" view.
+export async function getTournamentLeaderboard(
+  tournamentId: string,
+  limit = 25,
+) {
+  return await db.selectFrom('scores')
+    .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+    .select([
+      'scores.golfer_id',
+      'scores.score_to_par',
+      'scores.position',
+      'scores.status',
+      'scores.total_strokes',
+      'scores.round_1',
+      'scores.round_2',
+      'scores.round_3',
+      'scores.round_4',
+      'golfers.name as golfer_name',
+      'golfers.owgr_rank',
+      'golfers.country',
+    ])
+    .where('scores.tournament_id', '=', tournamentId)
+    .where('scores.score_to_par', 'is not', null)
+    .orderBy('scores.score_to_par', 'asc')
+    .limit(limit)
+    .execute();
+}
+
 // ── fantasy_results (with embedded profile) ──────────────────
 
 export async function getFantasyLeaderboard(leagueId: string, tournamentId: string) {
