@@ -447,12 +447,22 @@ function LeaderboardRow({
               slot,
               g: pick[`golfer_${slot}`],
               fantasy: result[`golfer_${slot}_score`] as number | null,
+              missedCut: scoresByGolferId.get(pick[`golfer_${slot}`]?.id)?.status === 'missed_cut',
             }))
             .filter(e => e.g)
-            // Sort by fantasy score, lower = better (golf scoring).
-            // Nulls (un-scored golfer) go last so they don't display
-            // above golfers with real numbers.
-            .sort((a, b) => (a.fantasy ?? Infinity) - (b.fantasy ?? Infinity))
+            // Sort:
+            //   1. Cut survivors first (status='active'/'complete'/etc.)
+            //   2. Missed-cut golfers last — they don't count toward
+            //      top-3 even when their flat +1 penalty would
+            //      numerically beat an active golfer's score, so they
+            //      should fall out of the per-golfer ordering entirely
+            //      and surface at the bottom of the list.
+            //   3. Within each group, lower fantasy = better (golf
+            //      scoring). Nulls (un-scored / WD / DQ) go last.
+            .sort((a, b) => {
+              if (a.missedCut !== b.missedCut) return a.missedCut ? 1 : -1;
+              return (a.fantasy ?? Infinity) - (b.fantasy ?? Infinity);
+            })
             .map(({ slot, g, fantasy }) => {
             const isCounting = counting.has(slot);
             const scoreRow   = scoresByGolferId.get(g.id);
