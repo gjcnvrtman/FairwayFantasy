@@ -1,6 +1,7 @@
 'use client';
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { signIn } from 'next-auth/react';
 import Link from 'next/link';
 import { AUTH_LIMITS } from '@/lib/auth-validation';
 
@@ -24,8 +25,13 @@ function SignUpForm() {
     return m ? { slug: m[1], code: m[2] } : null;
   })();
 
+  // Email prefill from the invite email's `?email=` URL param. Greg
+  // 2026-05-17: invite recipients shouldn't have to retype an address
+  // we already sent the link to.
+  const emailPrefill = params.get('email') ?? '';
+
   const [displayName, setDisplayName] = useState('');
-  const [email, setEmail]             = useState('');
+  const [email, setEmail]             = useState(emailPrefill);
   const [password, setPassword]       = useState('');
   // Pre-fill from the redirect path when arriving via an invite link.
   const [leagueSlug, setLeagueSlug]   = useState(inviteFromRedirect?.slug ?? '');
@@ -63,9 +69,33 @@ function SignUpForm() {
         return;
       }
 
-      // ── 2. Show "check your email" — email verification gate
-      // means we can't auto-sign-in. The verify link in the email
-      // will land them on /auth/verify which then directs to /auth/signin.
+      // ── 2a. Invite-flow auto-login (2026-05-17). Server marks the
+      // new user's email_verified=true when the registration carries
+      // a valid invite, so we can sign them in immediately and ship
+      // them to the redirect (/join/<slug>/<code>?auto=1 → /league/).
+      // No "check your email" gate in this path — they proved access
+      // to the email by clicking the invite link, and the upstream
+      // /join page won't let them get here without a verified invite.
+      if (data.autoVerified) {
+        const result = await signIn('credentials', {
+          email,
+          password,
+          redirect: false,
+        });
+        setLoading(false);
+        if (result?.ok) {
+          router.push(redirect);
+          return;
+        }
+        // Auto-login failed for some reason — fall back to the
+        // verify panel so the user still has a clear next step.
+        setTopError(result?.error ?? 'Account created but auto-login failed. Please sign in.');
+        return;
+      }
+
+      // ── 2b. Non-invite (or non-auto-verified) path: show
+      // "check your email". Verification link will redirect to
+      // /auth/verify → /auth/signin.
       setLoading(false);
       setRegistered({ email, emailSent: !!data.emailSent });
     } catch (err) {

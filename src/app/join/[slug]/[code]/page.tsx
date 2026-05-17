@@ -1,14 +1,18 @@
 'use client';
-import { useState, useEffect } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useState, useEffect, useRef } from 'react';
+import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
 export default function JoinLeaguePage() {
-  const params = useParams();
-  const router = useRouter();
-  const slug       = params.slug as string;
-  const inviteCode = params.code as string;
+  const params       = useParams();
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const slug         = params.slug as string;
+  const inviteCode   = params.code as string;
+  // Email-prefill hint from the invite email's URL. Passed through to
+  // /auth/signup so the recipient doesn't have to retype their address.
+  const emailHint    = searchParams.get('email') ?? '';
 
   const [status, setStatus] = useState<'loading' | 'ready' | 'joining' | 'success' | 'error'>('loading');
   const [leagueName, setLeagueName] = useState('');
@@ -16,8 +20,15 @@ export default function JoinLeaguePage() {
 
   // NextAuth session — `useSession()` returns `{ data, status }`.
   // We only care about whether there's a user; UI logic below.
-  const session    = useSession();
-  const isLoggedIn = !!session.data?.user?.id;
+  const session     = useSession();
+  const sessionStat = session.status;          // 'loading' | 'authenticated' | 'unauthenticated'
+  const isLoggedIn  = !!session.data?.user?.id;
+
+  // Auto-join when the user lands here AFTER signing up (signup form
+  // redirects to /join/<slug>/<code>?auto=1 once it's logged the new
+  // user in). One-shot guard so a re-render can't fire it twice.
+  const autoFlag       = searchParams.get('auto') === '1';
+  const autoJoinedRef  = useRef(false);
 
   useEffect(() => {
     async function verify() {
@@ -33,6 +44,22 @@ export default function JoinLeaguePage() {
     verify();
   }, [slug, inviteCode]);
 
+  // Once the invite is verified AND we know the session state, decide
+  // whether to push the visitor straight into signup (logged-out path).
+  // We wait for `sessionStat !== 'loading'` so we don't redirect during
+  // the brief window before useSession resolves.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    if (sessionStat === 'loading') return;
+    if (isLoggedIn) return;
+    // Build a redirect that keeps the auto-join flag so signup → join
+    // resolves to /league/<slug> in one hop.
+    const redirect = `/join/${slug}/${inviteCode}?auto=1${emailHint ? `&email=${encodeURIComponent(emailHint)}` : ''}`;
+    const url = `/auth/signup?redirect=${encodeURIComponent(redirect)}`
+              + (emailHint ? `&email=${encodeURIComponent(emailHint)}` : '');
+    router.replace(url);
+  }, [status, sessionStat, isLoggedIn, slug, inviteCode, emailHint, router]);
+
   async function handleJoin() {
     setStatus('joining');
     const res = await fetch('/api/leagues/join', {
@@ -45,6 +72,19 @@ export default function JoinLeaguePage() {
     setStatus('success');
     setTimeout(() => router.push(`/league/${slug}`), 1500);
   }
+
+  // Auto-join on landing for the signup → join handoff. Only fires
+  // once and only when the URL explicitly opted in via ?auto=1.
+  useEffect(() => {
+    if (!autoFlag) return;
+    if (status !== 'ready') return;
+    if (!isLoggedIn) return;
+    if (autoJoinedRef.current) return;
+    autoJoinedRef.current = true;
+    handleJoin();
+    // handleJoin reads slug/inviteCode from closure; no deps needed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFlag, status, isLoggedIn]);
 
   if (status === 'loading') {
     return (

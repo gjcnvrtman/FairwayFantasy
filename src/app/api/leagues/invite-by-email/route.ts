@@ -113,19 +113,25 @@ export async function POST(req: NextRequest) {
     .executeTakeFirst();
   const inviterName = profile?.display_name || profile?.email || 'A Fairway Fantasy member';
 
-  const siteUrl   = process.env.NEXT_PUBLIC_SITE_URL || '';
-  const inviteUrl = `${siteUrl}/join/${auth.league.slug}/${auth.league.invite_code}`;
-  const { subject, text, html } = invitationEmail({
-    leagueName:  auth.league.name,
-    inviterName,
-    inviteUrl,
-  });
+  const siteUrl    = process.env.NEXT_PUBLIC_SITE_URL || '';
+  const inviteBase = `${siteUrl}/join/${auth.league.slug}/${auth.league.invite_code}`;
 
   // Sequential — Gmail SMTP is fine with a handful of sends in a row
   // and we want per-address failure attribution. Parallelising via
   // Promise.all would conflate errors. MAX_EMAILS keeps the loop bounded.
+  //
+  // Each recipient gets a URL with their own ?email= param so the
+  // /join page can redirect logged-out users straight to a signup
+  // form with the email pre-filled. Anyone who copy-pastes the link
+  // can still edit the field — the param is a hint, not a credential.
   const sent: string[] = [];
   for (const to of valid) {
+    const inviteUrl = `${inviteBase}?email=${encodeURIComponent(to)}`;
+    const { subject, text, html } = invitationEmail({
+      leagueName:  auth.league.name,
+      inviterName,
+      inviteUrl,
+    });
     const ok = await sendEmail({ to, subject, text, html });
     if (ok) sent.push(to);
     else    failed.push({ email: to, reason: 'SMTP send failed' });
@@ -135,6 +141,6 @@ export async function POST(req: NextRequest) {
     ok: true,
     sent,
     failed,
-    inviteUrl,   // echoed so the UI can still show the canonical link
+    inviteUrl: inviteBase,   // echoed so the UI can still show the canonical link
   });
 }
