@@ -56,6 +56,14 @@ export default function AdminPanel({
   const [regenErr,   setRegenErr]   = useState('');
   const [regenWorking, setRegenWorking] = useState(false);
 
+  // ── League settings (max_players) ────────────────────────
+  const [maxPlayersInput, setMaxPlayersInput] = useState<string>(
+    String(league.max_players),
+  );
+  const [maxPlayersBusy, setMaxPlayersBusy]   = useState(false);
+  const [maxPlayersMsg,  setMaxPlayersMsg]    = useState('');
+  const [maxPlayersErr,  setMaxPlayersErr]    = useState('');
+
   // Effective invite path (current code, or freshly regenerated one)
   const effectiveCode = newInvite || league.invite_code;
   const effectiveUrl  = newInvite
@@ -142,6 +150,36 @@ export default function AdminPanel({
     }
   }
 
+  async function saveMaxPlayers() {
+    setMaxPlayersBusy(true);
+    setMaxPlayersMsg('');
+    setMaxPlayersErr('');
+    const parsed = Number(maxPlayersInput);
+    if (!Number.isInteger(parsed)) {
+      setMaxPlayersErr('Enter a whole number.');
+      setMaxPlayersBusy(false);
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/league-settings', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ slug: league.slug, maxPlayers: parsed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMaxPlayersErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setMaxPlayersMsg(`Saved — max players is now ${data.league?.max_players ?? parsed}.`);
+      router.refresh();
+    } catch (err) {
+      setMaxPlayersErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMaxPlayersBusy(false);
+    }
+  }
+
   // ── Pick-deadline override handlers ───────────────────────
   // Keyed by tournament id so multiple rows can edit independently.
   const [deadlineInputs,  setDeadlineInputs]  = useState<Record<string, string>>({});
@@ -202,7 +240,9 @@ export default function AdminPanel({
           League Settings
         </h2>
         <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', marginBottom: '1rem' }}>
-          Edit will land in a future update. For now this is the source of truth.
+          Name and URL slug are fixed at creation. Max players can grow or
+          shrink — shrinking below the current member count requires
+          removing members first.
         </p>
         <dl style={{
           display: 'grid', gridTemplateColumns: 'minmax(120px, max-content) 1fr',
@@ -217,14 +257,57 @@ export default function AdminPanel({
           </dd>
 
           <dt style={{ color: 'var(--slate-mid)' }}>Max players</dt>
-          <dd>
-            {league.max_players}
+          <dd style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <input
+              type="number"
+              min={4}
+              max={50}
+              step={1}
+              value={maxPlayersInput}
+              onChange={(e) => setMaxPlayersInput(e.target.value)}
+              disabled={maxPlayersBusy}
+              aria-label="Max players"
+              style={{
+                width: '5rem',
+                padding: '0.25rem 0.4rem',
+                fontFamily: 'monospace',
+                fontSize: '0.9rem',
+              }}
+            />
+            <button
+              type="button"
+              onClick={saveMaxPlayers}
+              disabled={
+                maxPlayersBusy ||
+                maxPlayersInput.trim() === '' ||
+                Number(maxPlayersInput) === league.max_players
+              }
+              aria-busy={maxPlayersBusy}
+              style={{ padding: '0.25rem 0.75rem', fontSize: '0.85rem' }}
+            >
+              {maxPlayersBusy ? 'Saving…' : 'Save'}
+            </button>
+            <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+              currently {members.length} member{members.length === 1 ? '' : 's'}
+            </span>
             {members.length >= league.max_players && (
-              <span style={{ color: 'var(--red)', marginLeft: '0.5rem', fontSize: '0.78rem' }}>
+              <span style={{ color: 'var(--red)', fontSize: '0.78rem' }}>
                 · league is full
               </span>
             )}
           </dd>
+
+          {(maxPlayersMsg || maxPlayersErr) && (
+            <>
+              <dt />
+              <dd style={{
+                color: maxPlayersErr ? 'var(--red)' : 'var(--green)',
+                fontSize: '0.82rem',
+              }}>
+                {maxPlayersErr || maxPlayersMsg}
+              </dd>
+            </>
+          )}
 
           <dt style={{ color: 'var(--slate-mid)' }}>Created</dt>
           <dd>{new Date(league.created_at).toLocaleDateString('en-US', {
