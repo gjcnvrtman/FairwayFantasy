@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useSession } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
 
 export default function JoinLeaguePage() {
   const params       = useParams();
@@ -19,10 +19,19 @@ export default function JoinLeaguePage() {
   const [error, setError] = useState('');
 
   // NextAuth session — `useSession()` returns `{ data, status }`.
-  // We only care about whether there's a user; UI logic below.
-  const session     = useSession();
-  const sessionStat = session.status;          // 'loading' | 'authenticated' | 'unauthenticated'
-  const isLoggedIn  = !!session.data?.user?.id;
+  const session       = useSession();
+  const sessionStat   = session.status;          // 'loading' | 'authenticated' | 'unauthenticated'
+  const isLoggedIn    = !!session.data?.user?.id;
+  const sessionEmail  = (session.data?.user?.email ?? '').toLowerCase();
+  // The invite was sent to a specific address. If the current session
+  // belongs to a DIFFERENT user, joining via this link would attach
+  // the wrong account to the league. Surface a "wrong account" panel
+  // with a sign-out path instead of silently joining (the bug Greg
+  // hit 2026-05-17: gjcnvrtman session active, clicked link sent to
+  // a fresh address, page auto-joined gjcnvrtman to the league).
+  const emailHintLower = emailHint.trim().toLowerCase();
+  const wrongAccount   =
+    isLoggedIn && emailHintLower !== '' && sessionEmail !== emailHintLower;
 
   // Auto-join when the user lands here AFTER signing up (signup form
   // redirects to /join/<slug>/<code>?auto=1 once it's logged the new
@@ -47,7 +56,9 @@ export default function JoinLeaguePage() {
   // Once the invite is verified AND we know the session state, decide
   // whether to push the visitor straight into signup (logged-out path).
   // We wait for `sessionStat !== 'loading'` so we don't redirect during
-  // the brief window before useSession resolves.
+  // the brief window before useSession resolves. The wrong-account
+  // case is handled in the render below (we don't redirect mid-render
+  // because they may want to sign out and continue as the invitee).
   useEffect(() => {
     if (status !== 'ready') return;
     if (sessionStat === 'loading') return;
@@ -75,16 +86,20 @@ export default function JoinLeaguePage() {
 
   // Auto-join on landing for the signup → join handoff. Only fires
   // once and only when the URL explicitly opted in via ?auto=1.
+  // Suppressed when the current session is the wrong account for the
+  // emailed invite (we don't want to attach the wrong user; the
+  // render branch below shows the sign-out CTA instead).
   useEffect(() => {
     if (!autoFlag) return;
     if (status !== 'ready') return;
     if (!isLoggedIn) return;
+    if (wrongAccount) return;
     if (autoJoinedRef.current) return;
     autoJoinedRef.current = true;
     handleJoin();
     // handleJoin reads slug/inviteCode from closure; no deps needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoFlag, status, isLoggedIn]);
+  }, [autoFlag, status, isLoggedIn, wrongAccount]);
 
   if (status === 'loading') {
     return (
@@ -147,20 +162,66 @@ export default function JoinLeaguePage() {
         </div>
 
         <div className="card">
-          {!isLoggedIn ? (
+          {wrongAccount ? (
+            <div>
+              <div className="alert alert-warn" style={{ marginBottom: '1.25rem' }}>
+                ⚠️ This invite was sent to <strong>{emailHint}</strong>, but
+                you&rsquo;re signed in as <strong>{sessionEmail}</strong>. Joining
+                from this account would add the wrong user to the league.
+              </div>
+              <p style={{ textAlign: 'center', color: 'var(--slate-mid)', marginBottom: '1.25rem', fontSize: '0.9rem' }}>
+                Sign out and continue as <strong>{emailHint}</strong> to create that account
+                (or join as your current user if that&rsquo;s what you wanted).
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-full btn-lg"
+                  onClick={async () => {
+                    // signOut clears the session cookie; callbackUrl
+                    // lands the user back on the same invite URL so the
+                    // logged-out branch can redirect to signup with
+                    // the email param pre-filled.
+                    const here = `/join/${slug}/${inviteCode}?email=${encodeURIComponent(emailHint)}`;
+                    await signOut({ redirect: true, callbackUrl: here });
+                  }}
+                >
+                  Sign Out &amp; Continue as {emailHint} →
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-full"
+                  onClick={handleJoin}
+                  disabled={status === 'joining'}
+                >
+                  {status === 'joining'
+                    ? 'Joining…'
+                    : `Stay as ${sessionEmail} and join`}
+                </button>
+              </div>
+            </div>
+          ) : !isLoggedIn ? (
             <div>
               <p style={{ textAlign: 'center', color: 'var(--slate-mid)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
                 Create an account or sign in to join this league. Your invite link will still work after signing in.
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 <Link
-                  href={`/auth/signup?redirect=/join/${slug}/${inviteCode}`}
+                  href={(() => {
+                    // Mirror the auto-redirect-effect URL shape: the
+                    // redirect path is URL-encoded so its embedded
+                    // `?auto=1&email=` doesn't terminate the outer
+                    // `?redirect=` query param.
+                    const back = `/join/${slug}/${inviteCode}?auto=1${emailHint ? `&email=${encodeURIComponent(emailHint)}` : ''}`;
+                    return `/auth/signup?redirect=${encodeURIComponent(back)}`
+                         + (emailHint ? `&email=${encodeURIComponent(emailHint)}` : '');
+                  })()}
                   className="btn btn-primary btn-full btn-lg"
                 >
                   Create Account & Join →
                 </Link>
                 <Link
-                  href={`/auth/signin?redirect=/join/${slug}/${inviteCode}`}
+                  href={`/auth/signin?redirect=${encodeURIComponent(`/join/${slug}/${inviteCode}`)}`}
                   className="btn btn-outline btn-full"
                 >
                   Sign In
