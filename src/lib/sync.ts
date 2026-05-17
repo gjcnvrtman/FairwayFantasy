@@ -91,15 +91,63 @@ async function syncTournament(tournament: {
 
   if (!competitors.length) return { skipped: true };
 
+  // Cut-detection inference (added 2026-05-17).
+  //
+  // ESPN's scoreboard fallback (used whenever /pga/leaderboard 404s,
+  // currently the case for the 2026-05 PGA Championship and most
+  // recent events) returns:
+  //   cutScore: null
+  //   per-golfer status: nothing
+  // …so the old "espnCut !== null → cut_made" trigger never fires.
+  // Until 2026-05-17 this meant tournament.status got stuck at
+  // 'active' through all four rounds AND no golfer was ever
+  // classified missed_cut, breaking the new missed-cut scoring rule.
+  //
+  // Two data-driven signals replace the cutScore dependency:
+  //
+  //   1. cutHasBeenMade  ⇐  currentRound >= 3
+  //      Once ESPN reports we're in Round 3 or later, the cut has
+  //      been made by definition. Flips tournament.status to cut_made.
+  //
+  //   2. inferred per-golfer missed_cut  ⇐  linescores.length < 3
+  //      AND R1+R2 are both present. A golfer who finished 36 holes
+  //      but didn't appear in R3 missed the cut. Applied only when
+  //      ESPN's per-golfer status was the default 'active' (i.e.
+  //      scoreboard fallback) — we trust an explicit WD/DQ/MC from
+  //      the leaderboard endpoint when present.
+  //
+  // We also derive an inferred cut line from cut-survivor totals so
+  // tournament.cut_score can still be populated for the made-cut
+  // cap in applyFantasyRules. Strictly informational under the new
+  // top-3-of-non-MC rule, but it keeps the field meaningful.
+  const cutHasBeenMade = currentRound >= 3 || espnCut !== null;
+
+  let effectiveCut: number | null = espnCut ?? cut_score;
+  if (cutHasBeenMade && effectiveCut === null) {
+    const survivorTotals: number[] = [];
+    for (const c of competitors) {
+      const ls = c.linescores ?? [];
+      if (ls.length >= 3) {
+        const r1 = ls[0]?.value, r2 = ls[1]?.value;
+        if (typeof r1 === 'number' && typeof r2 === 'number') {
+          survivorTotals.push(r1 + r2);
+        }
+      }
+    }
+    if (survivorTotals.length > 0) {
+      // Cut line = worst 36-hole total that still made the cut.
+      effectiveCut = Math.max(...survivorTotals);
+    }
+  }
+
   const newStatus = status.toLowerCase().includes('final') ? 'complete'
-    : espnCut !== null ? 'cut_made' : 'active';
+    : cutHasBeenMade ? 'cut_made' : 'active';
 
   await db.updateTable('tournaments')
-    .set({ status: newStatus, cut_score: espnCut ?? cut_score })
+    .set({ status: newStatus, cut_score: effectiveCut ?? cut_score })
     .where('id', '=', id)
     .execute();
 
-  const effectiveCut = espnCut ?? cut_score;
   // Bug #5.1: only apply the made-cut cap once the cut has been
   // officially made (status `cut_made` or `complete`). During Round 1-2
   // active play, scores are returned as-is.
@@ -140,19 +188,30 @@ async function syncTournament(tournament: {
     const scoreStr  = c.score?.displayValue ?? 'E';
     const rounds    = c.linescores?.map(ls => ls.value) ?? [];
 
-    // Cut-day backstop for the scoreboard fallback (TODO P0 line 45).
-    // The /pga/scoreboard endpoint doesn't carry a per-golfer status
-    // field, so normalizeScoreboardCompetitor defaults every golfer
-    // to 'active'. Once the tournament's cut has been officially made
-    // (cutMade && effectiveCut != null), any golfer whose Round 1+2
-    // cumulative is above the cut line missed the cut regardless of
-    // what ESPN reported as the per-golfer status. Also serves as a
-    // defensive sanity check if the leaderboard endpoint comes back
-    // online — a post-cut 'active' golfer above the cut line is a
-    // data inconsistency we should correct.
-    if (cutMade && effectiveCut !== null && espnStatus === 'active') {
+    // Cut-day backstop (revised 2026-05-17).
+    //
+    // ESPN's /pga/scoreboard fallback doesn't carry a per-golfer
+    // status, so normalizeScoreboardCompetitor defaults every golfer
+    // to 'active'. We need a way to flip post-cut golfers to
+    // missed_cut without relying on a cut-score comparison (since
+    // ESPN often doesn't return cutScore either).
+    //
+    // The cleanest signal is the LENGTH of the linescores array:
+    // ESPN includes R3 entries only for golfers who continued past
+    // the cut, regardless of whether they've actually played R3 yet
+    // (the entry will exist with value=0 and displayValue='-' for
+    // not-yet-played). A golfer who finished 36 holes (both R1 and
+    // R2 present) but has fewer than 3 linescores entries didn't
+    // continue → missed the cut.
+    //
+    // Applied only when ESPN status was the default 'active' so we
+    // don't override an explicit WD / DQ / MC from the leaderboard
+    // endpoint when it is reachable. Also requires the cut to have
+    // been made (avoids classifying mid-R2 WDs as missed_cut).
+    if (cutMade && espnStatus === 'active') {
       const r1 = rounds[0], r2 = rounds[1];
-      if (r1 != null && r2 != null && (r1 + r2) > effectiveCut) {
+      const continuedPastCut = rounds.length >= 3;
+      if (!continuedPastCut && r1 != null && r2 != null) {
         espnStatus = 'missed_cut';
       }
     }
