@@ -2,14 +2,19 @@
 // MONEY MATH — per-tournament + per-league cumulative deltas.
 //
 // Greg's rules (locked 2026-05-17):
-//   - Every member of a league bets `weekly_bet_amount` against
-//     every other member each tournament.
+//   - Every member of a league at tournament-lock-time bets
+//     `weekly_bet_amount` against every other member at lock-time.
+//     Members who joined AFTER the picks locked don't participate
+//     in that tournament's pot (refined 2026-05-17 after Greg saw
+//     a fresh signup get charged for a tournament that finished
+//     before they ever joined).
 //   - After the tournament completes, the player(s) at rank 1 split
 //     a pot composed of `bet_amount × number_of_losers`. Losers each
 //     pay `bet_amount`; the pot splits evenly among co-winners.
 //   - A "loser" is anyone who isn't tied for rank 1 — including
-//     users with no submitted pick (they bet by joining the league)
-//     and users whose total_score is null (e.g. all 4 picks WD/DQ).
+//     users with no submitted pick (they bet by joining the league
+//     in time) and users whose total_score is null (e.g. all 4
+//     picks WD/DQ).
 //   - If there are zero winners (no rank-1 row at all — e.g. nobody
 //     scored), no money changes hands. The pot dissolves.
 //
@@ -23,11 +28,22 @@ export interface MoneyDelta {
   amount:  number;
 }
 
+export interface MoneyMember {
+  user_id:   string;
+  /** When this member joined the league. ISO string or Date — the
+   *  helper accepts either. Used to filter members out of tournaments
+   *  whose pick-lock time was BEFORE the member joined. */
+  joined_at: string | Date;
+}
+
 export interface TournamentMoneyInput {
-  /** Every member of the league at tournament time. Users not in
-   *  this list are excluded from the math; users in this list but
-   *  missing from `results` are treated as no-pick losers. */
-  memberIds: string[];
+  /** Every current member of the league. The helper internally
+   *  filters down to members whose `joined_at` is ≤ `lockedAt`. */
+  members:   MoneyMember[];
+  /** When this tournament's picks locked. Members who joined AFTER
+   *  this moment are excluded from the bet pool — they hadn't yet
+   *  agreed to participate when bets were placed. ISO or Date. */
+  lockedAt:  string | Date;
   /** Fantasy result rows for this tournament. May be sparse — only
    *  contains users who submitted a pick. */
   results: Array<{ user_id: string; rank: number | null }>;
@@ -35,52 +51,74 @@ export interface TournamentMoneyInput {
   betAmount: number;
 }
 
+/** Coerce ISO-string-or-Date to a numeric epoch for comparison. */
+function ts(v: string | Date): number {
+  return v instanceof Date ? v.getTime() : new Date(v).getTime();
+}
+
 /**
  * Compute per-user dollar deltas for a single completed tournament.
- * Sum of returned amounts is always zero (money is conserved) when
- * there's at least one winner.
+ * Returns one entry per CURRENT member (so callers can keep a stable
+ * shape across tournaments), with `amount: 0` for members who weren't
+ * in the league when picks locked. Sum of nonzero amounts is always
+ * zero (money is conserved) when there's at least one winner.
  */
 export function computeTournamentMoney(input: TournamentMoneyInput): MoneyDelta[] {
-  const { memberIds, results, betAmount } = input;
+  const { members, lockedAt, results, betAmount } = input;
+  const lockMs = ts(lockedAt);
 
-  // Index results by user_id so we can do quick rank lookups even
-  // when results is sparse (no-pick users aren't in the array).
   const rankByUser = new Map<string, number | null>();
   for (const r of results) rankByUser.set(r.user_id, r.rank);
 
-  // Partition members into winners (rank == 1) and everyone else.
-  // Users not in results, or with null rank, fall into "loser".
+  // Only members who joined before/at lockedAt participate.
+  // Members who joined later get amount: 0 (still in the returned
+  // array so the caller's order is preserved).
+  const eligible: string[] = [];
+  for (const m of members) {
+    if (ts(m.joined_at) <= lockMs) eligible.push(m.user_id);
+  }
+
   const winnerIds: string[] = [];
   const loserIds:  string[] = [];
-  for (const uid of memberIds) {
+  for (const uid of eligible) {
     if (rankByUser.get(uid) === 1) winnerIds.push(uid);
     else loserIds.push(uid);
   }
 
-  // Degenerate: nobody finished at rank 1 (every member is no-pick
-  // or null-rank). Wash — no money changes hands. Return zeros for
-  // every member so callers can rely on the array shape.
+  // Degenerate: nobody at rank 1 (or no eligible members at all).
   if (winnerIds.length === 0) {
-    return memberIds.map(uid => ({ user_id: uid, amount: 0 }));
+    return members.map(m => ({ user_id: m.user_id, amount: 0 }));
   }
 
   const pot       = loserIds.length * betAmount;
   const perWinner = pot / winnerIds.length;
+  const isEligible = new Set(eligible);
+  const isWinner   = new Set(winnerIds);
 
-  const isWinner = new Set(winnerIds);
-  return memberIds.map(uid => ({
-    user_id: uid,
-    amount:  isWinner.has(uid) ? perWinner : -betAmount,
-  }));
+  return members.map(m => {
+    if (!isEligible.has(m.user_id)) return { user_id: m.user_id, amount: 0 };
+    return {
+      user_id: m.user_id,
+      amount:  isWinner.has(m.user_id) ? perWinner : -betAmount,
+    };
+  });
 }
 
 // ── League cumulative ────────────────────────────────────────
 
 export interface LeagueMoneyInput {
-  memberIds: string[];
+  /** Current league members. Each must carry a joined_at so the
+   *  per-tournament filter can exclude late joiners from older
+   *  tournaments. */
+  members: MoneyMember[];
   /** One tournament input per completed event. Caller pre-filters to
-   *  the league's date range + status='complete'. */
-  tournaments: TournamentMoneyInput[];
+   *  the league's date range + status='complete'. Each tournament
+   *  carries its own `lockedAt` (the picks-locked timestamp). */
+  tournaments: Array<{
+    lockedAt:  string | Date;
+    results:   Array<{ user_id: string; rank: number | null }>;
+    betAmount: number;
+  }>;
 }
 
 export interface LeagueMoneySummary {
@@ -93,11 +131,16 @@ export interface LeagueMoneySummary {
 
 export function computeLeagueMoney(input: LeagueMoneyInput): LeagueMoneySummary {
   const byTournament = input.tournaments.map(t =>
-    computeTournamentMoney({ ...t, memberIds: input.memberIds }),
+    computeTournamentMoney({
+      members:   input.members,
+      lockedAt:  t.lockedAt,
+      results:   t.results,
+      betAmount: t.betAmount,
+    }),
   );
 
   const totalsByUser = new Map<string, number>();
-  for (const uid of input.memberIds) totalsByUser.set(uid, 0);
+  for (const m of input.members) totalsByUser.set(m.user_id, 0);
   for (const deltas of byTournament) {
     for (const d of deltas) {
       totalsByUser.set(d.user_id, (totalsByUser.get(d.user_id) ?? 0) + d.amount);
@@ -105,9 +148,9 @@ export function computeLeagueMoney(input: LeagueMoneyInput): LeagueMoneySummary 
   }
 
   return {
-    totals: input.memberIds.map(uid => ({
-      user_id: uid,
-      amount:  totalsByUser.get(uid) ?? 0,
+    totals: input.members.map(m => ({
+      user_id: m.user_id,
+      amount:  totalsByUser.get(m.user_id) ?? 0,
     })),
     byTournament,
   };

@@ -5,6 +5,17 @@ import {
   formatMoney,
 } from '@/lib/money';
 
+// All baseline-everyone-eligible tests use a single shared lock time;
+// members all "joined" before it so the new joined_at filter is a
+// no-op and the math matches the pre-filter behaviour.
+const BEFORE_LOCK = '2026-01-01T00:00:00Z';
+const LOCK_TIME   = '2026-05-01T00:00:00Z';
+const AFTER_LOCK  = '2026-05-15T00:00:00Z';
+
+function mk(ids: string[], joined: string | Date = BEFORE_LOCK) {
+  return ids.map(user_id => ({ user_id, joined_at: joined }));
+}
+
 // ─────────────────────────────────────────────────────────────
 // computeTournamentMoney — per-tournament dollar deltas
 // ─────────────────────────────────────────────────────────────
@@ -12,7 +23,8 @@ import {
 describe('computeTournamentMoney — sole winner', () => {
   it('4-player league, $10 bet, sole winner wins $30; each loser loses $10', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2', 'u3', 'u4'],
+      members:  mk(['u1', 'u2', 'u3', 'u4']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 2 },
@@ -29,9 +41,10 @@ describe('computeTournamentMoney — sole winner', () => {
     expect(r.reduce((s, d) => s + d.amount, 0)).toBe(0); // money conserved
   });
 
-  it('returns one delta per member id, preserving order', () => {
+  it('returns one delta per member, preserving order', () => {
     const r = computeTournamentMoney({
-      memberIds: ['a', 'b', 'c'],
+      members:  mk(['a', 'b', 'c']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'a', rank: 2 },
         { user_id: 'b', rank: 1 },
@@ -46,7 +59,8 @@ describe('computeTournamentMoney — sole winner', () => {
 describe('computeTournamentMoney — ties at #1 split the pot', () => {
   it('2-way tie in 4-player league: each winner +$10, each loser -$10', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2', 'u3', 'u4'],
+      members:  mk(['u1', 'u2', 'u3', 'u4']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 1 },   // tied
@@ -65,7 +79,8 @@ describe('computeTournamentMoney — ties at #1 split the pot', () => {
 
   it('3-way tie in 4-player league: each winner ≈+$3.33, one loser -$10', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2', 'u3', 'u4'],
+      members:  mk(['u1', 'u2', 'u3', 'u4']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 1 },
@@ -84,7 +99,8 @@ describe('computeTournamentMoney — ties at #1 split the pot', () => {
 
   it('all members tied at #1: pot is 0 (no losers); each winner nets 0', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2'],
+      members:  mk(['u1', 'u2']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 1 },
@@ -99,10 +115,9 @@ describe('computeTournamentMoney — ties at #1 split the pot', () => {
 
 describe('computeTournamentMoney — no-pick / null-rank handled as losers', () => {
   it('no-pick member (not in results) is treated as a loser', () => {
-    // u4 didn't submit a pick — no row in results. Still owes the
-    // bet because they joined the league.
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2', 'u3', 'u4'],
+      members:  mk(['u1', 'u2', 'u3', 'u4']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 2 },
@@ -111,17 +126,18 @@ describe('computeTournamentMoney — no-pick / null-rank handled as losers', () 
       betAmount: 10,
     });
     const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
-    expect(byId.u1).toBe(30);  // 3 losers x $10
-    expect(byId.u4).toBe(-10); // no-pick loser owes too
+    expect(byId.u1).toBe(30);
+    expect(byId.u4).toBe(-10);
     expect(r.reduce((s, d) => s + d.amount, 0)).toBe(0);
   });
 
   it('null-rank member (all picks WD/DQ) is treated as a loser', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2'],
+      members:  mk(['u1', 'u2']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
-        { user_id: 'u2', rank: null }, // null rank — counted as loser
+        { user_id: 'u2', rank: null },
       ],
       betAmount: 10,
     });
@@ -131,13 +147,88 @@ describe('computeTournamentMoney — no-pick / null-rank handled as losers', () 
   });
 });
 
+describe('computeTournamentMoney — late-joiner exclusion (Greg 2026-05-17)', () => {
+  it('member who joined AFTER lockedAt gets $0 regardless of result', () => {
+    // u1, u2, u3 were in the league when picks locked.
+    // u4 joined LATER (joined_at > lockedAt). u1 wins. The pot is
+    // 2 losers × $10 = $20, NOT 3 × $10 — u4 is invisible to the math.
+    const r = computeTournamentMoney({
+      members: [
+        { user_id: 'u1', joined_at: BEFORE_LOCK },
+        { user_id: 'u2', joined_at: BEFORE_LOCK },
+        { user_id: 'u3', joined_at: BEFORE_LOCK },
+        { user_id: 'u4', joined_at: AFTER_LOCK },
+      ],
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+        { user_id: 'u3', rank: 3 },
+      ],
+      betAmount: 10,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(20);   // 2 losers × $10 (not 3)
+    expect(byId.u2).toBe(-10);
+    expect(byId.u3).toBe(-10);
+    expect(byId.u4).toBe(0);    // late joiner — wasn't in the bet
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBe(0);
+  });
+
+  it('member who joined exactly AT lockedAt is included (≤ not <)', () => {
+    const r = computeTournamentMoney({
+      members: [
+        { user_id: 'u1', joined_at: BEFORE_LOCK },
+        { user_id: 'u2', joined_at: LOCK_TIME },  // joined at the boundary
+      ],
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+      ],
+      betAmount: 10,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(10);
+    expect(byId.u2).toBe(-10);
+  });
+
+  it('all members joined after lockedAt → wash, all zeros', () => {
+    const r = computeTournamentMoney({
+      members:  mk(['u1', 'u2'], AFTER_LOCK),
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+      ],
+      betAmount: 10,
+    });
+    expect(r.every(d => d.amount === 0)).toBe(true);
+  });
+
+  it('accepts Date objects for both joined_at and lockedAt', () => {
+    const r = computeTournamentMoney({
+      members: [
+        { user_id: 'u1', joined_at: new Date(BEFORE_LOCK) },
+        { user_id: 'u2', joined_at: new Date(AFTER_LOCK) },
+      ],
+      lockedAt: new Date(LOCK_TIME),
+      results: [{ user_id: 'u1', rank: 1 }],
+      betAmount: 10,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(0);   // sole eligible member, no losers, pot = 0
+    expect(byId.u2).toBe(0);   // late joiner
+  });
+});
+
 describe('computeTournamentMoney — degenerate cases', () => {
   it('no winners (everyone null-rank or no-pick) → wash, all zeros', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2', 'u3'],
+      members:  mk(['u1', 'u2', 'u3']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: null },
-        // u2, u3 missing entirely
       ],
       betAmount: 10,
     });
@@ -146,7 +237,8 @@ describe('computeTournamentMoney — degenerate cases', () => {
 
   it('1-member league: pot=0, no money changes', () => {
     const r = computeTournamentMoney({
-      memberIds: ['solo'],
+      members:  mk(['solo']),
+      lockedAt: LOCK_TIME,
       results: [{ user_id: 'solo', rank: 1 }],
       betAmount: 10,
     });
@@ -155,7 +247,8 @@ describe('computeTournamentMoney — degenerate cases', () => {
 
   it('0-dollar bet: math runs cleanly with all zeros', () => {
     const r = computeTournamentMoney({
-      memberIds: ['u1', 'u2'],
+      members:  mk(['u1', 'u2']),
+      lockedAt: LOCK_TIME,
       results: [
         { user_id: 'u1', rank: 1 },
         { user_id: 'u2', rank: 2 },
@@ -172,31 +265,25 @@ describe('computeTournamentMoney — degenerate cases', () => {
 
 describe('computeLeagueMoney', () => {
   it('sums per-user across multiple tournaments', () => {
-    // Tournament 1: u1 wins  → +30, others -10 each
-    // Tournament 2: u2 wins  → +30, others -10 each
-    // Tournament 3: u1+u2 tie → +10 each, u3+u4 -10 each
     const r = computeLeagueMoney({
-      memberIds: ['u1', 'u2', 'u3', 'u4'],
+      members: mk(['u1', 'u2', 'u3', 'u4']),
       tournaments: [
         {
-          memberIds: [],   // overwritten by computeLeagueMoney
-          betAmount: 10,
+          lockedAt:  LOCK_TIME, betAmount: 10,
           results: [
             { user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 2 },
             { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 4 },
           ],
         },
         {
-          memberIds: [],
-          betAmount: 10,
+          lockedAt:  LOCK_TIME, betAmount: 10,
           results: [
             { user_id: 'u1', rank: 2 }, { user_id: 'u2', rank: 1 },
             { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 4 },
           ],
         },
         {
-          memberIds: [],
-          betAmount: 10,
+          lockedAt:  LOCK_TIME, betAmount: 10,
           results: [
             { user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 1 },
             { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 4 },
@@ -205,26 +292,24 @@ describe('computeLeagueMoney', () => {
       ],
     });
     const byId = Object.fromEntries(r.totals.map(d => [d.user_id, d.amount]));
-    expect(byId.u1).toBe(30 + (-10) + 10);  // +30
-    expect(byId.u2).toBe((-10) + 30 + 10);  // +30
-    expect(byId.u3).toBe((-10) + (-10) + (-10)); // -30
-    expect(byId.u4).toBe((-10) + (-10) + (-10)); // -30
-    // Money conserved across the entire league window:
+    expect(byId.u1).toBe(30 + (-10) + 10);
+    expect(byId.u2).toBe((-10) + 30 + 10);
+    expect(byId.u3).toBe((-10) + (-10) + (-10));
+    expect(byId.u4).toBe((-10) + (-10) + (-10));
     expect(r.totals.reduce((s, d) => s + d.amount, 0)).toBe(0);
     expect(r.byTournament).toHaveLength(3);
   });
 
   it('handles a no-pick user across multiple tournaments', () => {
-    // u3 never submitted; should lose every tournament.
     const r = computeLeagueMoney({
-      memberIds: ['u1', 'u2', 'u3'],
+      members: mk(['u1', 'u2', 'u3']),
       tournaments: [
         {
-          memberIds: [], betAmount: 10,
+          lockedAt:  LOCK_TIME, betAmount: 10,
           results: [{ user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 2 }],
         },
         {
-          memberIds: [], betAmount: 10,
+          lockedAt:  LOCK_TIME, betAmount: 10,
           results: [{ user_id: 'u2', rank: 1 }, { user_id: 'u1', rank: 2 }],
         },
       ],
@@ -233,9 +318,42 @@ describe('computeLeagueMoney', () => {
     expect(byId.u3).toBe(-20); // -10 × 2 tournaments
   });
 
+  it('a late-joining user owes $0 on tournaments before they joined', () => {
+    // u3 joined AFTER Tournament 1's lockedAt but before Tournament 2's.
+    // T1: u3 invisible → pot = 1 × $10 between u1, u2
+    // T2: u3 in → pot = 2 × $10 between u1, u2, u3
+    const r = computeLeagueMoney({
+      members: [
+        { user_id: 'u1', joined_at: '2026-01-01T00:00:00Z' },
+        { user_id: 'u2', joined_at: '2026-01-01T00:00:00Z' },
+        { user_id: 'u3', joined_at: '2026-05-10T00:00:00Z' },  // late
+      ],
+      tournaments: [
+        {
+          lockedAt:  '2026-05-01T00:00:00Z', betAmount: 10,
+          results: [{ user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 2 }],
+        },
+        {
+          lockedAt:  '2026-05-14T00:00:00Z', betAmount: 10,
+          results: [
+            { user_id: 'u1', rank: 1 },
+            { user_id: 'u2', rank: 2 },
+            { user_id: 'u3', rank: 3 },
+          ],
+        },
+      ],
+    });
+    const byId = Object.fromEntries(r.totals.map(d => [d.user_id, d.amount]));
+    // T1: u1 +10, u2 -10, u3 0
+    // T2: u1 +20, u2 -10, u3 -10
+    expect(byId.u1).toBe(30);
+    expect(byId.u2).toBe(-20);
+    expect(byId.u3).toBe(-10);
+  });
+
   it('empty tournament list returns zero totals for every member', () => {
     const r = computeLeagueMoney({
-      memberIds: ['u1', 'u2'],
+      members: mk(['u1', 'u2']),
       tournaments: [],
     });
     expect(r.totals).toEqual([

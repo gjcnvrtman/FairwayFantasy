@@ -10,6 +10,7 @@ import {
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
 import { computeLeagueMoney, formatMoney } from '@/lib/money';
+import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
 
@@ -42,9 +43,14 @@ export default async function HistoryPage({ params }: Props) {
   const completedTournaments = await getCompletedTournamentsInRange(lgStart, lgEnd);
 
   const members        = await getLeagueMembers(league.id);
-  const memberIds      = members.map((m: any) => m.user_id);
   const membersById    = Object.fromEntries(members.map((m: any) => [m.user_id, m]));
   const betAmount      = Number(league.weekly_bet_amount ?? 0);
+  // Shape needed by the money helper — pulls joined_at so members
+  // who joined after a tournament's lock time aren't charged for it.
+  const moneyMembers   = members.map((m: any) => ({
+    user_id:   m.user_id,
+    joined_at: m.joined_at,
+  }));
 
   // For each tournament, get the fantasy results for this league.
   // Embedding `profile` via jsonObjectFrom matches the old supabase-js
@@ -69,12 +75,13 @@ export default async function HistoryPage({ params }: Props) {
   const withResults = tournamentResults.filter(t => t.results.length > 0);
 
   // Per-tournament money deltas + cumulative totals, in the same
-  // order as `withResults`. computeLeagueMoney treats no-pick users
-  // as losers automatically.
+  // order as `withResults`. computeLeagueMoney excludes members who
+  // joined after each tournament's pick-deadline and treats no-pick
+  // members as losers (for tournaments they WERE eligible for).
   const moneySummary = computeLeagueMoney({
-    memberIds,
-    tournaments: withResults.map(({ results }) => ({
-      memberIds: [],
+    members: moneyMembers,
+    tournaments: withResults.map(({ tournament: t, results }) => ({
+      lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount,
       results:   results.map((r: any) => ({ user_id: r.user_id, rank: r.rank })),
     })),

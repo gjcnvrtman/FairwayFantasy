@@ -16,6 +16,7 @@ import {
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney } from '@/lib/money';
+import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { formatScore } from '@/lib/scoring';
 import {
   deriveLockStatus,
@@ -76,7 +77,6 @@ export default async function LeaguePage({ params }: Props) {
   const completedResults = await getFantasyResultsForTournaments(
     league.id, completedIds,
   );
-  const memberIds      = members.map((m: any) => m.user_id);
   const betAmount      = Number(league.weekly_bet_amount ?? 0);
   // Group the result rows by tournament so we can pass an ordered
   // array into computeLeagueMoney that matches completedTournaments.
@@ -85,12 +85,20 @@ export default async function LeaguePage({ params }: Props) {
     if (!resultsByTourn.has(r.tournament_id)) resultsByTourn.set(r.tournament_id, []);
     resultsByTourn.get(r.tournament_id)!.push({ user_id: r.user_id, rank: r.rank });
   }
+  // Money math needs each member's joined_at (to exclude late joiners
+  // from prior tournaments) and each tournament's lock time. Lock
+  // time = effective pick deadline; falls back to start_date when
+  // neither pick_deadline nor override is populated.
+  const moneyMembers = members.map((m: any) => ({
+    user_id:   m.user_id,
+    joined_at: m.joined_at,
+  }));
   const moneySummary = computeLeagueMoney({
-    memberIds,
+    members: moneyMembers,
     tournaments: completedTournaments.map(t => ({
-      memberIds:  [],   // overwritten inside computeLeagueMoney
+      lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount,
-      results:    resultsByTourn.get(t.id) ?? [],
+      results:   resultsByTourn.get(t.id) ?? [],
     })),
   });
 
