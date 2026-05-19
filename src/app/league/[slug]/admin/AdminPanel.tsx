@@ -87,6 +87,17 @@ export default function AdminPanel({
   const [betMsg,    setBetMsg]    = useState('');
   const [betErr,    setBetErr]    = useState('');
 
+  // ── Delete league (Danger Zone) ────────────────────────────────
+  // Destructive enough that we gate behind two affordances: (1) the
+  // section collapses by default; expand reveals (2) the "type the
+  // league name to confirm" input. The Delete button stays disabled
+  // until the typed name matches exactly. Server-side re-verifies the
+  // same match so a stale tab / hand-crafted curl can't slip past.
+  const [dangerOpen,  setDangerOpen]  = useState(false);
+  const [deleteInput, setDeleteInput] = useState('');
+  const [deleteBusy,  setDeleteBusy]  = useState(false);
+  const [deleteErr,   setDeleteErr]   = useState('');
+
   // Effective invite path (current code, or freshly regenerated one)
   const effectiveCode = newInvite || league.invite_code;
   const effectiveUrl  = newInvite
@@ -266,6 +277,34 @@ export default function AdminPanel({
       setBetErr(err instanceof Error ? err.message : String(err));
     } finally {
       setBetBusy(false);
+    }
+  }
+
+  async function deleteLeague() {
+    setDeleteBusy(true);
+    setDeleteErr('');
+    try {
+      const res = await fetch('/api/admin/league-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug:        league.slug,
+          confirmName: deleteInput,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDeleteErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      // League is gone — anything that tries to render against its
+      // slug now will 404, so push back to dashboard rather than
+      // calling router.refresh().
+      router.push('/dashboard');
+    } catch (err) {
+      setDeleteErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -835,6 +874,117 @@ export default function AdminPanel({
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      {/* ── Danger Zone ────────────────────────────────────────
+           Permanently destructive. Two affordances gate the delete:
+           collapsed-by-default header, then a "type the league name"
+           confirm input. Server-side re-verifies the name match. */}
+      <section
+        className="card"
+        style={{
+          padding: 0,
+          overflow: 'hidden',
+          border: '1px solid var(--red-soft, #f4d4d4)',
+        }}
+        aria-labelledby="danger-h"
+      >
+        <button
+          type="button"
+          onClick={() => setDangerOpen(o => !o)}
+          style={{
+            display: 'flex',
+            width: '100%',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '1.25rem 1.5rem',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: dangerOpen ? '1px solid var(--cream-dark)' : 'none',
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+          aria-expanded={dangerOpen}
+        >
+          <h2
+            id="danger-h"
+            style={{
+              fontFamily: "'Playfair Display', serif",
+              fontSize: '1.2rem',
+              fontWeight: 700,
+              color: 'var(--red, #b04545)',
+              margin: 0,
+            }}
+          >
+            ⚠ Danger Zone
+          </h2>
+          <span
+            aria-hidden="true"
+            style={{ fontSize: '1.2rem', color: 'var(--slate-mid)' }}
+          >
+            {dangerOpen ? '−' : '+'}
+          </span>
+        </button>
+
+        {dangerOpen && (
+          <div style={{ padding: '1.25rem 1.5rem' }}>
+            <p style={{ marginTop: 0, fontSize: '0.9rem', color: 'var(--slate-mid)' }}>
+              Deleting this league removes <strong>every</strong> member, pick,
+              fantasy result, season standing, and reminder log row. <strong>This
+              cannot be undone.</strong> If a tournament is currently in progress
+              the delete will be refused — wait until it completes.
+            </p>
+            <p style={{ fontSize: '0.85rem', color: 'var(--slate-mid)', marginBottom: '0.75rem' }}>
+              To confirm, type the league&rsquo;s exact name:{' '}
+              <strong>{league.name}</strong>
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={deleteInput}
+                onChange={e => setDeleteInput(e.target.value)}
+                placeholder="Type league name to enable Delete"
+                disabled={deleteBusy}
+                aria-label="Confirm league name to delete"
+                style={{
+                  flex: '1 1 240px',
+                  minWidth: 0,
+                  padding: '0.55rem 0.7rem',
+                  fontSize: '0.95rem',
+                  border: '1px solid var(--cream-dark)',
+                  borderRadius: '4px',
+                }}
+              />
+              <button
+                type="button"
+                onClick={deleteLeague}
+                disabled={deleteBusy || deleteInput !== league.name}
+                className="btn"
+                style={{
+                  background: 'var(--red, #b04545)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.55rem 1rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  borderRadius: '4px',
+                  cursor: deleteBusy || deleteInput !== league.name ? 'not-allowed' : 'pointer',
+                  opacity: deleteBusy || deleteInput !== league.name ? 0.5 : 1,
+                }}
+              >
+                {deleteBusy ? 'Deleting…' : `Delete "${league.name}" permanently`}
+              </button>
+            </div>
+            {deleteErr && (
+              <p
+                className="hint"
+                style={{ color: 'var(--red)', marginTop: '0.6rem', fontSize: '0.85rem' }}
+              >
+                {deleteErr}
+              </p>
+            )}
+          </div>
         )}
       </section>
     </div>
