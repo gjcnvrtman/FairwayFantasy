@@ -143,6 +143,25 @@ export default async function LeaguePage({ params }: Props) {
   const invitePath = `/join/${league.slug}/${league.invite_code}`;
   const nextTournament = upcoming.find((t: any) => t.id !== activeTournament?.id);
 
+  // Pick status for the next tournament — drives the "who has submitted"
+  // list on the No-Active-Tournament card. Only queried when there's no
+  // active tournament but there IS a next one, so the section actually
+  // renders. A user is counted as "submitted" only when ALL 4 golfer
+  // picks are non-null (a partial draft saved earlier doesn't qualify).
+  let pickedUserIds: Set<string> = new Set();
+  if (!activeTournament && nextTournament) {
+    const nextPicks = await db.selectFrom('picks')
+      .select(['user_id'])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', '=', nextTournament.id)
+      .where('golfer_1_id', 'is not', null)
+      .where('golfer_2_id', 'is not', null)
+      .where('golfer_3_id', 'is not', null)
+      .where('golfer_4_id', 'is not', null)
+      .execute();
+    pickedUserIds = new Set(nextPicks.map(p => p.user_id));
+  }
+
   return (
     <div className="page-shell">
       <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
@@ -213,6 +232,9 @@ export default async function LeaguePage({ params }: Props) {
                   isCommissioner={isCommissioner}
                   nextTournament={nextTournament}
                   slug={params.slug}
+                  members={members}
+                  pickedUserIds={pickedUserIds}
+                  currentUserId={user.id}
                 />
               )}
 
@@ -644,11 +666,17 @@ function NoActiveTournamentSection({
   isCommissioner,
   nextTournament,
   slug,
+  members,
+  pickedUserIds,
+  currentUserId,
 }: {
   empty: ReturnType<typeof deriveLeagueEmptyState>;
   isCommissioner: boolean;
   nextTournament: any;
   slug: string;
+  members: any[];
+  pickedUserIds: Set<string>;
+  currentUserId: string;
 }) {
   // ── Solo-commissioner: someone just made the league. Highest-priority message.
   if (empty === 'solo-commissioner') {
@@ -694,21 +722,105 @@ function NoActiveTournamentSection({
   }
   // ── There IS an upcoming event — invite people to pick.
   // (no-tournament-but-upcoming OR null fallthrough)
+  // When a nextTournament exists, also surface who has / hasn't
+  // submitted picks so the commissioner can nudge stragglers and
+  // each player can see at a glance whether they need to act.
+  // List sort: not-submitted first (the people who need to act),
+  // then submitted. Stable by display name within each bucket.
+  const sortedMembers = nextTournament
+    ? [...members].sort((a, b) => {
+        const aDone = pickedUserIds.has(a.user_id) ? 1 : 0;
+        const bDone = pickedUserIds.has(b.user_id) ? 1 : 0;
+        if (aDone !== bDone) return aDone - bDone;  // 0 (not done) sorts first
+        const an = a.profile?.display_name ?? '';
+        const bn = b.profile?.display_name ?? '';
+        return an.localeCompare(bn);
+      })
+    : [];
+
   return (
-    <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
-      <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗓️</div>
-      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.3rem', marginBottom: '0.5rem' }}>
-        No Active Tournament
-      </h3>
-      <p style={{ color: 'var(--slate-mid)', marginBottom: '1.5rem' }}>
-        {nextTournament
-          ? `Next: ${nextTournament.name} — ${new Date(nextTournament.start_date).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
-          : 'Check back soon.'}
-      </p>
-      {nextTournament && (
-        <Link href={`/league/${slug}/picks`} className="btn btn-primary">
-          Submit Picks for {nextTournament.name} →
-        </Link>
+    <div className="card" style={{ padding: '3rem 2rem' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🗓️</div>
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.3rem', marginBottom: '0.5rem' }}>
+          No Active Tournament
+        </h3>
+        <p style={{ color: 'var(--slate-mid)', marginBottom: '1.5rem' }}>
+          {nextTournament
+            ? `Next: ${nextTournament.name} — ${new Date(nextTournament.start_date).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
+            : 'Check back soon.'}
+        </p>
+        {nextTournament && (
+          <Link href={`/league/${slug}/picks`} className="btn btn-primary">
+            Submit Picks for {nextTournament.name} →
+          </Link>
+        )}
+      </div>
+
+      {nextTournament && sortedMembers.length > 0 && (
+        <div style={{ marginTop: '2rem', borderTop: '1px solid var(--cream-dark)', paddingTop: '1.5rem' }}>
+          <h4 style={{
+            fontFamily: "'Playfair Display', serif",
+            fontSize: '1rem',
+            fontWeight: 700,
+            marginBottom: '0.75rem',
+            textAlign: 'left',
+          }}>
+            Pick Status — {pickedUserIds.size} of {sortedMembers.length} submitted
+          </h4>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {sortedMembers.map((m, i) => {
+              const done = pickedUserIds.has(m.user_id);
+              const name = m.profile?.display_name ?? 'Player';
+              const isMe = m.user_id === currentUserId;
+              return (
+                <li
+                  key={m.user_id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '0.5rem 0',
+                    borderBottom: i < sortedMembers.length - 1
+                      ? '1px solid var(--cream-dark)'
+                      : 'none',
+                    fontSize: '0.92rem',
+                  }}
+                >
+                  <span style={{
+                    fontWeight: isMe ? 700 : 500,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    flex: '1 1 auto',
+                    minWidth: 0,
+                  }}>
+                    {name}
+                    {isMe && (
+                      <span style={{
+                        color: 'var(--brass)',
+                        marginLeft: '0.4rem',
+                        fontSize: '0.72rem',
+                      }}>
+                        ← you
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      fontSize: '0.82rem',
+                      fontWeight: 600,
+                      color: done ? 'var(--green-mid, #2d7a3f)' : 'var(--brass, #b8954a)',
+                    }}
+                  >
+                    {done ? '✓ Picks in' : '✗ Not yet'}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
     </div>
   );
