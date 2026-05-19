@@ -70,11 +70,26 @@ export default function AdminPanel({
   // ── Tournament window + weekly bet ────────────────────────
   // ISO timestamps from the DB need to be sliced to yyyy-mm-dd for
   // <input type="date">. Empty string when the column is null.
+  //
+  // Defensive coercion 2026-05-19: pg-node returns TIMESTAMPTZ as JS
+  // Date objects, not ISO strings — but the `League` type below
+  // declares these fields as `string | null`. The type is a lie at
+  // the boundary; legacy leagues with NULL dates short-circuited via
+  // the `?` check, so the bug only fired once a real start_date /
+  // end_date was set. Normalising here (and in the input handlers
+  // that build outbound POST bodies) decouples the rendering from
+  // whatever the loader actually returns.
+  const toISODateInput = (v: string | Date | null): string => {
+    if (!v) return '';
+    if (typeof v === 'string') return v.slice(0, 10);
+    // Date object → yyyy-mm-dd via ISO conversion
+    try { return v.toISOString().slice(0, 10); } catch { return ''; }
+  };
   const [startDateInput, setStartDateInput] = useState<string>(
-    league.start_date ? league.start_date.slice(0, 10) : '',
+    toISODateInput(league.start_date as unknown as string | Date | null),
   );
   const [endDateInput, setEndDateInput] = useState<string>(
-    league.end_date ? league.end_date.slice(0, 10) : '',
+    toISODateInput(league.end_date as unknown as string | Date | null),
   );
   const [windowBusy, setWindowBusy] = useState(false);
   const [windowMsg,  setWindowMsg]  = useState('');
