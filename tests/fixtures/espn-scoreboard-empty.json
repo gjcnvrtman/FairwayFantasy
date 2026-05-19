@@ -1,0 +1,5 @@
+{
+  "comment": "Synthetic ESPN /pga/scoreboard response with no events — typical when no tournament is currently live or the event id is unrecognized. Used to pin the no-tournament code path in fetchLiveLeaderboard.",
+  "leagues": [],
+  "events": []
+}

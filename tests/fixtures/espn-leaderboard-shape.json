@@ -1,0 +1,59 @@
+{
+  "comment": "Synthetic ESPN /pga/leaderboard response — captures the shape the leaderboard endpoint returns (when it isn't 404). Differs from /pga/scoreboard in 4+ places: c.displayName lives directly on the competitor (not c.athlete), c.score is wrapped {displayValue,value}, c.linescores[i].value carries score-to-par directly (not total strokes), per-golfer c.status IS present. fetchLiveLeaderboard takes leaderboard competitors as-is (no normalizeScoreboardCompetitor call). This fixture is for the pass-through branch.",
+  "events": [
+    {
+      "id": "401811947",
+      "name": "PGA Championship",
+      "competitions": [
+        {
+          "status": {
+            "type": { "id": "3", "name": "STATUS_FINAL", "state": "post", "completed": true, "description": "Final" }
+          },
+          "competitors": [
+            {
+              "id": "1001",
+              "displayName": "Made Cut Player",
+              "shortName": "M. Cut",
+              "headshot": "https://example.com/h1.png",
+              "status": { "type": { "name": "active" }, "thru": 18, "currentRound": 4 },
+              "score": { "displayValue": "-12", "value": -12 },
+              "linescores": [
+                { "value": -3, "displayValue": "-3" },
+                { "value": -4, "displayValue": "-4" },
+                { "value": -2, "displayValue": "-2" },
+                { "value": -3, "displayValue": "-3" }
+              ],
+              "statistics": [],
+              "sortOrder": 1
+            },
+            {
+              "id": "1002",
+              "displayName": "Missed Cut Player",
+              "shortName": "M. Cut2",
+              "status": { "type": { "name": "missed_cut" }, "thru": 36, "currentRound": 2 },
+              "score": { "displayValue": "+5", "value": 5 },
+              "linescores": [
+                { "value": 2, "displayValue": "+2" },
+                { "value": 3, "displayValue": "+3" }
+              ],
+              "statistics": [],
+              "sortOrder": 100
+            },
+            {
+              "id": "1003",
+              "displayName": "Withdrawn Player",
+              "shortName": "W. Drew",
+              "status": { "type": { "name": "withdrawn" }, "thru": 9, "currentRound": 2 },
+              "score": { "displayValue": "WD", "value": 0 },
+              "linescores": [
+                { "value": 1, "displayValue": "+1" }
+              ],
+              "statistics": [],
+              "sortOrder": 156
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

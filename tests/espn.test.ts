@@ -140,3 +140,169 @@ describe('normalizeScoreboardCompetitor — PGA Championship Round 2 fixture', (
     expect(n.sortOrder).toBe(c0.order);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Round 4 post-cut fixture (PGA Championship 2026, STATUS_FINAL).
+// 156 competitors: 82 played all 4 rounds (made cut), 74 played
+// exactly 2 rounds (missed cut). Captured live 2026-05-19 after
+// the event finished — pins the post-event shape that
+// fetchLiveLeaderboard sees once the tournament is over but
+// before the rankings sync flips status to 'complete'.
+// ─────────────────────────────────────────────────────────────
+
+const r4Path  = resolve(__dirname, 'fixtures/espn-pga-championship-round4-final.json');
+const r4Fix   = JSON.parse(readFileSync(r4Path, 'utf8'));
+const r4Comp  = r4Fix.events[0].competitions[0];
+const r4Raw   = r4Comp.competitors as any[];
+
+describe('normalizeScoreboardCompetitor — Round 4 post-cut fixture', () => {
+  it('event-level status carries STATUS_FINAL / state=post / Final description', () => {
+    // The open P0 TODO is that syncTournament only flips status to
+    // 'complete' when the leaderboard endpoint's status string
+    // includes 'final'. ESPN's scoreboard fallback exposes the same
+    // info on `events[0].competitions[0].status.type` — these three
+    // fields are the signals a future time-based-completion fix
+    // can match against. If ESPN ever drops them, this test fires.
+    const st = r4Comp.status?.type;
+    expect(st?.name).toBe('STATUS_FINAL');
+    expect(st?.state).toBe('post');
+    expect(st?.completed).toBe(true);
+    expect(String(st?.description).toLowerCase()).toContain('final');
+  });
+
+  it('captures all 156 competitors', () => {
+    expect(r4Raw.length).toBe(156);
+    const normalized = r4Raw
+      .map(normalizeScoreboardCompetitor)
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    // Every competitor has a resolvable name; nobody should be dropped.
+    expect(normalized.length).toBe(156);
+  });
+
+  it('made-cut entries have exactly 4 linescores after normalization', () => {
+    const madeCut = r4Raw.filter((c: any) => {
+      const played = (c.linescores ?? []).filter((ls: any) =>
+        ls?.value !== undefined || ls?.displayValue !== undefined,
+      );
+      return played.length === 4;
+    });
+    expect(madeCut.length).toBeGreaterThan(50); // ~82 on a PGA major
+    for (const c of madeCut.slice(0, 5)) {
+      const n = normalizeScoreboardCompetitor(c)!;
+      expect(n.linescores.length).toBe(4);
+      // round_N column would hold these score-to-par integers
+      expect(Math.abs(n.linescores[3].value)).toBeLessThan(30);
+    }
+  });
+
+  it('missed-cut entries have exactly 2 linescores after normalization', () => {
+    const missedCut = r4Raw.filter((c: any) => {
+      const played = (c.linescores ?? []).filter((ls: any) =>
+        ls?.value !== undefined || ls?.displayValue !== undefined,
+      );
+      return played.length === 2;
+    });
+    expect(missedCut.length).toBeGreaterThan(50); // ~74 typically
+    for (const c of missedCut.slice(0, 5)) {
+      const n = normalizeScoreboardCompetitor(c)!;
+      // Rounds 1-2 only; rounds 3-4 must arrive as null downstream.
+      expect(n.linescores.length).toBe(2);
+    }
+  });
+
+  it('still defaults per-golfer status to active even post-event', () => {
+    // Scoreboard doesn't expose c.status — this is the known limitation
+    // that drove the sync.ts cut-day inference. Round-4 post-event
+    // doesn't change that; pinning it here so the gap stays visible.
+    const withStatus = r4Raw.filter((c: any) => c.status !== undefined);
+    expect(withStatus.length).toBe(0);
+
+    // Normalizer fills in the default ('active') — sync.ts then has
+    // to infer missed_cut from linescores.length < 3.
+    const n = normalizeScoreboardCompetitor(r4Raw[0])!;
+    expect(n.status.type.name).toBe('active');
+  });
+
+  it('sortOrder ordering is consistent across made-cut + missed-cut rows', () => {
+    const normalized = r4Raw
+      .map(normalizeScoreboardCompetitor)
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    // ESPN's `order` field on the scoreboard fixture is monotonic
+    // through the field (1, 2, 3, ...). Just verify we got a usable
+    // integer for every row — the actual sort happens downstream
+    // in `recomputeResults` from score-to-par + tiebreakers.
+    for (const n of normalized) {
+      expect(typeof n.sortOrder).toBe('number');
+      expect(Number.isFinite(n.sortOrder)).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Empty scoreboard — synthetic fixture for the no-tournament case.
+// Pins behavior when ESPN returns `events: []` (e.g. event id
+// unrecognized, or query made on a day with no PGA event).
+// ─────────────────────────────────────────────────────────────
+
+const emptyPath = resolve(__dirname, 'fixtures/espn-scoreboard-empty.json');
+const emptyFix  = JSON.parse(readFileSync(emptyPath, 'utf8'));
+
+describe('Empty scoreboard fixture', () => {
+  it('parses cleanly with zero events and zero competitors', () => {
+    expect(Array.isArray(emptyFix.events)).toBe(true);
+    expect(emptyFix.events.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Synthetic leaderboard-shape fixture — pins the pass-through
+// branch in fetchLiveLeaderboard. /pga/leaderboard is 404 in
+// production today, so we can't capture a real one; this synthetic
+// captures the shape contract instead: c.displayName direct, score
+// pre-wrapped, linescores carry score-to-par in `value`, per-golfer
+// status field present (the very thing scoreboard lacks).
+// ─────────────────────────────────────────────────────────────
+
+const lbPath = resolve(__dirname, 'fixtures/espn-leaderboard-shape.json');
+const lbFix  = JSON.parse(readFileSync(lbPath, 'utf8'));
+const lbComp = lbFix.events[0].competitions[0];
+
+describe('Leaderboard-shape (pass-through) fixture', () => {
+  it('competitors have c.displayName directly, not nested under c.athlete', () => {
+    for (const c of lbComp.competitors) {
+      expect(typeof c.displayName).toBe('string');
+      expect(c.athlete).toBeUndefined();
+    }
+  });
+
+  it('per-golfer status is present and varies (active / missed_cut / withdrawn)', () => {
+    const names = lbComp.competitors.map((c: any) => c.status.type.name);
+    expect(names).toContain('active');
+    expect(names).toContain('missed_cut');
+    expect(names).toContain('withdrawn');
+  });
+
+  it('score is pre-wrapped {displayValue, value}', () => {
+    for (const c of lbComp.competitors) {
+      expect(typeof c.score).toBe('object');
+      expect(typeof c.score.displayValue).toBe('string');
+      expect(typeof c.score.value).toBe('number');
+    }
+  });
+
+  it('linescores carry score-to-par in `value` directly (no normalization needed)', () => {
+    for (const c of lbComp.competitors) {
+      for (const ls of c.linescores) {
+        // |value| < 30 means it's score-to-par, not total strokes.
+        expect(Math.abs(ls.value)).toBeLessThan(30);
+      }
+    }
+  });
+
+  it('missed-cut and withdrawn rows have <4 linescores', () => {
+    const mc = lbComp.competitors.find((c: any) => c.status.type.name === 'missed_cut');
+    const wd = lbComp.competitors.find((c: any) => c.status.type.name === 'withdrawn');
+    expect(mc.linescores.length).toBe(2);
+    expect(wd.linescores.length).toBeLessThanOrEqual(2);
+  });
+});
