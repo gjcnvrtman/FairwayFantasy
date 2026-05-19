@@ -61,7 +61,18 @@ export async function sendEmail(params: SendEmailParams): Promise<boolean> {
   const t = getTransporter();
   if (!t) return false;
 
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER!;
+  // From: hierarchy:
+  //   1. SMTP_FROM env var (the production setting on .150)
+  //   2. Hardcoded admin@golf-czar.com — the project's canonical
+  //      outbound address. Pre-2026-05-19 the fallback was SMTP_USER
+  //      (a Gmail relay account); falling back to it sent mail FROM a
+  //      personal Gmail address on dev/test environments where
+  //      SMTP_FROM was unset. Hardcoding the brand address is the
+  //      consistent default regardless of which channel SMTP auths
+  //      through. DMARC alignment requires SMTP relay to be configured
+  //      for golf-czar.com (already in place on prod via Gmail "Send
+  //      mail as").
+  const from = process.env.SMTP_FROM || 'admin@golf-czar.com';
 
   try {
     await t.sendMail({
