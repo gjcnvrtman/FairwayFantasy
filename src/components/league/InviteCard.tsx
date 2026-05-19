@@ -142,7 +142,12 @@ export default function InviteCard({
         {subhead}
       </p>
 
-      {/* ── Path + copy ─────────────────────────────────────── */}
+      {/* ── Full URL + copy ─────────────────────────────────── */}
+      {/* Pre-2026-05-19 this displayed `invitePath` (e.g. /join/foo/ABC123)
+          — confusing because the copy button copies the full URL while
+          the user only sees the path. Now shows `inviteUrl` so what
+          you see is what gets copied. Falls back to invitePath only
+          if inviteUrl is empty (no NEXT_PUBLIC_SITE_URL configured). */}
       <div
         style={{
           background:   'rgba(255,255,255,0.08)',
@@ -154,9 +159,9 @@ export default function InviteCard({
           wordBreak:    'break-all',
           marginBottom: '0.75rem',
         }}
-        aria-label="Invite link path"
+        aria-label="Invite link"
       >
-        {invitePath}
+        {inviteUrl || invitePath}
       </div>
       <button
         type="button"
