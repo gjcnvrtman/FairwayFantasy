@@ -478,8 +478,12 @@ export default function AdminPanel({
               disabled={
                 windowBusy ||
                 !startDateInput || !endDateInput ||
-                (startDateInput === (league.start_date?.slice(0, 10) ?? '') &&
-                 endDateInput   === (league.end_date?.slice(0, 10) ?? ''))
+                // No-op detection: same start AND same end as the
+                // currently-stored value. toISODateInput handles
+                // pg-node Date objects the same way the initial
+                // state setter does (see comment above the helper).
+                (startDateInput === toISODateInput(league.start_date as unknown as string | Date | null) &&
+                 endDateInput   === toISODateInput(league.end_date   as unknown as string | Date | null))
               }
               aria-busy={windowBusy}
               style={{ padding: '0.25rem 0.75rem', fontSize: '0.85rem' }}
