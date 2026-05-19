@@ -49,6 +49,23 @@ export default async function AdminPage({ params }: Props) {
     .limit(1)
     .executeTakeFirst() ?? null;
 
+  // Tournament-ids this league actually submitted complete picks for.
+  // Drives the "Tournament Status" table's filter — Greg only wants
+  // to see prior events where bets were on the line (i.e. this league
+  // participated), not the firehose of every PGA tournament ever.
+  // A pick is "complete" when all four golfer_N_id columns are set;
+  // partial drafts don't count as participation.
+  const pickedRows = await db.selectFrom('picks')
+    .select('tournament_id')
+    .distinct()
+    .where('league_id', '=', league.id)
+    .where('golfer_1_id', 'is not', null)
+    .where('golfer_2_id', 'is not', null)
+    .where('golfer_3_id', 'is not', null)
+    .where('golfer_4_id', 'is not', null)
+    .execute();
+  const tournamentIdsWithPicks = pickedRows.map(r => r.tournament_id);
+
   return (
     <div className="page-shell">
       <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
@@ -71,6 +88,7 @@ export default async function AdminPage({ params }: Props) {
             members={members}
             tournaments={tournaments}
             activeTournament={activeTournament}
+            tournamentIdsWithPicks={tournamentIdsWithPicks}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />
         </div>

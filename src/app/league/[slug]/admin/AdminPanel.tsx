@@ -42,11 +42,16 @@ interface Props {
   members:          Member[];
   tournaments:      Tournament[];
   activeTournament: Tournament | null;
+  /** Tournament IDs where this league has submitted at least one
+   *  complete pick. Drives the "Tournament Status" filter — show
+   *  only past events the league actually participated in. */
+  tournamentIdsWithPicks: string[];
   inviteUrl:        string; // built server-side (no window.location use here)
 }
 
 export default function AdminPanel({
-  league, members, tournaments, activeTournament, inviteUrl,
+  league, members, tournaments, activeTournament,
+  tournamentIdsWithPicks, inviteUrl,
 }: Props) {
   const router = useRouter();
 
@@ -103,10 +108,12 @@ export default function AdminPanel({
   const [betErr,    setBetErr]    = useState('');
 
   // ── Pick Deadlines section ───────────────────────────────────
-  // Collapsible header — defaults to expanded since commissioners
-  // come to /admin specifically to manage these. Collapsing is for
-  // commissioners who want the page short during routine visits.
-  const [deadlinesOpen, setDeadlinesOpen] = useState(true);
+  // Collapsible header — defaults to COLLAPSED. Pick-deadline
+  // overrides are an occasional commissioner action, not the main
+  // reason they come here; default-collapsed keeps the page short
+  // and surfaces other sections (member list, tournament status,
+  // settings) above the fold.
+  const [deadlinesOpen, setDeadlinesOpen] = useState(false);
 
   // ── Delete league (Danger Zone) ────────────────────────────────
   // Destructive enough that we gate behind two affordances: (1) the
@@ -909,11 +916,40 @@ export default function AdminPanel({
             Tournament Status
           </h2>
         </div>
-        {tournaments.length === 0 ? (
-          <p style={{ padding: '2rem', color: 'var(--slate-mid)', textAlign: 'center', fontSize: '0.9rem' }}>
-            No tournaments populated yet. Check the schedule sync.
-          </p>
-        ) : (
+        {(() => {
+          // Filter to PRIOR tournaments this league actually
+          // participated in (had complete picks for). Greg's call
+          // 2026-05-19: the firehose-of-every-PGA-event view was noise;
+          // the useful view is "events where bets were on the line."
+          // "Prior" = status='complete' OR start_date is >7 days ago.
+          // The 7-day buffer handles the open P0 TODO where ESPN
+          // doesn't flip status to 'complete' after the event ends —
+          // a tournament that started 8+ days ago has finished, even
+          // if the row still says 'upcoming'.
+          const pickedSet = new Set(tournamentIdsWithPicks);
+          const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          const priorWithBets = tournaments
+            .filter(t => pickedSet.has(t.id))
+            .filter(t => {
+              if (t.status === 'complete') return true;
+              if (!t.start_date) return false;
+              return new Date(t.start_date).getTime() < cutoffMs;
+            })
+            // Most recent first — typical use is "what just happened?"
+            .sort((a, b) => {
+              const aDate = a.start_date ? new Date(a.start_date).getTime() : 0;
+              const bDate = b.start_date ? new Date(b.start_date).getTime() : 0;
+              return bDate - aDate;
+            });
+
+          if (priorWithBets.length === 0) {
+            return (
+              <p style={{ padding: '2rem', color: 'var(--slate-mid)', textAlign: 'center', fontSize: '0.9rem' }}>
+                No completed tournaments where this league has placed bets yet.
+              </p>
+            );
+          }
+          return (
           <table className="lb-table">
             <thead>
               <tr>
@@ -925,7 +961,7 @@ export default function AdminPanel({
               </tr>
             </thead>
             <tbody>
-              {tournaments.map(t => (
+              {priorWithBets.map(t => (
                 <tr key={t.id}>
                   <td><strong style={{ fontSize: '0.875rem' }}>{t.name}</strong></td>
                   <td className="hide-mobile">
@@ -955,7 +991,8 @@ export default function AdminPanel({
               ))}
             </tbody>
           </table>
-        )}
+          );
+        })()}
       </section>
 
       {/* ── Danger Zone ────────────────────────────────────────
