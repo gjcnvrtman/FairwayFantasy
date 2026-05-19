@@ -102,6 +102,12 @@ export default function AdminPanel({
   const [betMsg,    setBetMsg]    = useState('');
   const [betErr,    setBetErr]    = useState('');
 
+  // ── Pick Deadlines section ───────────────────────────────────
+  // Collapsible header — defaults to expanded since commissioners
+  // come to /admin specifically to manage these. Collapsing is for
+  // commissioners who want the page short during routine visits.
+  const [deadlinesOpen, setDeadlinesOpen] = useState(true);
+
   // ── Delete league (Danger Zone) ────────────────────────────────
   // Destructive enough that we gate behind two affordances: (1) the
   // section collapses by default; expand reveals (2) the "type the
@@ -721,21 +727,75 @@ export default function AdminPanel({
       </section>
 
       {/* ── Pick-deadline overrides ─────────────────────────── */}
-      <section className="card" aria-labelledby="deadlines-h">
-        <h2 id="deadlines-h" style={{
-          fontFamily: "'Playfair Display', serif",
-          fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.4rem',
-        }}>
-          Pick Deadlines
-        </h2>
-        <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+      <section className="card" aria-labelledby="deadlines-h" style={{ padding: 0, overflow: 'hidden' }}>
+        <button
+          type="button"
+          onClick={() => setDeadlinesOpen(o => !o)}
+          aria-expanded={deadlinesOpen}
+          aria-controls="deadlines-body"
+          style={{
+            display: 'flex',
+            width: '100%',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '1.25rem 1.5rem',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: deadlinesOpen ? '1px solid var(--cream-dark)' : 'none',
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+        >
+          <h2
+            id="deadlines-h"
+            style={{
+              fontFamily: "'Playfair Display', serif",
+              fontSize: '1.2rem',
+              fontWeight: 700,
+              margin: 0,
+            }}
+          >
+            Pick Deadlines
+          </h2>
+          <span
+            aria-hidden="true"
+            style={{ fontSize: '1.2rem', color: 'var(--slate-mid)' }}
+          >
+            {deadlinesOpen ? '−' : '+'}
+          </span>
+        </button>
+
+        {deadlinesOpen && (
+        <div id="deadlines-body" style={{ padding: '1.25rem 1.5rem' }}>
+        <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', marginBottom: '1rem', marginTop: 0 }}>
           The auto-computed deadline (start date − 1h) is often wrong vs the real first
           tee time. Override per tournament here — empty input + Save clears the override.
           Affects all leagues.
         </p>
 
         {(() => {
-          const upcoming = tournaments.filter(t => t.status === 'upcoming');
+          // Future-only filter: tournaments with status='upcoming' AND
+          // start_date in the future (≥ today − 1 day grace). The grace
+          // window keeps a tournament visible briefly after it starts in
+          // case a last-minute deadline change is needed. The ESPN
+          // status-never-flips-to-complete bug (P0 TODO) means many past
+          // tournaments still carry status='upcoming' — without the
+          // start_date floor they'd dominate the list and bury the
+          // actual next event.
+          const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          const upcoming = tournaments
+            .filter(t => t.status === 'upcoming')
+            .filter(t => {
+              if (!t.start_date) return true;  // unknown date — keep, don't hide
+              return new Date(t.start_date) >= dayAgo;
+            })
+            // Sort ascending by start_date — next tournament first,
+            // then chronological after that.
+            .sort((a, b) => {
+              const aDate = a.start_date ? new Date(a.start_date).getTime() : Number.MAX_SAFE_INTEGER;
+              const bDate = b.start_date ? new Date(b.start_date).getTime() : Number.MAX_SAFE_INTEGER;
+              return aDate - bDate;
+            });
           if (upcoming.length === 0) {
             return (
               <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', fontStyle: 'italic' }}>
@@ -835,6 +895,8 @@ export default function AdminPanel({
             </div>
           );
         })()}
+        </div>
+        )}
       </section>
 
       {/* ── Tournament status ──────────────────────────────── */}
