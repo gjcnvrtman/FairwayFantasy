@@ -32,10 +32,15 @@ export default async function AdminPage({ params }: Props) {
 
   const members = await getLeagueMembers(league.id);
 
+  // All tournaments, chronological. Pre-2026-05-19 this was
+  // `.orderBy('start_date', 'desc').limit(10)` — descending hid
+  // upcoming events past the 10th and the limit chopped off the
+  // tail of the season. Commissioner needs the full list so
+  // pick-deadline overrides can be set for ANY upcoming event,
+  // not just the next ten.
   const tournaments = await db.selectFrom('tournaments')
     .selectAll()
-    .orderBy('start_date', 'desc')
-    .limit(10)
+    .orderBy('start_date', 'asc')
     .execute();
 
   const activeTournament = await db.selectFrom('tournaments')
