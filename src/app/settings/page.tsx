@@ -25,9 +25,15 @@ export default async function SettingsPage() {
     .where('user_id', '=', user.id)
     .executeTakeFirst();
 
+  // Default to email reminders ON when a row is somehow missing.
+  // Production users all have a row (migration 004 backfilled them
+  // 2026-05-19, and the signup transaction now inserts one). This
+  // fallback only fires for unusual states (deleted-then-reseeded
+  // profiles, etc.) — opt-in default keeps behavior consistent with
+  // the new "reminders default-on" model.
   const initialPrefs = prefs ?? {
     user_id:       user.id,
-    email_enabled: false,
+    email_enabled: true,
     sms_enabled:   false,
     push_enabled:  false,
     hours_before:  24,

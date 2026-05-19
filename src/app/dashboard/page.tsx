@@ -172,7 +172,7 @@ export default async function DashboardPage() {
                   🔔 Pick Reminders
                 </h3>
                 <p style={{ color: 'var(--slate-mid)', fontSize: '0.82rem', marginBottom: '1rem' }}>
-                  Get a nudge before picks lock. Off by default — opt in per channel.
+                  Email reminders before picks lock — on by default. Manage in settings to turn off.
                 </p>
                 <Link href="/settings" className="btn btn-outline btn-sm btn-full">
                   Manage preferences →

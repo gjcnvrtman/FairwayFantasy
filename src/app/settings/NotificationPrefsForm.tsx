@@ -3,11 +3,18 @@
 // ─────────────────────────────────────────────────────────────
 // Notification preferences form.
 //
-// Privacy stance: every channel is OFF by default. Users must
-// actively toggle on. SMS / push won't actually send anything in
-// the current build (notifier is in console-only mode unless
-// REMINDERS_LIVE=true), but enabling them here still records
-// intent and validates the destination.
+// 2026-05-19: SMS + push removed from the UI. The schema still
+// carries `sms_enabled`, `push_enabled`, `phone_e164`, `push_token`
+// columns (low cost, latent future use), but neither channel is
+// actually wired up — no Twilio, no PWA service-worker — so
+// exposing toggles for them was misleading. The API still accepts
+// the fields for compatibility; we just omit them from the PUT
+// body and the server defaults them to false. Email is the only
+// channel users can toggle today.
+//
+// Default-on (2026-05-19): new signups land with email_enabled=true
+// via the register transaction; existing users were backfilled by
+// migration 004. Settings page lets users opt out.
 // ─────────────────────────────────────────────────────────────
 
 import { useState } from 'react';
@@ -16,12 +23,12 @@ import Link from 'next/link';
 interface Prefs {
   user_id:       string;
   email_enabled: boolean;
-  sms_enabled:   boolean;
-  push_enabled:  boolean;
+  // Carried for type-compat with the GET response shape, but not
+  // surfaced in the form. Always sent as false in the PUT body.
+  sms_enabled?:   boolean;
+  push_enabled?:  boolean;
   hours_before:  number;
   email_addr:    string | null;
-  phone_e164:    string | null;
-  push_token:    string | null;
 }
 
 interface Props {
@@ -31,21 +38,13 @@ interface Props {
 
 export default function NotificationPrefsForm({ initialPrefs, profileEmail }: Props) {
   const [emailEnabled, setEmailEnabled] = useState(initialPrefs.email_enabled);
-  const [smsEnabled,   setSmsEnabled]   = useState(initialPrefs.sms_enabled);
-  const [pushEnabled,  setPushEnabled]  = useState(initialPrefs.push_enabled);
   const [hoursBefore,  setHoursBefore]  = useState(initialPrefs.hours_before);
   const [emailAddr,    setEmailAddr]    = useState(initialPrefs.email_addr ?? '');
-  const [phoneE164,    setPhoneE164]    = useState(initialPrefs.phone_e164 ?? '');
-  // Push token is acquired via a service-worker subscription flow.
-  // Surface as read-only until that lands.
-  const pushToken = initialPrefs.push_token ?? '';
 
   const [saving,   setSaving]   = useState(false);
   const [savedAt,  setSavedAt]  = useState<Date | null>(null);
   const [errors,   setErrors]   = useState<Record<string, string>>({});
   const [topError, setTopError] = useState('');
-
-  const anyEnabled = emailEnabled || smsEnabled || pushEnabled;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -56,11 +55,11 @@ export default function NotificationPrefsForm({ initialPrefs, profileEmail }: Pr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email_enabled: emailEnabled,
-          sms_enabled:   smsEnabled,
-          push_enabled:  pushEnabled,
+          // sms_enabled / push_enabled deliberately omitted — the
+          // server defaults them to false, which is the only state
+          // they can be in until those channels are actually wired.
           hours_before:  hoursBefore,
           email_addr:    emailAddr.trim() || null,
-          phone_e164:    phoneE164.trim() || null,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -90,12 +89,12 @@ export default function NotificationPrefsForm({ initialPrefs, profileEmail }: Pr
         </h2>
         <p style={{ color: 'var(--slate-mid)', fontSize: '0.9rem', lineHeight: 1.5 }}>
           We&rsquo;ll nudge you when picks are about to lock so you don&rsquo;t miss a tournament.
-          Every channel below is <strong>off by default</strong>. Enable just the ones you want.
+          Email reminders are <strong>on by default</strong> — toggle off below if you&rsquo;d rather not get them.
         </p>
-        {!anyEnabled && (
+        {!emailEnabled && (
           <div className="alert alert-info" style={{ marginTop: '1rem' }}>
-            <strong>All reminders are currently off.</strong>{' '}
-            Toggle a channel below to start getting reminded.
+            <strong>Email reminders are off.</strong>{' '}
+            Toggle on below to start getting reminded before each pick deadline.
           </div>
         )}
         {topError && (
@@ -136,47 +135,13 @@ export default function NotificationPrefsForm({ initialPrefs, profileEmail }: Pr
         </p>
       </ChannelCard>
 
-      {/* ── SMS channel ─────────────────────────────────────── */}
-      <ChannelCard
-        title="SMS"
-        emoji="💬"
-        enabled={smsEnabled}
-        onToggle={setSmsEnabled}
-        helper={phoneE164.trim() || 'No phone number set'}
-      >
-        <label className="label" htmlFor="phone_e164">Phone number (E.164)</label>
-        <input
-          id="phone_e164"
-          className="input"
-          type="tel"
-          inputMode="tel"
-          placeholder="+15551234567"
-          value={phoneE164}
-          onChange={e => setPhoneE164(e.target.value)}
-          disabled={!smsEnabled}
-          aria-invalid={!!errors.phone_e164}
-        />
-        {errors.phone_e164 && <p className="hint" style={{ color: 'var(--red)' }}>{errors.phone_e164}</p>}
-        <p className="hint">
-          Format: country code + number, no spaces (e.g. <code>+15551234567</code>).
-          Twilio (or similar) must be configured server-side before real SMS goes out.
-        </p>
-      </ChannelCard>
-
-      {/* ── Push channel ────────────────────────────────────── */}
-      <ChannelCard
-        title="Push"
-        emoji="🔔"
-        enabled={pushEnabled}
-        onToggle={setPushEnabled}
-        helper={pushToken ? 'Subscribed' : 'Browser not yet subscribed'}
-      >
-        <p className="hint">
-          Web push will be wired up once the PWA service-worker lands.
-          Toggling on today records intent only — reminders won&rsquo;t actually fire to your device yet.
-        </p>
-        {errors.push_token && <p className="hint" style={{ color: 'var(--red)' }}>{errors.push_token}</p>}
-      </ChannelCard>
+      {/* SMS + Push channels removed 2026-05-19 — not wired up
+          (no Twilio relay, no PWA service worker). The schema still
+          carries sms_enabled / push_enabled / phone_e164 / push_token
+          columns and the reminder engine still gates on them; they
+          just never get toggled true from the UI today. If those
+          channels get wired up later, the cards can land back here
+          without a schema change. */}
 
       {/* ── Reminder timing ─────────────────────────────────── */}
       <div className="card">
@@ -193,7 +158,7 @@ export default function NotificationPrefsForm({ initialPrefs, profileEmail }: Pr
           step={1}
           value={hoursBefore}
           onChange={e => setHoursBefore(Number(e.target.value))}
-          disabled={!anyEnabled}
+          disabled={!emailEnabled}
           aria-invalid={!!errors.hours_before}
           style={{ maxWidth: 160 }}
         />
