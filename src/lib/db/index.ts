@@ -15,8 +15,32 @@
 // ============================================================
 
 import { Kysely, PostgresDialect, type LogEvent } from 'kysely';
-import { Pool } from 'pg';
+import { Pool, types as pgTypes } from 'pg';
 import type { Database } from './schema';
+
+// ── TIMESTAMP/TIMESTAMPTZ → ISO string globally ──────────────
+// pg-node's default parser converts TIMESTAMPTZ (OID 1184) and
+// TIMESTAMP (OID 1114) into JS Date objects, but the kysely schema
+// types declare those columns as `Timestamp = string`. The mismatch
+// bit us repeatedly: code that trusted the type and called
+// `.slice()`, `String()` (in a kysely WHERE), or did string-equality
+// against an ISO literal crashed at runtime against the actual Date
+// shape. Most recently 2026-05-19 in AdminPanel (three call sites
+// in one file, three sequential whack-a-mole fixes).
+//
+// Fix at the source: override the parsers to return ISO-8601 strings
+// so the runtime shape matches the declared type everywhere. Code
+// that needs a Date object continues to use `new Date(value)` — that
+// constructor accepts ISO strings and works identically.
+//
+// Module-level side effect runs once at first import; the global
+// `pgTypes` registry is shared by every Pool in this process.
+pgTypes.setTypeParser(1184, (val: string | null) =>
+  val == null ? null : new Date(val).toISOString(),
+);
+pgTypes.setTypeParser(1114, (val: string | null) =>
+  val == null ? null : new Date(val).toISOString(),
+);
 
 // ── Lazy-init real client ────────────────────────────────────
 
