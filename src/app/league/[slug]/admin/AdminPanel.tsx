@@ -917,24 +917,15 @@ export default function AdminPanel({
           </h2>
         </div>
         {(() => {
-          // Two-bucket filter: PRIOR with bets, plus ALL FUTURE.
+          // Filter: show ALL future tournaments + prior tournaments
+          // this league actually placed bets on. Greg's call 2026-05-19:
+          // single chronological list (ASC by start_date) — no
+          // two-bucket grouping. PRIOR-without-bets is the noise we
+          // still hide; everything else lines up by date.
           //
-          // Greg's call 2026-05-19 (refined): prior tournaments are
-          // useful only when this league actually placed bets on them
-          // (the firehose-of-every-PGA-event view was noise). Future
-          // tournaments are useful regardless of whether picks are in
-          // — commissioners use this list to anticipate upcoming
-          // events and set pick-deadline overrides.
-          //
-          // Definitions:
-          //   PRIOR = status='complete' OR start_date >7 days ago
-          //   FUTURE = anything else (status='active'/'cut_made' OR
-          //            start_date >= 7 days ago)
+          // PRIOR = status='complete' OR start_date >7 days ago.
           // The 7-day buffer handles the open P0 TODO where ESPN
           // doesn't flip status to 'complete' after events end.
-          //
-          // Sort: future at top (next first, ascending), then prior
-          // (most recent first, descending). Two natural groupings.
           const pickedSet = new Set(tournamentIdsWithPicks);
           const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
           const isPrior = (t: Tournament) => {
@@ -942,21 +933,13 @@ export default function AdminPanel({
             if (!t.start_date) return false;
             return new Date(t.start_date).getTime() < cutoffMs;
           };
-          const futureTourns = tournaments
-            .filter(t => !isPrior(t))
+          const visibleTourns = tournaments
+            .filter(t => !isPrior(t) || pickedSet.has(t.id))
             .sort((a, b) => {
               const aDate = a.start_date ? new Date(a.start_date).getTime() : Number.MAX_SAFE_INTEGER;
               const bDate = b.start_date ? new Date(b.start_date).getTime() : Number.MAX_SAFE_INTEGER;
               return aDate - bDate;
             });
-          const priorWithBets = tournaments
-            .filter(t => isPrior(t) && pickedSet.has(t.id))
-            .sort((a, b) => {
-              const aDate = a.start_date ? new Date(a.start_date).getTime() : 0;
-              const bDate = b.start_date ? new Date(b.start_date).getTime() : 0;
-              return bDate - aDate;
-            });
-          const visibleTourns = [...futureTourns, ...priorWithBets];
 
           if (visibleTourns.length === 0) {
             return (
