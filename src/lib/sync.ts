@@ -14,7 +14,7 @@
 import { db } from './db';
 import { fetchLiveLeaderboard, parseESPNScore } from './espn';
 import { applyFantasyRules, computeLeagueResults } from './scoring';
-import type { Score, Pick } from '@/types';
+import type { Score, Pick, FantasyResult } from '@/types';
 
 export interface SyncResult {
   tournament?:   string;
@@ -84,8 +84,9 @@ async function syncTournament(tournament: {
   espn_event_id:  string;
   name:           string;
   cut_score:      number | null;
+  end_date:       string;
 }): Promise<SyncResult> {
-  const { espn_event_id, id, cut_score } = tournament;
+  const { espn_event_id, id, cut_score, end_date } = tournament;
   const { competitors, cutScore: espnCut, status, currentRound } =
     await fetchLiveLeaderboard(espn_event_id);
 
@@ -140,7 +141,40 @@ async function syncTournament(tournament: {
     }
   }
 
-  const newStatus = status.toLowerCase().includes('final') ? 'complete'
+  // Completion inference (added 2026-05-20).
+  //
+  // ESPN's `/pga/scoreboard` fallback never reports `status='final'`
+  // — it stays `STATUS_IN_PROGRESS` even days after the trophy
+  // ceremony. The weekly rankings-timer maintenance sweep eventually
+  // flips stuck rows to complete (Monday 06:00), but the gap leaves
+  // the money card blank for ~14 hours every Sunday night.
+  //
+  // Linescore signal: normalizeScoreboardCompetitor drops un-played
+  // future rounds from `linescores`, so a cut survivor (made it past
+  // R2) who has `linescores.length === 4` has finished all four
+  // rounds. When EVERY cut survivor is at length 4 AND the
+  // tournament's end_date is in the past, the tournament is over —
+  // regardless of what ESPN's text status says.
+  //
+  // Edge cases:
+  //   * Mid-Sunday (some R4s in progress): `every` fails, stays
+  //     in `cut_made`. Correct.
+  //   * No cut survivors yet (Round 1/2): the >=3 guard skips,
+  //     `every` returns true for an empty list but the
+  //     `survivors.length > 0` guard prevents the flip. Stays
+  //     in `active`/`cut_made`. Correct.
+  //   * Weather-shortened tournament (54 holes only): survivors
+  //     end at length 3, never 4 → linescore signal never fires.
+  //     The Monday maintenance sweep still handles it within a week.
+  const tournamentEnded = new Date(end_date).getTime() < Date.now();
+  let completionByLinescore = false;
+  if (tournamentEnded) {
+    const survivors = competitors.filter(c => (c.linescores?.length ?? 0) >= 3);
+    completionByLinescore = survivors.length > 0
+      && survivors.every(c => (c.linescores?.length ?? 0) === 4);
+  }
+
+  const newStatus = status.toLowerCase().includes('final') || completionByLinescore ? 'complete'
     : cutHasBeenMade ? 'cut_made' : 'active';
 
   await db.updateTable('tournaments')
@@ -284,26 +318,36 @@ async function recomputeResults(tournamentId: string) {
     byLeague.get(p.league_id)!.push(p);
   }
 
+  // Batched upsert (perf — was O(leagues × members) round-trips,
+  // one per row, with fsync per commit). Collect every league's
+  // result rows into a single INSERT ... ON CONFLICT statement.
+  // At ~5 leagues × 5 members during play, this cuts ~25 sequential
+  // commits down to 1.
+  const updated_at = new Date().toISOString();
+  const allResultRows: Array<Omit<FantasyResult, 'id'> & { updated_at: string }> = [];
   for (const [, picks] of byLeague) {
     const results = computeLeagueResults(picks, scoreMap);
     for (const r of results) {
-      await db.insertInto('fantasy_results')
-        .values({ ...r, updated_at: new Date().toISOString() })
-        .onConflict(oc => oc
-          .columns(['league_id', 'tournament_id', 'user_id'])
-          .doUpdateSet(eb => ({
-            golfer_1_score:   eb.ref('excluded.golfer_1_score'),
-            golfer_2_score:   eb.ref('excluded.golfer_2_score'),
-            golfer_3_score:   eb.ref('excluded.golfer_3_score'),
-            golfer_4_score:   eb.ref('excluded.golfer_4_score'),
-            counting_golfers: eb.ref('excluded.counting_golfers'),
-            total_score:      eb.ref('excluded.total_score'),
-            rank:             eb.ref('excluded.rank'),
-            updated_at:       eb.ref('excluded.updated_at'),
-          })),
-        )
-        .execute();
+      allResultRows.push({ ...r, updated_at });
     }
+  }
+  if (allResultRows.length > 0) {
+    await db.insertInto('fantasy_results')
+      .values(allResultRows)
+      .onConflict(oc => oc
+        .columns(['league_id', 'tournament_id', 'user_id'])
+        .doUpdateSet(eb => ({
+          golfer_1_score:   eb.ref('excluded.golfer_1_score'),
+          golfer_2_score:   eb.ref('excluded.golfer_2_score'),
+          golfer_3_score:   eb.ref('excluded.golfer_3_score'),
+          golfer_4_score:   eb.ref('excluded.golfer_4_score'),
+          counting_golfers: eb.ref('excluded.counting_golfers'),
+          total_score:      eb.ref('excluded.total_score'),
+          rank:             eb.ref('excluded.rank'),
+          updated_at:       eb.ref('excluded.updated_at'),
+        })),
+      )
+      .execute();
   }
 
   // Update season standings — scoped to the tournament's own season
@@ -354,17 +398,21 @@ async function recomputeResults(tournamentId: string) {
     }
   }
 
-  for (const s of map.values()) {
+  // Batched season-standings upsert (perf, same reasoning as the
+  // fantasy_results batch above). Reuses the same `updated_at`
+  // timestamp so both tables reflect the same sync cycle.
+  if (map.size > 0) {
+    const standingsRows = Array.from(map.values()).map(s => ({
+      league_id:          s.league_id,
+      user_id:            s.user_id,
+      season:             t.season,
+      total_score:        s.total,
+      tournaments_played: s.count,
+      best_finish:        s.best,
+      updated_at,
+    }));
     await db.insertInto('season_standings')
-      .values({
-        league_id:          s.league_id,
-        user_id:            s.user_id,
-        season:             t.season,
-        total_score:        s.total,
-        tournaments_played: s.count,
-        best_finish:        s.best,
-        updated_at:         new Date().toISOString(),
-      })
+      .values(standingsRows)
       .onConflict(oc => oc
         .columns(['league_id', 'user_id', 'season'])
         .doUpdateSet(eb => ({
