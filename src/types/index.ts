@@ -58,10 +58,11 @@ export interface Pick {
   league_id: string;
   tournament_id: string;
   user_id: string;
-  golfer_1_id: string | null;
-  golfer_2_id: string | null;
-  golfer_3_id: string | null;
-  golfer_4_id: string | null;
+  // NOT NULL since migration 005 (2026-05-20) — see db/schema.ts.
+  golfer_1_id: string;
+  golfer_2_id: string;
+  golfer_3_id: string;
+  golfer_4_id: string;
   is_locked: boolean;
   submitted_at: string;
   // Joined data

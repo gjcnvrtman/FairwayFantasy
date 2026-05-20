@@ -90,11 +90,11 @@ _(CSRF defense-in-depth shipped 2026-05-20 — new `src/lib/same-origin.ts` help
 
 _(Unauthenticated public endpoints rate-limited 2026-05-20 — `/api/players` capped at 60/10min/IP and `/api/leagues/verify` at 10/10min/IP. Both keyed via the existing `clientIpFromHeaders` + `checkRateLimit` infrastructure. See Done.)_
 
-- [ ] **`GET /api/sync-scores` reuses `POST`** *(P1, sync-scores:133)* — explicitly accepted as-is. Works for the systemd curl pattern; renaming for ceremony would just churn the timer unit file. Closed without code.
+- [x] **`GET /api/sync-scores` reuses `POST`** *(P1, sync-scores:133)* — explicitly accepted as-is. Works for the systemd curl pattern; renaming for ceremony would just churn the timer unit file. Closed without code 2026-05-20.
 
 _(`pick_locked_at` audit column investigated and closed 2026-05-20 — `is_locked` is never written to TRUE anywhere in the codebase. Picks lock derives from `effectivePickDeadline(t) < now()` at render time, not from the column. Adding `pick_locked_at` without first wiring an actual lock job would be cargo-cult schema. The real audit signal is `submitted_at`, which already exists. See Done.)_
 
-- [ ] **`picks.golfer_N_id` columns nullable** *(P1 #3.9)* — schema allows partial picks; should be `NOT NULL` after submission. Add CHECK constraint. **DEFERRED**: current state is intentional (allows partial picks during edit); the existing `golfer_tuple_hash` trigger + unique index already enforces "no duplicate complete foursomes," which is the real correctness goal. Adding a CHECK requires a state-aware constraint ("non-null when `submitted_at` indicates final submit") and that's a real schema-design discussion, not P3 hygiene.
+_(picks.golfer_N_id NOT NULL shipped 2026-05-20 — migration 005. The original deferral assumed there was a "draft picks during edit" code path, but inspection found `validatePick` rejects all partial submissions at the API boundary AND POST /api/picks is the only write path. Prod had zero partial rows. Simple ALTER ... SET NOT NULL was the right move; no state-aware design needed. See Done.)_
 
 - [ ] **No co-commissioner role** *(P1 #3.10)* — `league_members.role` CHECK allows only `'commissioner'`/`'member'`. **DEFERRED**: needs design — what permissions does a co-commissioner get vs full commissioner? Currently no specific user has asked for it.
 
@@ -120,6 +120,12 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 ## Done
 
 (Newest first.)
+
+### 2026-05-20 — picks.golfer_N_id NOT NULL + GET-reuses-POST closure
+
+- **`picks.golfer_N_id` NOT NULL** — Migration `scripts/migrations/005-picks-golfer-not-null.sql`. The original P3 deferral assumed a partial-picks-during-edit flow existed; investigation found there isn't one. `validatePick` (`src/lib/scoring.ts:334`) rejects any submission with a null slot before INSERT; `POST /api/picks` is the only write path (single `db.insertInto('picks')` in the codebase); withdrawal-replacement updates `scores.was_replaced` + `scores.replaced_by_golfer_id` rather than mutating the picks row; prod query found 0 partial rows. So the schema-vs-app gap was purely defense-in-depth. Migration uses a DO-block sanity guard that aborts with a friendly error if any null slots existed (didn't fire — prod was clean). Applied to prod 2026-05-20 07:52 CDT after a pre-migration `backup-db.sh` snapshot. Schema source-of-truth (`infra/postgres/init/00-schema.sql`) updated inline so fresh installs get NOT NULL from the CREATE. TS types (`src/lib/db/schema.ts` + `src/types/index.ts`) narrowed from `string | null` to `string`; `tsc --noEmit` clean, 259/259 tests still pass. The partial-unique-index `WHERE … IS NOT NULL` clauses in 00-schema.sql are now strictly redundant but left in place as belt-and-suspenders — no-op when columns are NOT NULL, would re-engage if anyone ever ALTER-DROP-ed it.
+
+- **`GET /api/sync-scores` reuses POST** — explicitly accepted as-is. The systemd timer's `curl -X POST` pattern works; renaming for ceremony alone would churn the timer unit file. Checkbox flipped in TODO; no code change.
 
 ### 2026-05-20 — P3 sweep: docs refresh, CSRF defense-in-depth, public-endpoint rate limits, cleanup
 

@@ -135,10 +135,13 @@ export interface PicksTable {
   league_id:          string;
   tournament_id:      string;
   user_id:            string;
-  golfer_1_id:        string | null;
-  golfer_2_id:        string | null;
-  golfer_3_id:        string | null;
-  golfer_4_id:        string | null;
+  // NOT NULL since migration 005 (2026-05-20). The app-layer
+  // validatePick check already rejected partials at submit time;
+  // making the DB column reflect that closes a defense-in-depth gap.
+  golfer_1_id:        string;
+  golfer_2_id:        string;
+  golfer_3_id:        string;
+  golfer_4_id:        string;
   golfer_tuple_hash:  ColumnType<string | null, never, never>;
   is_locked:          Generated<boolean>;
   submitted_at:       Generated<Timestamp>;

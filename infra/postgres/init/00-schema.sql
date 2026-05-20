@@ -136,10 +136,16 @@ CREATE TABLE picks (
   league_id          UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
   tournament_id      UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   user_id            UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  golfer_1_id        UUID REFERENCES golfers(id),   -- Top tier
-  golfer_2_id        UUID REFERENCES golfers(id),   -- Top tier
-  golfer_3_id        UUID REFERENCES golfers(id),   -- Dark horse
-  golfer_4_id        UUID REFERENCES golfers(id),   -- Dark horse
+  -- NOT NULL added 2026-05-20 (migration 005). The app already
+  -- rejects partial picks at the API boundary (validatePick), so
+  -- this is defense in depth — any future code path or direct-DB
+  -- write that tried to land a row with a missing slot now fails
+  -- loudly at the schema layer instead of silently corrupting the
+  -- scoring engine.
+  golfer_1_id        UUID NOT NULL REFERENCES golfers(id),   -- Top tier
+  golfer_2_id        UUID NOT NULL REFERENCES golfers(id),   -- Top tier
+  golfer_3_id        UUID NOT NULL REFERENCES golfers(id),   -- Dark horse
+  golfer_4_id        UUID NOT NULL REFERENCES golfers(id),   -- Dark horse
   -- Sorted-tuple hash for DB-backed uniqueness (P0 #3.2). Maintained
   -- by trigger below; do not write directly. The partial unique
   -- index further down enforces "no two users in the same league
