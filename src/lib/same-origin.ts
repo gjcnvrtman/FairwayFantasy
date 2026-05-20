@@ -16,39 +16,48 @@
 //     scripted abuse before it works)
 //
 // What "same origin" means here:
-//   * Same scheme + host + port as the canonical site URL
-//   * Pulled from NEXTAUTH_URL env var (the same value the auth
-//     cookie domain is derived from — so if this check disagrees
-//     with the cookie domain, the cookie wouldn't have been sent
-//     anyway)
+//   * Same scheme + host + port as one of the configured canonical
+//     site URLs
+//   * Pulled from BOTH `NEXTAUTH_URL` and `NEXT_PUBLIC_SITE_URL` —
+//     a reverse-proxy deployment (the LAN setup) typically has
+//     NEXTAUTH_URL pointing at the internal next.js address
+//     (http://192.168.1.160:3000) for NextAuth's callback math while
+//     NEXT_PUBLIC_SITE_URL is the user-facing public hostname
+//     (https://fairway.golf-czar.com). Both are legitimate same-
+//     origin sources from the browser's perspective.
 //
 // Server-to-server calls (curl, systemd timers, cron jobs) typically
 // have NO Origin/Referer header. Routes that legitimately need this
 // path (e.g. /api/sync-scores via Bearer CRON_SECRET, /api/admin/
 // reminders called by the reminder timer) must NOT use this guard —
-// they enforce auth a different way.
+// they enforce auth a different way. The helper fails open on
+// missing Origin/Referer so those paths still work.
 // ============================================================
 
 import { NextRequest, NextResponse } from 'next/server';
 
-/** Cached canonical-origin string (without trailing slash). */
-let cachedCanonical: string | null = null;
+/** Cached canonical-origin set (scheme+host+port strings). */
+let cachedCanonicals: Set<string> | null = null;
 
-function canonicalOrigin(): string | null {
-  if (cachedCanonical !== null) return cachedCanonical || null;
-  const raw = process.env.NEXTAUTH_URL?.trim();
-  if (!raw) {
-    cachedCanonical = '';
-    return null;
+function canonicalOrigins(): Set<string> {
+  if (cachedCanonicals !== null) return cachedCanonicals;
+  const candidates = [
+    process.env.NEXTAUTH_URL,
+    process.env.NEXT_PUBLIC_SITE_URL,
+  ];
+  const out = new Set<string>();
+  for (const raw of candidates) {
+    if (!raw) continue;
+    try {
+      const u = new URL(raw.trim());
+      out.add(`${u.protocol}//${u.host}`);
+    } catch {
+      // Malformed URL in env — skip silently. Don't break the helper
+      // if one of the two vars is mis-set; the other will still work.
+    }
   }
-  try {
-    const u = new URL(raw);
-    cachedCanonical = `${u.protocol}//${u.host}`;
-    return cachedCanonical;
-  } catch {
-    cachedCanonical = '';
-    return null;
-  }
+  cachedCanonicals = out;
+  return out;
 }
 
 /**
@@ -66,8 +75,8 @@ function canonicalOrigin(): string | null {
  * Designed to be a one-line guard — never throws.
  */
 export function requireSameOrigin(req: NextRequest): NextResponse | null {
-  const expected = canonicalOrigin();
-  if (!expected) return null;  // dev env without NEXTAUTH_URL — pass
+  const expected = canonicalOrigins();
+  if (expected.size === 0) return null;  // dev env without env vars — pass
 
   // Origin is the precise CSRF indicator. Browsers send it on every
   // state-changing fetch / form submit. Some same-origin GETs omit
@@ -75,7 +84,7 @@ export function requireSameOrigin(req: NextRequest): NextResponse | null {
   // include it from modern browsers.
   const origin = req.headers.get('origin');
   if (origin) {
-    return origin === expected ? null : crossOriginRefused();
+    return expected.has(origin) ? null : crossOriginRefused();
   }
 
   // Older browsers (or some privacy extensions) strip Origin but
@@ -85,7 +94,7 @@ export function requireSameOrigin(req: NextRequest): NextResponse | null {
     try {
       const r = new URL(referer);
       const refOrigin = `${r.protocol}//${r.host}`;
-      return refOrigin === expected ? null : crossOriginRefused();
+      return expected.has(refOrigin) ? null : crossOriginRefused();
     } catch {
       return crossOriginRefused();
     }
