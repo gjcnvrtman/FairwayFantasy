@@ -160,20 +160,35 @@ export default async function StatsPage({ params }: Props) {
   // against the slot they were picked into.
   const topTierCount  = new Map<string, { name: string; count: number }>();
   const darkHorseCount = new Map<string, { name: string; count: number }>();
+  // Per-user pick aggregation (mirrors topTierCount + darkHorseCount
+  // structure but keyed first by user_id). Drives the per-player
+  // breakdown section below — answers "what does THIS player
+  // gravitate to?" rather than "what does the league gravitate to?"
+  type PickCount = Map<string, { name: string; count: number }>;
+  const topTierByUser:  Map<string, PickCount> = new Map();
+  const darkHorseByUser: Map<string, PickCount> = new Map();
   let leagueScoreSum = 0;
   let leagueScoreEvents = 0;
   for (const { results, picks } of withResults) {
     for (const p of picks as any[]) {
-      const add = (m: Map<string, { name: string; count: number }>, g: any) => {
+      const add = (m: PickCount, g: any) => {
         if (!g) return;
         const cur = m.get(g.id) ?? { name: g.name, count: 0 };
         cur.count += 1;
         m.set(g.id, cur);
       };
+      // League-wide
       add(topTierCount,  p.golfer_1);
       add(topTierCount,  p.golfer_2);
       add(darkHorseCount, p.golfer_3);
       add(darkHorseCount, p.golfer_4);
+      // Per-user — lazy-init the inner map on first sighting
+      if (!topTierByUser.has(p.user_id))   topTierByUser.set(p.user_id, new Map());
+      if (!darkHorseByUser.has(p.user_id)) darkHorseByUser.set(p.user_id, new Map());
+      add(topTierByUser.get(p.user_id)!,   p.golfer_1);
+      add(topTierByUser.get(p.user_id)!,   p.golfer_2);
+      add(darkHorseByUser.get(p.user_id)!, p.golfer_3);
+      add(darkHorseByUser.get(p.user_id)!, p.golfer_4);
     }
     for (const r of results) {
       if (r.total_score === null || r.total_score === undefined) continue;
@@ -181,7 +196,7 @@ export default async function StatsPage({ params }: Props) {
       leagueScoreEvents += 1;
     }
   }
-  const top5 = (m: Map<string, { name: string; count: number }>) =>
+  const top5 = (m: PickCount) =>
     Array.from(m.values()).sort((a, b) => b.count - a.count).slice(0, 5);
   const topTierTop5  = top5(topTierCount);
   const darkHorseTop5 = top5(darkHorseCount);
@@ -390,6 +405,169 @@ export default async function StatsPage({ params }: Props) {
                       ))}
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* ── Per-player profiles ─────────────────────────────
+                   Mirrors the league-wide cards above, but broken
+                   out per player. Each player gets a collapsible
+                   <details> card with their headline stats always
+                   visible in the summary header, and best/worst
+                   tournament + their personal top-5 picks revealed
+                   on expand. Same picks-by-slot convention as the
+                   league-wide aggregates. */}
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ background: 'var(--green-deep)', color: 'white', padding: '1rem 1.5rem' }}>
+                  <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.2rem', fontWeight: 700 }}>
+                    Player Profiles
+                  </h3>
+                  <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.8rem', marginTop: '0.2rem' }}>
+                    Click a player to expand their best / worst event and most-picked golfers.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {playerRows.map((p, idx) => {
+                    const isMe   = p.user_id === user.id;
+                    const payout = moneyByUser.get(p.user_id) ?? 0;
+                    const payCls = payout > 0 ? 'score-under' : payout < 0 ? 'score-over' : 'score-even';
+                    const avg    = p.played > 0 ? p.totalScore / p.played : 0;
+                    const avgCls = avg < 0 ? 'score-under' : avg > 0 ? 'score-over' : 'score-even';
+                    const userTopTier   = top5(topTierByUser.get(p.user_id)   ?? new Map());
+                    const userDarkHorse = top5(darkHorseByUser.get(p.user_id) ?? new Map());
+
+                    return (
+                      <details
+                        key={p.user_id}
+                        style={{
+                          borderTop: idx === 0 ? 'none' : '1px solid var(--cream-dark)',
+                        }}
+                      >
+                        <summary style={{
+                          cursor: 'pointer', listStyle: 'none',
+                          padding: '0.85rem 1.5rem',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          gap: '1rem', flexWrap: 'wrap',
+                        }}>
+                          <span style={{
+                            fontWeight: 700, fontSize: '0.95rem',
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            minWidth: 0,
+                          }}>
+                            <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>#{idx + 1}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {p.name}
+                            </span>
+                            {isMe && <span style={{ color: 'var(--brass)', fontSize: '0.72rem', fontWeight: 500 }}>← you</span>}
+                          </span>
+                          <span style={{
+                            display: 'flex', gap: '1.25rem', alignItems: 'baseline',
+                            fontSize: '0.82rem', color: 'var(--slate-mid)', flexWrap: 'wrap',
+                          }}>
+                            <span>🥇 <strong style={{ color: 'var(--ink)' }}>{p.wins}</strong></span>
+                            <span className="hide-mobile">🥈 <strong style={{ color: 'var(--ink)' }}>{p.seconds}</strong></span>
+                            <span className="hide-mobile">🥉 <strong style={{ color: 'var(--ink)' }}>{p.thirds}</strong></span>
+                            <span>events <strong style={{ color: 'var(--ink)' }}>{p.played}</strong></span>
+                            <span>payout <strong className={payCls}>{formatMoney(payout)}</strong></span>
+                            <span>avg <strong className={avgCls}>
+                              {p.played > 0 ? formatScore(Math.round(avg * 10) / 10) : '—'}
+                            </strong></span>
+                          </span>
+                        </summary>
+
+                        <div style={{
+                          padding: '0 1.5rem 1.25rem',
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                          gap: '1.25rem',
+                        }}>
+                          {/* Best / Worst tournament for this player */}
+                          <div>
+                            <div style={{
+                              fontSize: '0.72rem', color: 'var(--slate-mid)',
+                              textTransform: 'uppercase', letterSpacing: '0.1em',
+                              fontWeight: 700, marginBottom: '0.5rem',
+                            }}>
+                              Personal Records
+                            </div>
+                            {p.bestScore !== null ? (
+                              <div style={{ marginBottom: '0.6rem', borderLeft: '3px solid #2d5a34', paddingLeft: '0.6rem' }}>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--slate-mid)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Best</div>
+                                <div style={{ fontSize: '0.9rem' }}>
+                                  <strong className={p.bestScore < 0 ? 'score-under' : ''}>{formatScore(p.bestScore)}</strong>
+                                  <span style={{ color: 'var(--slate-mid)' }}> · {p.bestEvent ?? '—'}</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>No scored events yet.</p>
+                            )}
+                            {p.worstScore !== null && (
+                              <div style={{ borderLeft: '3px solid #a44a3a', paddingLeft: '0.6rem' }}>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--slate-mid)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Worst</div>
+                                <div style={{ fontSize: '0.9rem' }}>
+                                  <strong className={p.worstScore > 0 ? 'score-over' : ''}>{formatScore(p.worstScore)}</strong>
+                                  <span style={{ color: 'var(--slate-mid)' }}> · {p.worstEvent ?? '—'}</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Their most-picked top tier */}
+                          <div>
+                            <div style={{
+                              fontSize: '0.72rem', color: 'var(--slate-mid)',
+                              textTransform: 'uppercase', letterSpacing: '0.1em',
+                              fontWeight: 700, marginBottom: '0.5rem',
+                            }}>
+                              Most Picked — Top Tier
+                            </div>
+                            {userTopTier.length === 0 ? (
+                              <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>No picks yet.</p>
+                            ) : userTopTier.map((g, i) => (
+                              <div key={g.name + i} style={{
+                                display: 'flex', justifyContent: 'space-between',
+                                padding: '0.3rem 0',
+                                borderBottom: i < userTopTier.length - 1 ? '1px solid var(--cream-dark)' : 'none',
+                                fontSize: '0.88rem',
+                              }}>
+                                <span>
+                                  <span style={{ color: 'var(--slate-mid)', marginRight: '0.4rem', fontSize: '0.74rem' }}>#{i + 1}</span>
+                                  {g.name}
+                                </span>
+                                <strong style={{ color: 'var(--brass)' }}>{g.count}</strong>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Their most-picked dark horse */}
+                          <div>
+                            <div style={{
+                              fontSize: '0.72rem', color: 'var(--slate-mid)',
+                              textTransform: 'uppercase', letterSpacing: '0.1em',
+                              fontWeight: 700, marginBottom: '0.5rem',
+                            }}>
+                              Most Picked — Dark Horse
+                            </div>
+                            {userDarkHorse.length === 0 ? (
+                              <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>No picks yet.</p>
+                            ) : userDarkHorse.map((g, i) => (
+                              <div key={g.name + i} style={{
+                                display: 'flex', justifyContent: 'space-between',
+                                padding: '0.3rem 0',
+                                borderBottom: i < userDarkHorse.length - 1 ? '1px solid var(--cream-dark)' : 'none',
+                                fontSize: '0.88rem',
+                              }}>
+                                <span>
+                                  <span style={{ color: 'var(--slate-mid)', marginRight: '0.4rem', fontSize: '0.74rem' }}>#{i + 1}</span>
+                                  {g.name}
+                                </span>
+                                <strong style={{ color: 'var(--brass)' }}>{g.count}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </details>
+                    );
+                  })}
                 </div>
               </div>
             </div>
