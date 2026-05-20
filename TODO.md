@@ -100,7 +100,7 @@ _(Co-commissioner role shipped 2026-05-20 — tiered deputy model. See Done sect
 
 - [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. **DEFERRED**: UX redesign, taste decision. The emojis are part of the brand voice (🏆 ⛳ 📋 etc.); replacing them with SVG icons would change the aesthetic. Punt until somebody complains.
 
-- [ ] **No PWA manifest, no offline fallback** *(P1 #6.8)* — "Install to home screen" experience absent. **DEFERRED**: sizable (manifest + icons + service worker for cache); debatable ROI given the user base is a LAN of golf buddies who'll just bookmark it.
+_(PWA manifest + icons shipped 2026-05-20. "Add to Home Screen" now installs cleanly on iOS, Android, and Chrome/Edge desktop with the Fairway flag icon + brand-green theme color. Offline service-worker punted — see Done. Real engineering for marginal benefit on a LAN deploy.)_
 
 _(vercel.json deleted 2026-05-20 — LAN deploy is committed; the file was dead code. The `/api/sync-scores/rankings` weekly job runs via `fairway-rankings.timer` instead. See Done.)_
 
@@ -120,6 +120,42 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 ## Done
 
 (Newest first.)
+
+### 2026-05-20 — PWA manifest + Add-to-Home-Screen icons
+
+Three new files under `src/app/` using Next.js 14 metadata-route
+conventions — no manual PNG files, no `public/` directory needed,
+manifest stays in sync with icons by construction.
+
+- **`src/app/icon.tsx`** — `ImageResponse`-based 192x192 PNG, golf flag
+  emoji on the brand `--green-deep` (#1a2f1e) background. Edge runtime.
+  Next.js auto-injects `<link rel="icon" href="/icon" sizes="192x192" type="image/png">`.
+- **`src/app/apple-icon.tsx`** — 180x180 variant for iOS Safari's
+  separate `apple-touch-icon` convention. Same artwork, sized for
+  Apple's preferred dimensions. Auto-injects `<link rel="apple-touch-icon">`.
+- **`src/app/manifest.ts`** — typed `MetadataRoute.Manifest` served
+  at `/manifest.webmanifest`. Sets `name`, `short_name=Fairway`,
+  `display=standalone`, `start_url=/dashboard`, `theme_color=#1a2f1e`,
+  `background_color=#f8f4ee` (cream), and icons array referencing the
+  two image routes above.
+- **`src/app/layout.tsx`** — added `manifest: '/manifest.webmanifest'`
+  + `appleWebApp: { capable: true, title: 'Fairway', statusBarStyle: 'black-translucent' }`
+  to Metadata, and a new `Viewport` export with `themeColor: '#1a2f1e'`
+  (Next.js 14 moved theme-color out of metadata into the viewport
+  export).
+
+End-to-end verified locally: `/manifest.webmanifest` returns the
+correct JSON; `/icon` + `/apple-icon` both return image/png 200; the
+landing-page HTML head contains all five PWA tags (manifest,
+theme-color, apple-mobile-web-app-capable, apple-mobile-web-app-title,
+both icon links); the rendered 192x192 PNG visually shows a golf
+flag on the brand-green background.
+
+**Explicitly NOT shipped: service worker / offline cache.** Caching
+strategy, invalidation, version-skew handling vs the server-side
+data flow — real engineering for marginal benefit on a LAN deploy
+with stable wifi. The "install to home screen, launches like a
+native app" benefit lands without it.
 
 ### 2026-05-20 — Co-commissioner role (tiered deputy model)
 
