@@ -133,6 +133,23 @@ export async function getCompletedTournamentsInRange(
 }
 
 /**
+ * Every tournament inside the league window, regardless of status.
+ * Drives the Schedule tab — needs upcoming + active + cut_made +
+ * complete in one chronological list. Ordered ascending so the page
+ * reads "what's next at the top, what already happened at the bottom"
+ * (with current week's tournament in the middle if there is one).
+ */
+export async function getAllTournamentsInRange(
+  start: string | null,
+  end:   string | null,
+) {
+  let q = db.selectFrom('tournaments').selectAll();
+  if (start) q = q.where('start_date', '>=', start);
+  if (end)   q = q.where('start_date', '<=', end);
+  return await q.orderBy('start_date', 'asc').execute();
+}
+
+/**
  * Lightweight fantasy_results pull for the money math — only the
  * columns we need (user_id + rank + tournament_id) for every
  * fantasy_results row in this league across the given tournament

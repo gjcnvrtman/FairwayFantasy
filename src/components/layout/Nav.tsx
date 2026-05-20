@@ -48,10 +48,26 @@ export default function Nav({ leagueSlug, leagueName, userName }: NavProps) {
             </li>
             <li>
               <Link
+                href={`/league/${leagueSlug}/schedule`}
+                className={pathname.includes('/schedule') ? 'active' : ''}
+              >
+                Schedule
+              </Link>
+            </li>
+            <li>
+              <Link
                 href={`/league/${leagueSlug}/history`}
                 className={pathname.includes('/history') ? 'active' : ''}
               >
                 History
+              </Link>
+            </li>
+            <li>
+              <Link
+                href={`/league/${leagueSlug}/stats`}
+                className={pathname.includes('/stats') ? 'active' : ''}
+              >
+                Stats
               </Link>
             </li>
           </ul>
