@@ -18,7 +18,7 @@ interface League {
 
 interface Member {
   user_id:   string;
-  role:      'commissioner' | 'member';
+  role:      'commissioner' | 'co_commissioner' | 'member';
   joined_at: string;
   // The query helper returns the full profile row OR null when the
   // join misses. We only read two fields here, but accepting the full
@@ -46,13 +46,19 @@ interface Props {
    *  complete pick. Drives the "Tournament Status" filter — show
    *  only past events the league actually participated in. */
   tournamentIdsWithPicks: string[];
+  /** The current viewer's role in this league. The admin page only
+   *  renders this component for commissioners + co_commissioners.
+   *  Used here to hide structural sections (Danger Zone, role
+   *  management, league-settings save buttons) for co's. */
+  viewerRole:       'commissioner' | 'co_commissioner';
   inviteUrl:        string; // built server-side (no window.location use here)
 }
 
 export default function AdminPanel({
   league, members, tournaments, activeTournament,
-  tournamentIdsWithPicks, inviteUrl,
+  tournamentIdsWithPicks, viewerRole, inviteUrl,
 }: Props) {
+  const isCommissioner = viewerRole === 'commissioner';
   const router = useRouter();
 
   const [syncing,    setSyncing]    = useState(false);
@@ -184,6 +190,34 @@ export default function AdminPanel({
       setRemoveErr(err instanceof Error ? err.message : String(err));
     } finally {
       setRemoving(null);
+    }
+  }
+
+  // ── Role assignment (commissioner-only) ────────────────────
+  // Drives the promote / demote dropdown next to each member row.
+  // Backed by /api/admin/league-roles which refuses to set a
+  // commissioner row (only via league creation) and refuses self-edit.
+  const [roleBusy, setRoleBusy] = useState<string | null>(null);
+  const [roleErr,  setRoleErr]  = useState('');
+  async function changeRole(userId: string, role: 'member' | 'co_commissioner') {
+    setRoleErr('');
+    setRoleBusy(userId);
+    try {
+      const res = await fetch('/api/admin/league-roles', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ slug: league.slug, userId, role }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRoleErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      router.refresh();
+    } catch (err) {
+      setRoleErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRoleBusy(null);
     }
   }
 
@@ -387,7 +421,12 @@ export default function AdminPanel({
       maxWidth: 920, margin: '0 auto',
     }}>
 
-      {/* ── League settings — read-only summary ─────────────── */}
+      {/* ── League settings ─────────────────────────────────────
+           Commissioner-only — co-commissioners cannot edit structural
+           settings (max players, date window, weekly bet amount).
+           Server-side requireCommissioner on /api/admin/league-settings
+           also enforces. */}
+      {isCommissioner && (
       <section className="card" aria-labelledby="settings-h">
         <h2 id="settings-h" style={{
           fontFamily: "'Playfair Display', serif",
@@ -569,6 +608,7 @@ export default function AdminPanel({
           })}</dd>
         </dl>
       </section>
+      )}
 
       {/* ── Score sync ─────────────────────────────────────── */}
       <section className="card" aria-labelledby="sync-h">
@@ -679,6 +719,11 @@ export default function AdminPanel({
             {removeErr}
           </div>
         )}
+        {roleErr && (
+          <div className="alert alert-error" style={{ margin: '0.75rem 1.5rem 0' }} role="alert">
+            {roleErr}
+          </div>
+        )}
         <table className="lb-table">
           <thead>
             <tr>
@@ -705,8 +750,14 @@ export default function AdminPanel({
                   {m.profile?.email ?? '—'}
                 </td>
                 <td>
-                  <span className={`badge ${m.role === 'commissioner' ? 'badge-brass' : 'badge-gray'}`}>
-                    {m.role === 'commissioner' ? '★ Commissioner' : 'Member'}
+                  <span className={`badge ${
+                    m.role === 'commissioner' ? 'badge-brass'
+                    : m.role === 'co_commissioner' ? 'badge-brass'
+                    : 'badge-gray'
+                  }`}>
+                    {m.role === 'commissioner'    ? '★ Commissioner'
+                     : m.role === 'co_commissioner' ? '☆ Co-Commissioner'
+                     : 'Member'}
                   </span>
                 </td>
                 <td className="hide-mobile" style={{ color: 'var(--slate-mid)', fontSize: '0.82rem' }}>
@@ -715,17 +766,40 @@ export default function AdminPanel({
                   })}
                 </td>
                 <td>
-                  {m.role !== 'commissioner' && (
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ color: 'var(--red)' }}
-                      onClick={() => removeMember(m.user_id, m.profile?.display_name ?? 'this player')}
-                      disabled={removing === m.user_id}
-                      aria-busy={removing === m.user_id}
-                    >
-                      {removing === m.user_id ? '…' : 'Remove'}
-                    </button>
-                  )}
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {/* Promote / demote — commissioner-only, never offered
+                        for a commissioner row (only the original commissioner
+                        is at that level and the role can't be changed here). */}
+                    {isCommissioner && m.role !== 'commissioner' && (
+                      <select
+                        className="input"
+                        value={m.role}
+                        onChange={e => changeRole(m.user_id, e.target.value as 'member' | 'co_commissioner')}
+                        disabled={roleBusy === m.user_id}
+                        aria-label={`Set role for ${m.profile?.display_name ?? 'member'}`}
+                        style={{ fontSize: '0.78rem', padding: '0.18rem 0.4rem', height: 'auto' }}
+                      >
+                        <option value="member">Member</option>
+                        <option value="co_commissioner">Co-Commissioner</option>
+                      </select>
+                    )}
+                    {/* Remove — never offered for commissioner. Co-commissioners
+                        can be removed by a full commissioner only (the backend
+                        also enforces this; we hide the button when viewer is
+                        co_commissioner and target is co_commissioner). */}
+                    {m.role !== 'commissioner'
+                      && !(viewerRole === 'co_commissioner' && m.role === 'co_commissioner') && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: 'var(--red)' }}
+                        onClick={() => removeMember(m.user_id, m.profile?.display_name ?? 'this player')}
+                        disabled={removing === m.user_id}
+                        aria-busy={removing === m.user_id}
+                      >
+                        {removing === m.user_id ? '…' : 'Remove'}
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -997,7 +1071,10 @@ export default function AdminPanel({
       {/* ── Danger Zone ────────────────────────────────────────
            Permanently destructive. Two affordances gate the delete:
            collapsed-by-default header, then a "type the league name"
-           confirm input. Server-side re-verifies the name match. */}
+           confirm input. Server-side re-verifies the name match.
+           Commissioner-only — co-commissioners cannot delete the
+           league (server-side requireCommissioner also enforces). */}
+      {isCommissioner && (
       <section
         className="card"
         style={{
@@ -1104,6 +1181,7 @@ export default function AdminPanel({
           </div>
         )}
       </section>
+      )}
     </div>
   );
 }

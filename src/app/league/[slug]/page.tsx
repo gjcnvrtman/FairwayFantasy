@@ -137,7 +137,10 @@ export default async function LeaguePage({ params }: Props) {
     userHasPick:        !!myPick,
     lock,
   });
-  const isCommissioner = membership.role === 'commissioner';
+  const isCommissioner   = membership.role === 'commissioner';
+  const isCoCommissioner = membership.role === 'co_commissioner';
+  // Drives the admin link + badge — both roles can open /admin.
+  const canSeeAdmin = isCommissioner || isCoCommissioner;
 
   const inviteUrl = `${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`;
   const invitePath = `/join/${league.slug}/${league.invite_code}`;
@@ -179,12 +182,13 @@ export default async function LeaguePage({ params }: Props) {
               </h1>
               <p style={{ color: 'rgba(255,255,255,0.5)', marginTop: '0.3rem', fontSize: '0.875rem' }}>
                 {members.length} player{members.length !== 1 ? 's' : ''} · {new Date().getFullYear()} season
-                {isCommissioner && <span style={{ marginLeft: '0.75rem', color: 'var(--brass-light)' }}>★ Commissioner</span>}
+                {isCommissioner   && <span style={{ marginLeft: '0.75rem', color: 'var(--brass-light)' }}>★ Commissioner</span>}
+                {isCoCommissioner && <span style={{ marginLeft: '0.75rem', color: 'var(--brass-light)' }}>☆ Co-Commissioner</span>}
               </p>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <HeroCTAButton cta={heroCTA} slug={params.slug} />
-              {isCommissioner && (
+              {canSeeAdmin && (
                 <Link href={`/league/${params.slug}/admin`} className="btn btn-outline-white btn-sm">
                   ⚙️ Admin
                 </Link>

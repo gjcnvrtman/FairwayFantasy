@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runReminderJob } from '@/lib/reminder-job';
-import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
+import { requireCoCommissionerOrAbove, isAuthFail } from '@/lib/auth-league';
 import { requireSameOrigin } from '@/lib/same-origin';
 
 export async function POST(req: NextRequest) {
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   const leagueId = typeof body.leagueId === 'string' ? body.leagueId : null;
   const slug     = typeof body.slug     === 'string' ? body.slug     : null;
 
-  const auth = await requireCommissioner({ leagueId, slug });
+  const auth = await requireCoCommissionerOrAbove({ leagueId, slug });
   if (isAuthFail(auth)) return auth.response;
 
   const summary = await runReminderJob();

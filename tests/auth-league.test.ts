@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 // module resolution shims.
 import {
   decideCommissionerAuth,
+  decideCoCommissionerOrAboveAuth,
   decideMemberAuth,
   wouldOrphanLeague,
   type Role,
@@ -60,10 +61,69 @@ describe('decideCommissionerAuth', () => {
     })).toEqual({ code: 403, reason: 'not-commissioner' });
   });
 
+  it('returns 403 when the user is a co_commissioner (operational deputy, NOT full commissioner)', () => {
+    // Structural actions (delete league, edit settings, change roles)
+    // use decideCommissionerAuth and must reject co_commissioners.
+    expect(decideCommissionerAuth({
+      hasIdentifier: true, user: userU, league: leagueL,
+      membership: { role: 'co_commissioner' },
+    })).toEqual({ code: 403, reason: 'not-commissioner' });
+  });
+
   it('checks identifier presence BEFORE auth (so missing-id 400s for everyone)', () => {
     // A non-authenticated request with no identifier still gets 400.
     expect(decideCommissionerAuth({
       hasIdentifier: false, user: null, league: null, membership: null,
+    })).toEqual({ code: 400, reason: 'no-identifier' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// decideCoCommissionerOrAboveAuth — operational deputy gate
+// ─────────────────────────────────────────────────────────────
+
+describe('decideCoCommissionerOrAboveAuth', () => {
+  const userU   = { id: 'u1' };
+  const leagueL = { id: 'lg1' };
+
+  it('returns 200 for a commissioner', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: true, user: userU, league: leagueL,
+      membership: { role: 'commissioner' },
+    })).toEqual({ code: 200 });
+  });
+
+  it('returns 200 for a co_commissioner', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: true, user: userU, league: leagueL,
+      membership: { role: 'co_commissioner' },
+    })).toEqual({ code: 200 });
+  });
+
+  it('returns 403 for a plain member', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: true, user: userU, league: leagueL,
+      membership: { role: 'member' },
+    })).toEqual({ code: 403, reason: 'not-commissioner-or-above' });
+  });
+
+  it('returns 404 when the user is not a member', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: true, user: userU, league: leagueL, membership: null,
+    })).toEqual({ code: 404, reason: 'no-league-or-not-member' });
+  });
+
+  it('returns 401 when unauthenticated (regardless of league)', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: true, user: null, league: leagueL,
+      membership: { role: 'commissioner' },
+    })).toEqual({ code: 401, reason: 'unauthenticated' });
+  });
+
+  it('returns 400 when no identifier supplied', () => {
+    expect(decideCoCommissionerOrAboveAuth({
+      hasIdentifier: false, user: userU, league: leagueL,
+      membership: { role: 'commissioner' },
     })).toEqual({ code: 400, reason: 'no-identifier' });
   });
 });
@@ -87,6 +147,13 @@ describe('decideMemberAuth', () => {
     expect(decideMemberAuth({
       hasIdentifier: true, user: userU, league: leagueL,
       membership: { role: 'commissioner' },
+    })).toEqual({ code: 200 });
+  });
+
+  it('accepts co_commissioners', () => {
+    expect(decideMemberAuth({
+      hasIdentifier: true, user: userU, league: leagueL,
+      membership: { role: 'co_commissioner' },
     })).toEqual({ code: 200 });
   });
 
@@ -178,5 +245,29 @@ describe('wouldOrphanLeague', () => {
       ],
       removeUserId: 'comm',
     })).toBe(true);
+  });
+
+  it('blocks removing the only commissioner even when co_commissioners exist', () => {
+    // Co_commissioners don't count toward the orphan check — a league
+    // with 0 commissioners + N co's is functionally orphaned because
+    // co's can't promote new commissioners or delete the league.
+    expect(wouldOrphanLeague({
+      members: [
+        { user_id: 'comm', role: 'commissioner' },
+        { user_id: 'co1',  role: 'co_commissioner' },
+        { user_id: 'co2',  role: 'co_commissioner' },
+      ],
+      removeUserId: 'comm',
+    })).toBe(true);
+  });
+
+  it('allows removing a co_commissioner (commissioner remains)', () => {
+    expect(wouldOrphanLeague({
+      members: [
+        { user_id: 'comm', role: 'commissioner' },
+        { user_id: 'co1',  role: 'co_commissioner' },
+      ],
+      removeUserId: 'co1',
+    })).toBe(false);
   });
 });

@@ -96,7 +96,7 @@ _(`pick_locked_at` audit column investigated and closed 2026-05-20 — `is_locke
 
 _(picks.golfer_N_id NOT NULL shipped 2026-05-20 — migration 005. The original deferral assumed there was a "draft picks during edit" code path, but inspection found `validatePick` rejects all partial submissions at the API boundary AND POST /api/picks is the only write path. Prod had zero partial rows. Simple ALTER ... SET NOT NULL was the right move; no state-aware design needed. See Done.)_
 
-- [ ] **No co-commissioner role** *(P1 #3.10)* — `league_members.role` CHECK allows only `'commissioner'`/`'member'`. **DEFERRED**: needs design — what permissions does a co-commissioner get vs full commissioner? Currently no specific user has asked for it.
+_(Co-commissioner role shipped 2026-05-20 — tiered deputy model. See Done section.)_
 
 - [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. **DEFERRED**: UX redesign, taste decision. The emojis are part of the brand voice (🏆 ⛳ 📋 etc.); replacing them with SVG icons would change the aesthetic. Punt until somebody complains.
 
@@ -120,6 +120,55 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 ## Done
 
 (Newest first.)
+
+### 2026-05-20 — Co-commissioner role (tiered deputy model)
+
+Multi-tenant deputy access. Each league can promote members to
+`co_commissioner` — operational permissions without structural authority.
+
+**Permission matrix:**
+
+| Action | commissioner | co_commissioner | member |
+|---|:---:|:---:|:---:|
+| View admin panel                          | ✓ | ✓ | ✗ |
+| Manual score sync (admin/sync-scores)     | ✓ | ✓ | ✗ |
+| Send reminders (admin/reminders)          | ✓ | ✓ | ✗ |
+| Pick-deadline overrides (admin/pick-deadline) | ✓ | ✓ | ✗ |
+| Regenerate invite code (leagues/invite)   | ✓ | ✓ | ✗ |
+| Invite by email (leagues/invite-by-email) | ✓ | ✓ | ✓ |
+| Remove a regular member                   | ✓ | ✓ | ✗ |
+| Remove a commissioner / co-commissioner   | ✓ | ✗ | ✗ |
+| Edit league settings (name/dates/maxPlayers/bet) | ✓ | ✗ | ✗ |
+| Delete league                             | ✓ | ✗ | ✗ |
+| Promote member → co-commissioner          | ✓ | ✗ | ✗ |
+| Demote co-commissioner → member           | ✓ | ✗ | ✗ |
+
+**Shipped:**
+
+- **Migration 006** (`scripts/migrations/006-co-commissioner-role.sql`) — broadens the `league_members.role` CHECK to allow the new value. `infra/postgres/init/00-schema.sql` updated inline for fresh installs. Applied to prod 2026-05-20 08:07 CDT after pre-migration backup.
+
+- **Auth helpers** — `decideCoCommissionerOrAboveAuth` (pure) + `requireCoCommissionerOrAbove` (with DB). Five operational endpoints switched to the new helper: `/api/admin/reminders`, `/api/admin/sync-scores`, `/api/admin/pick-deadline`, `/api/leagues/invite`, `/api/leagues/members` (DELETE). Two structural endpoints kept on `requireCommissioner`: `/api/admin/league-settings`, `/api/admin/league-delete`.
+
+- **`/api/leagues/members` DELETE** — extra guard: when the caller is a `co_commissioner`, refuse with 403 if the target is a `commissioner` or another `co_commissioner` ("co's can't go rogue"). Server-side enforcement, not just UI.
+
+- **`/api/admin/league-roles` POST** *(new)* — commissioner-only promote/demote. Body `{ slug, userId, role: 'member' | 'co_commissioner' }`. Refuses self-edit, refuses to modify a `commissioner` row, no-op on unchanged-role with `{ok: true, unchanged: true}`. Promoting to full `commissioner` is intentionally NOT exposed here (would create a two-captains state that `wouldOrphanLeague` doesn't model — handled separately at league-creation time only).
+
+- **`wouldOrphanLeague`** — unchanged semantics, but now explicit: counts ONLY `role = 'commissioner'`, NOT `co_commissioner`. A league with 0 commissioners + N co's is functionally orphaned because co's can't promote new commissioners.
+
+- **UI** — `AdminPanel.tsx` gained:
+    * Three-state badge (★ Commissioner / ☆ Co-Commissioner / Member)
+    * Inline role-select dropdown next to each non-commissioner member row (commissioner viewer only)
+    * Remove button hidden when viewer is co + target is commissioner/co (matches server behavior)
+    * League Settings + Danger Zone sections wrapped in `{isCommissioner && ...}` — co viewer sees neither
+  Page guards: `admin/page.tsx` allows both roles to access; `league/[slug]/page.tsx` shows the Admin link + role badge for co's; `dashboard/page.tsx` renders both badges.
+
+- **Tests** — 10 new vitest cases (now 269/269 passing). Covers all three role × all auth-helper branches + orphan-guard with co_commissioner rows present.
+
+- **`schema.ts` + `types/index.ts`** — Role widened to `'commissioner' | 'co_commissioner' | 'member'` across the type system.
+
+**Not exposed (intentional):**
+- Promoting member directly to `commissioner` — only via league creation. Avoids "two captains" + simplifies orphan-prevention.
+- Self-demotion — can't change your own role.
 
 ### 2026-05-20 — picks.golfer_N_id NOT NULL + GET-reuses-POST closure
 

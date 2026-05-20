@@ -117,6 +117,9 @@ export default async function DashboardPage() {
                           {league.role === 'commissioner' && (
                             <span className="badge badge-brass">Commissioner</span>
                           )}
+                          {league.role === 'co_commissioner' && (
+                            <span className="badge badge-brass">Co-Commissioner</span>
+                          )}
                           <span style={{ color: 'var(--slate-light)', fontSize: '1.2rem' }}>→</span>
                         </div>
                       </div>

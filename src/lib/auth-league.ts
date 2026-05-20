@@ -17,6 +17,7 @@ import { db } from './db';
 // existing callers don't change.
 export {
   decideCommissionerAuth,
+  decideCoCommissionerOrAboveAuth,
   decideMemberAuth,
   wouldOrphanLeague,
   type AuthDecision,
@@ -136,6 +137,85 @@ export async function requireCommissioner(args: {
     user: { id: user.id },
     league: league as LeagueRow,
     role: 'commissioner',
+  };
+}
+
+/**
+ * Same shape as ``requireCommissioner`` but accepts either
+ * ``commissioner`` OR ``co_commissioner``. Use for OPERATIONAL
+ * actions where co_commissioners act as deputies: manual sync,
+ * sending reminders, setting pick-deadline overrides, regenerating
+ * invite codes, removing members. Structural actions (delete league,
+ * edit league settings, change roles) keep using
+ * ``requireCommissioner``.
+ *
+ * Status codes mirror ``requireCommissioner`` so callers can switch
+ * helpers without changing error handling. The 403 message reads
+ * "Only commissioners and co-commissioners can perform this action."
+ * so the UI surfaces a clear reason if a plain member ever hits it.
+ */
+export async function requireCoCommissionerOrAbove(args: {
+  slug?:     string | null;
+  leagueId?: string | null;
+}): Promise<LeagueAuthResult> {
+  const { slug, leagueId } = args;
+  if (!slug && !leagueId) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: 'Missing league identifier (slug or leagueId).' },
+        { status: 400 },
+      ),
+    };
+  }
+
+  const user = await getCurrentUser();
+  if (!user) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }),
+    };
+  }
+
+  let leagueQuery = db.selectFrom('leagues').selectAll();
+  if (leagueId) leagueQuery = leagueQuery.where('id',   '=', leagueId);
+  else          leagueQuery = leagueQuery.where('slug', '=', slug!);
+  const league = await leagueQuery.executeTakeFirst();
+  if (!league) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'League not found' }, { status: 404 }),
+    };
+  }
+
+  const membership = await db.selectFrom('league_members')
+    .select('role')
+    .where('league_id', '=', league.id)
+    .where('user_id', '=', user.id)
+    .executeTakeFirst();
+
+  if (!membership) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'League not found' }, { status: 404 }),
+    };
+  }
+
+  if (membership.role !== 'commissioner' && membership.role !== 'co_commissioner') {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: 'Only commissioners and co-commissioners can perform this action.' },
+        { status: 403 },
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    user: { id: user.id },
+    league: league as LeagueRow,
+    role: membership.role as Role,
   };
 }
 

@@ -11,7 +11,7 @@
 // Returns 200 with { ok, effective_deadline }.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
+import { requireCoCommissionerOrAbove, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { requireSameOrigin } from '@/lib/same-origin';
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'tournamentId is required.' }, { status: 400 });
   }
 
-  const auth = await requireCommissioner({ slug });
+  const auth = await requireCoCommissionerOrAbove({ slug });
   if (isAuthFail(auth)) return auth.response;
 
   // Parse the deadline string. If invalid (and not null), reject.

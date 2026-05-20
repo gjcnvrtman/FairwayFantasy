@@ -88,7 +88,9 @@ export interface LeagueMembersTable {
   id:        Generated<string>;
   league_id: string;
   user_id:   string;
-  role:      Generated<'commissioner' | 'member'>;
+  // 'co_commissioner' added 2026-05-20 (migration 006) — deputy role
+  // with operational permissions but no structural authority.
+  role:      Generated<'commissioner' | 'co_commissioner' | 'member'>;
   joined_at: Generated<Timestamp>;
 }
 

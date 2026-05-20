@@ -17,13 +17,20 @@ export default async function AdminPage({ params }: Props) {
   const league = await getLeagueBySlug(params.slug);
   if (!league) notFound();
 
-  // Only commissioners
+  // Commissioner OR co-commissioner. Co's see the same panel; the
+  // AdminPanel itself hides commissioner-only sections (Danger Zone,
+  // role management, league settings) when `viewerRole !== 'commissioner'`.
   const membership = await db.selectFrom('league_members')
     .select('role')
     .where('league_id', '=', league.id)
     .where('user_id',   '=', user.id)
     .executeTakeFirst();
-  if (!membership || membership.role !== 'commissioner') redirect(`/league/${params.slug}`);
+  if (!membership
+      || (membership.role !== 'commissioner'
+          && membership.role !== 'co_commissioner')) {
+    redirect(`/league/${params.slug}`);
+  }
+  const viewerRole = membership.role as 'commissioner' | 'co_commissioner';
 
   const profile = await db.selectFrom('profiles')
     .select('display_name')
@@ -89,6 +96,7 @@ export default async function AdminPage({ params }: Props) {
             tournaments={tournaments}
             activeTournament={activeTournament}
             tournamentIdsWithPicks={tournamentIdsWithPicks}
+            viewerRole={viewerRole}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />
         </div>

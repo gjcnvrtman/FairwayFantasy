@@ -85,7 +85,12 @@ CREATE TABLE league_members (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   league_id   UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
   user_id     UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  role        TEXT DEFAULT 'member' CHECK (role IN ('commissioner', 'member')),
+  -- co_commissioner added 2026-05-20 (migration 006) — tiered deputy
+  -- role with operational permissions (sync, reminders, deadlines,
+  -- invite-code regen, removing members) but NOT structural powers
+  -- (league delete, settings edit, role changes). Orphan-prevention
+  -- still counts ONLY `commissioner` since co's can't promote.
+  role        TEXT DEFAULT 'member' CHECK (role IN ('commissioner', 'co_commissioner', 'member')),
   joined_at   TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(league_id, user_id)
 );
