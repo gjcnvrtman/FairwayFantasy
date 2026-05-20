@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { db } from '@/lib/db';
 import { validateRegistration } from '@/lib/auth-validation';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { requireSameOrigin } from '@/lib/same-origin';
 import { sendEmail, verificationEmail } from '@/lib/email';
 
 // Auth flow — never prerender.
@@ -28,6 +29,9 @@ const RL_REGISTER_LIMIT  = 5;
 const RL_REGISTER_WINDOW = 600;
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   // Rate limit before any work — cheap and means a scripted attacker
   // can't exhaust the bcrypt pool or the DB connection pool.
   const ip = clientIpFromHeaders(req.headers);

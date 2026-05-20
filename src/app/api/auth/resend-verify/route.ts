@@ -14,10 +14,14 @@ import { randomBytes } from 'node:crypto';
 import { db } from '@/lib/db';
 import { sendEmail, verificationEmail } from '@/lib/email';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const body  = await req.json().catch(() => ({} as Record<string, unknown>));
   const email = (typeof body.email === 'string' ? body.email.trim().toLowerCase() : '');
 

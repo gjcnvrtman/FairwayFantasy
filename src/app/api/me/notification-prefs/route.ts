@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 // Auth-gated; reads/writes per-user data. Never prerender.
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,9 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 

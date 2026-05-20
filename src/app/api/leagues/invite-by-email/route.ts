@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireMember, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { requireSameOrigin } from '@/lib/same-origin';
 import { sendEmail, invitationEmail } from '@/lib/email';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,9 @@ const MAX_EMAILS = 20;
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+\.[^\s@]+$/;
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const ip = clientIpFromHeaders(req.headers);
   const rl = await checkRateLimit({
     key:           `invite-by-email:${ip}`,

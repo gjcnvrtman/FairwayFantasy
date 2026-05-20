@@ -30,11 +30,15 @@ import {
 } from '@/lib/db/queries';
 import { computeLeagueMoney } from '@/lib/money';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
+import { requireSameOrigin } from '@/lib/same-origin';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const slug        = typeof body.slug        === 'string' ? body.slug        : '';
   const confirmName = typeof body.confirmName === 'string' ? body.confirmName : '';

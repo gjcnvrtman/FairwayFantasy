@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { validatePick, isReplacementEligible } from '@/lib/scoring';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
+import { requireSameOrigin } from '@/lib/same-origin';
 import { isPickDeadlinePassed } from '@/lib/pick-deadline';
 
 // Per-IP rate limit on pick submission: 30 attempts per 10 min.
@@ -14,6 +15,9 @@ const RL_PICKS_LIMIT  = 30;
 const RL_PICKS_WINDOW = 600;
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
@@ -123,6 +127,9 @@ export async function POST(req: NextRequest) {
 
 // Withdrawal replacement
 export async function PUT(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 

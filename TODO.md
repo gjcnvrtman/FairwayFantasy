@@ -84,18 +84,27 @@ _(ESPN status-flip gap closed 2026-05-20 — `syncTournament` now infers complet
 
 ## P3 — research / tuning / docs
 
-- [ ] **Stale README / SETUP** *(P1 #20)* — README references DataGolf (now ESPN), `DATAGOLF_API_KEY` env var (unused), Vercel Quick Start (replacing). SETUP.md likely similar. Rewrite for LAN deployment + actual stack.
-- [ ] **No CSRF protection** *(P1 #4.12)* — state-changing endpoints have no CSRF token. NextAuth mitigates `/api/auth/*` automatically; other POST endpoints rely on SameSite=Lax cookies + same-origin checks. Standard hygiene to add.
-- [ ] *(moved to P0)* — rate limiting now real since public-internet exposure.
-- [ ] **Unauthenticated public endpoints** *(P1 #4.4)* — `/api/players` and `/api/leagues/verify` have no auth. Public exposure now real; consider rate-limiting at minimum.
-- [ ] **`GET /api/sync-scores` reuses `POST`** *(P1, sync-scores:133)* — works but unusual. Fine for now.
-- [ ] **Schema has no `pick_locked_at` audit column** *(P1 #3.8)* — `is_locked` boolean alone doesn't capture WHEN it locked.
-- [ ] **`picks.golfer_N_id` columns nullable** *(P1 #3.9)* — schema allows partial picks; should be `NOT NULL` after submission. Add CHECK constraint.
-- [ ] **No co-commissioner role** *(P1 #3.10)* — `league_members.role` CHECK allows only `'commissioner'`/`'member'`. Future feature.
-- [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. Consider SVG icons.
-- [ ] **No PWA manifest, no offline fallback** *(P1 #6.8)* — "Install to home screen" experience absent.
-- [ ] **`vercel.json` cleanup post-migration** — once we move off Vercel, the file is dead. Decide whether to delete or keep for future re-deploy parity.
-- [ ] **Stray typo'd filenames in `/opt/fairway-fantasy` on .150** — 2026-05-14. `git status` on the production checkout shows two untracked files: `"eep 65"` and `"udo systemctl start fairway-rankings.service"` — clearly leftovers from `sleep 65` and `sudo systemctl ...` commands that got typo'd into the shell with stray spaces or redirections. Harmless (not in git, not referenced), but worth `rm` on next visit so `git status` is clean for the next deploy.
+_(README / SETUP rewrite shipped 2026-05-20 — both now describe the self-hosted Postgres + LAN systemd reality. DataGolf, Vercel, `DATAGOLF_API_KEY`, and Supabase Cloud refs scrubbed. SETUP.md now points to DEPLOYMENT.md for production. See Done.)_
+
+_(CSRF defense-in-depth shipped 2026-05-20 — new `src/lib/same-origin.ts` helper applied to every browser-driven state-changing endpoint (12 routes). Fail-open on missing Origin so Bearer / curl paths keep working. SameSite=Lax cookies were already the primary defense; this is belt-and-suspenders. See Done.)_
+
+_(Unauthenticated public endpoints rate-limited 2026-05-20 — `/api/players` capped at 60/10min/IP and `/api/leagues/verify` at 10/10min/IP. Both keyed via the existing `clientIpFromHeaders` + `checkRateLimit` infrastructure. See Done.)_
+
+- [ ] **`GET /api/sync-scores` reuses `POST`** *(P1, sync-scores:133)* — explicitly accepted as-is. Works for the systemd curl pattern; renaming for ceremony would just churn the timer unit file. Closed without code.
+
+_(`pick_locked_at` audit column investigated and closed 2026-05-20 — `is_locked` is never written to TRUE anywhere in the codebase. Picks lock derives from `effectivePickDeadline(t) < now()` at render time, not from the column. Adding `pick_locked_at` without first wiring an actual lock job would be cargo-cult schema. The real audit signal is `submitted_at`, which already exists. See Done.)_
+
+- [ ] **`picks.golfer_N_id` columns nullable** *(P1 #3.9)* — schema allows partial picks; should be `NOT NULL` after submission. Add CHECK constraint. **DEFERRED**: current state is intentional (allows partial picks during edit); the existing `golfer_tuple_hash` trigger + unique index already enforces "no duplicate complete foursomes," which is the real correctness goal. Adding a CHECK requires a state-aware constraint ("non-null when `submitted_at` indicates final submit") and that's a real schema-design discussion, not P3 hygiene.
+
+- [ ] **No co-commissioner role** *(P1 #3.10)* — `league_members.role` CHECK allows only `'commissioner'`/`'member'`. **DEFERRED**: needs design — what permissions does a co-commissioner get vs full commissioner? Currently no specific user has asked for it.
+
+- [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. **DEFERRED**: UX redesign, taste decision. The emojis are part of the brand voice (🏆 ⛳ 📋 etc.); replacing them with SVG icons would change the aesthetic. Punt until somebody complains.
+
+- [ ] **No PWA manifest, no offline fallback** *(P1 #6.8)* — "Install to home screen" experience absent. **DEFERRED**: sizable (manifest + icons + service worker for cache); debatable ROI given the user base is a LAN of golf buddies who'll just bookmark it.
+
+_(vercel.json deleted 2026-05-20 — LAN deploy is committed; the file was dead code. The `/api/sync-scores/rankings` weekly job runs via `fairway-rankings.timer` instead. See Done.)_
+
+_(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemctl start fairway-rankings.service` rm'd from `/opt/fairway-fantasy`. `git status` clean.)_
 - [x] **`.eslintrc` setup** — done in P10. Added `.eslintrc.json` extending `next/core-web-vitals`, pinned `eslint@^8.57.0` + `eslint-config-next@^14.2.35`. ✓
 
 ---
@@ -111,6 +120,39 @@ _(ESPN status-flip gap closed 2026-05-20 — `syncTournament` now infers complet
 ## Done
 
 (Newest first.)
+
+### 2026-05-20 — P3 sweep: docs refresh, CSRF defense-in-depth, public-endpoint rate limits, cleanup
+
+Closed eight P3 items in one pass. Three actually shipped code, two were docs, three were cleanup/closure decisions.
+
+**Shipped code:**
+
+- **CSRF defense in depth** — new `src/lib/same-origin.ts`. Lightweight Origin/Referer comparison against `NEXTAUTH_URL`. Fails open when neither header is present (server-to-server / curl path), so the `/api/sync-scores` Bearer-CRON_SECRET timer + the `/api/admin/reminders` dual-auth Bearer path keep working without exception-case code. Applied as a one-line guard at the top of every browser-driven state-changing handler: `/api/auth/register`, `/api/auth/resend-verify`, `/api/leagues` (POST), `/api/leagues/invite` (POST), `/api/leagues/invite-by-email` (POST), `/api/leagues/join` (POST), `/api/leagues/members` (DELETE), `/api/me/notification-prefs` (PUT), `/api/picks` (POST + PUT), `/api/admin/league-delete` (POST), `/api/admin/league-settings` (POST), `/api/admin/pick-deadline` (POST), `/api/admin/reminders` (POST), `/api/admin/sync-scores` (POST). 12 routes, uniform pattern. NextAuth's SameSite=Lax cookies remain the primary defense; this is belt-and-suspenders that also makes cross-origin attempts visible in the 403 access log.
+
+- **Rate-limit unauthenticated public endpoints** — `/api/players` capped at 60/10min/IP (covers normal search-as-you-type sessions while making bulk scraping expensive); `/api/leagues/verify` at 10/10min/IP (tight to deter invite-code brute-forcing). Reuses the existing Postgres-backed `checkRateLimit` + `clientIpFromHeaders` infrastructure. Returns 429 with `Retry-After` before any DB work.
+
+- **vercel.json deleted** — was dead code since the LAN migration. The weekly schedule sync (`/api/sync-scores/rankings`) now runs via `fairway-rankings.timer` (Monday 06:00). No vercel-only callsites in source.
+
+**Docs:**
+
+- **README.md** — rewrote from the Vercel/Supabase/DataGolf era to the current self-hosted Postgres + LAN systemd reality. Updated tech-stack table, env vars, dev quick-start, project-tree map. Pointer to DEPLOYMENT.md for production.
+
+- **SETUP.md** — replaced the Vercel deploy walkthrough with a short developer-onboarding doc (Docker Postgres, `.env.local` checklist, dev loop commands). Production setup defers to DEPLOYMENT.md.
+
+**Closed without code (with reasoning):**
+
+- **`GET /api/sync-scores` reuses POST** — kept as-is. Works for the systemd `curl -X POST` pattern; renaming would just churn the timer unit file for ceremony.
+
+- **`pick_locked_at` audit column** — investigated and found the dead-column root: `is_locked` is never written to TRUE anywhere; lock state is derived from `effectivePickDeadline(t) < now()` at render time. Adding `pick_locked_at` without first wiring an actual lock job would be cargo-cult schema. The real audit signal is `submitted_at`, which already exists. Closing the TODO with this finding rather than shipping unused columns.
+
+- **Stray typo'd files on `.150`** — `rm 'eep 65' 'udo systemctl start fairway-rankings.service'` from `/opt/fairway-fantasy`. `git status` now clean for the next deploy.
+
+**Explicitly deferred (need design decisions, not P3 hygiene):**
+
+- `picks.golfer_N_id` NOT NULL CHECK constraint — needs state-aware design ("only required after submit"), not a one-liner
+- Co-commissioner role — needs permissions-model design + user demand
+- Emoji → SVG — taste decision, current emojis are part of the brand voice
+- PWA manifest + offline — sizable, debatable ROI for a LAN-of-friends app
 
 ### 2026-05-20 — ESPN status-flip P0 + recomputeResults batching P2
 

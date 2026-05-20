@@ -10,8 +10,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runReminderJob } from '@/lib/reminder-job';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export async function POST(req: NextRequest) {
+  // Same-origin check is fail-open on missing Origin, so the systemd
+  // timer's Bearer path (curl with no Origin header) passes through
+  // unaffected — only browser requests get CSRF-checked, and those
+  // hit the commissioner-session path below.
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   // ── Auth path 1: cron secret ──
   const authHeader = req.headers.get('authorization');
   if (authHeader && authHeader === `Bearer ${process.env.CRON_SECRET}`) {

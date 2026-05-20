@@ -6,8 +6,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireCommissioner, isAuthFail, wouldOrphanLeague, type Role } from '@/lib/auth-league';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export async function DELETE(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const leagueId = req.nextUrl.searchParams.get('leagueId');
   const userId   = req.nextUrl.searchParams.get('userId');
 

@@ -3,9 +3,13 @@ import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { generateInviteCode } from '@/lib/db/queries';
 import { validateCreateLeague, LEAGUE_LIMITS } from '@/lib/validation';
+import { requireSameOrigin } from '@/lib/same-origin';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 

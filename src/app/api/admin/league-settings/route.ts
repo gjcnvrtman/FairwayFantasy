@@ -19,12 +19,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import { LEAGUE_LIMITS } from '@/lib/validation';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export const dynamic = 'force-dynamic';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const slug             = typeof body.slug === 'string' ? body.slug : '';
   const maxPlayersRaw    = body.maxPlayers;

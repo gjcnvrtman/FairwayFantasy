@@ -14,10 +14,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const body  = await req.json().catch(() => ({} as Record<string, unknown>));
   const slug          = typeof body.slug          === 'string' ? body.slug          : '';
   const tournamentId  = typeof body.tournamentId  === 'string' ? body.tournamentId  : '';

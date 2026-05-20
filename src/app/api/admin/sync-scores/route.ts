@@ -17,8 +17,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runScoreSync } from '@/lib/sync';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
+import { requireSameOrigin } from '@/lib/same-origin';
 
 export async function POST(req: NextRequest) {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return csrf;
+
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const leagueId = typeof body.leagueId === 'string' ? body.leagueId : null;
   const slug     = typeof body.slug     === 'string' ? body.slug     : null;
