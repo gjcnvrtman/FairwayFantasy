@@ -84,7 +84,7 @@ _(ESPN status-flip gap closed 2026-05-20 — `syncTournament` now infers complet
 
 ## P3 — research / tuning / docs
 
-_(README / SETUP rewrite shipped 2026-05-20 — both now describe the self-hosted Postgres + LAN systemd reality. DataGolf, Vercel, `DATAGOLF_API_KEY`, and Supabase Cloud refs scrubbed. SETUP.md now points to DEPLOYMENT.md for production. See Done.)_
+- [ ] **`NEXTAUTH_URL` on prod points at a test server (`http://192.168.1.160:3000`)** — Surfaced 2026-05-20 when assigning a co-commissioner returned 403 from the same-origin CSRF guard. Root cause: `.env.local` on `.150` has `NEXTAUTH_URL=http://192.168.1.160:3000` (an internal test box that isn't even prod) while users browse at `https://fairway.golf-czar.com`. The CSRF helper was patched the same day to accept both NEXTAUTH_URL and NEXT_PUBLIC_SITE_URL as legitimate same-origin values (commit `84d81e1`), so the user-facing symptom is gone. But the underlying misconfiguration remains and likely affects NextAuth callback URL math + sign-out redirects in subtle ways. **Fix:** `sed -i 's|^NEXTAUTH_URL=.*|NEXTAUTH_URL=https://fairway.golf-czar.com|' /opt/fairway-fantasy/.env.local && sudo systemctl restart fairway-fantasy`. Existing browser session cookies are scoped to fairway.golf-czar.com by the browser already, so the change shouldn't force re-login — but worth a heads-up if anyone gets bounced to signin once post-restart.
 
 _(CSRF defense-in-depth shipped 2026-05-20 — new `src/lib/same-origin.ts` helper applied to every browser-driven state-changing endpoint (12 routes). Fail-open on missing Origin so Bearer / curl paths keep working. SameSite=Lax cookies were already the primary defense; this is belt-and-suspenders. See Done.)_
 
