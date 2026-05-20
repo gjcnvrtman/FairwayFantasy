@@ -79,7 +79,7 @@ export default async function SchedulePage({ params }: Props) {
             <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
               <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📅</div>
               <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.3rem', marginBottom: '0.5rem' }}>No tournaments scheduled</h3>
-              <p style={{ color: 'var(--slate-mid)' }}>The league's date window has no tournaments yet.</p>
+              <p style={{ color: 'var(--slate-mid)' }}>The league&rsquo;s date window has no tournaments yet.</p>
             </div>
           ) : (
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>

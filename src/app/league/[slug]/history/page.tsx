@@ -200,7 +200,7 @@ export default async function HistoryPage({ params }: Props) {
                     Total Score — Season Totals
                   </h3>
                   <p style={{ color: 'var(--slate-mid)', fontSize: '0.82rem', marginBottom: '1rem' }}>
-                    Cumulative score across this league's events. Lower is better.
+                    Cumulative score across this league&rsquo;s events. Lower is better.
                   </p>
                   <div>
                     {scoreTotalsRanked.length === 0 ? (
