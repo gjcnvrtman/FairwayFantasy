@@ -119,6 +119,45 @@ export async function dispatchReminder(
 // ── Default message template ─────────────────────────────────
 
 /**
+ * Subject + body for the "field is set" notification that fires
+ * the first time ESPN publishes the field for an upcoming tournament
+ * (see runFieldSync in src/lib/sync.ts). Channel-aware. Separate from
+ * the pick-deadline reminder — different trigger, different copy.
+ */
+export function fieldPublishedMessage(args: {
+  task:           ReminderTask;
+  tournamentName: string;
+  pickDeadline:   Date | null;
+  picksUrl:       string;
+}): NotifyMessage {
+  const { task, tournamentName, pickDeadline, picksUrl } = args;
+  const dlPart = pickDeadline
+    ? ` Pick deadline: ${pickDeadline.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      })}.`
+    : '';
+  const subject = `Field set — make your picks: ${tournamentName}`;
+  if (task.channel === 'sms') {
+    return {
+      recipient: task.destination ?? '',
+      subject,
+      body: `Fairway Fantasy: the field is set for ${tournamentName}. Make your picks: ${picksUrl}${dlPart}`,
+    };
+  }
+  return {
+    recipient: task.destination ?? '',
+    subject,
+    body:
+      `The field is set for ${tournamentName}.\n\n` +
+      `ESPN just published the player list, so you can now build your foursome.${dlPart}\n\n` +
+      `Make your picks:\n${picksUrl}\n\n` +
+      `(You're receiving this because you opted into pick reminders. ` +
+      `Manage preferences at /settings.)`,
+  };
+}
+
+/**
  * Default subject + body for the pick reminder. Channel-aware:
  * SMS bodies are short; email + push get more text.
  */

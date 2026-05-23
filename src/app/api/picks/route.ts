@@ -46,12 +46,23 @@ export async function POST(req: NextRequest) {
 
   // Check tournament is still open
   const tournament = await db.selectFrom('tournaments')
-    .select(['pick_deadline', 'pick_deadline_override', 'status', 'name'])
+    .select(['pick_deadline', 'pick_deadline_override', 'status', 'name', 'field_published_at'])
     .where('id', '=', tournamentId)
     .executeTakeFirst();
   if (!tournament) return NextResponse.json({ error: 'Tournament not found.' }, { status: 404 });
   if (tournament.status !== 'upcoming')
     return NextResponse.json({ error: 'Picks are locked — this tournament has started.' }, { status: 403 });
+  // Field-availability gate (Migration 007). When ESPN hasn't
+  // published the field yet, the golfer list is just last week's
+  // roster — picking from it would let users submit foursomes of
+  // golfers who aren't even in this tournament. 409 (Conflict) is
+  // the right status: the request is well-formed but the resource
+  // isn't in a state where it can be acted on.
+  if (!tournament.field_published_at)
+    return NextResponse.json(
+      { error: 'Field not yet available — ESPN hasn\'t published the tournament field. Picks unlock automatically once the field is in (hourly check Mon-Wed).' },
+      { status: 409 },
+    );
   // Honor commissioner override (P1 — pick_deadline often wrong vs real tee time).
   if (isPickDeadlinePassed(tournament))
     return NextResponse.json({ error: 'The pick deadline has passed.' }, { status: 403 });

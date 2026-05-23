@@ -46,7 +46,8 @@ echo "▸ Install to:    /etc/systemd/system/"
 
 # ── Copy unit files ─────────────────────────────────────────
 for unit in fairway-rankings.service fairway-rankings.timer \
-            fairway-scores.service   fairway-scores.timer; do
+            fairway-scores.service   fairway-scores.timer   \
+            fairway-field.service    fairway-field.timer; do
   src="$HERE/$unit"
   dst="/etc/systemd/system/$unit"
   cp "$src" "$dst"
@@ -57,6 +58,7 @@ done
 systemctl daemon-reload
 systemctl enable --now fairway-rankings.timer
 systemctl enable --now fairway-scores.timer
+systemctl enable --now fairway-field.timer
 
 echo
 echo "▸ Timer status:"
@@ -78,5 +80,7 @@ echo "✓ Installed. Useful follow-ups:"
 echo "    systemctl list-timers fairway-*"
 echo "    journalctl -fu fairway-rankings"
 echo "    journalctl -fu fairway-scores"
+echo "    journalctl -fu fairway-field"
 echo "    systemctl start fairway-rankings.service   # fire manually"
 echo "    systemctl start fairway-scores.service     # fire manually"
+echo "    systemctl start fairway-field.service      # fire manually"

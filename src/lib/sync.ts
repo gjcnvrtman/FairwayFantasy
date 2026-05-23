@@ -12,8 +12,11 @@
 // ============================================================
 
 import { db } from './db';
-import { fetchLiveLeaderboard, parseESPNScore } from './espn';
+import { fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore } from './espn';
 import { applyFantasyRules, computeLeagueResults } from './scoring';
+import { dispatchReminder, fieldPublishedMessage } from './notifier';
+import { effectivePickDeadline } from './pick-deadline';
+import type { Channel, ReminderTask } from './reminders';
 import type { Score, Pick, FantasyResult } from '@/types';
 
 export interface SyncResult {
@@ -92,52 +95,48 @@ async function syncTournament(tournament: {
 
   if (!competitors.length) return { skipped: true };
 
-  // Cut-detection inference (added 2026-05-17).
+  // Cut-detection inference (revised 2026-05-23).
   //
-  // ESPN's scoreboard fallback (used whenever /pga/leaderboard 404s,
-  // currently the case for the 2026-05 PGA Championship and most
-  // recent events) returns:
-  //   cutScore: null
-  //   per-golfer status: nothing
-  // …so the old "espnCut !== null → cut_made" trigger never fires.
-  // Until 2026-05-17 this meant tournament.status got stuck at
-  // 'active' through all four rounds AND no golfer was ever
-  // classified missed_cut, breaking the new missed-cut scoring rule.
+  // ESPN's scoreboard fallback (used whenever /pga/leaderboard 404s)
+  // returns cutScore: null and no per-golfer status, so we infer.
   //
-  // Two data-driven signals replace the cutScore dependency:
+  // Three triggers fire cutHasBeenMade:
   //
-  //   1. cutHasBeenMade  ⇐  currentRound >= 3
-  //      Once ESPN reports we're in Round 3 or later, the cut has
-  //      been made by definition. Flips tournament.status to cut_made.
+  //   1. espnCut !== null               — ESPN told us the cut line.
+  //   2. currentRound >= 3              — R3 has started, cut is behind us.
+  //   3. currentRound === 2 AND status === 'STATUS_PLAY_COMPLETE'
+  //                                      — R2 just finished; the cut is
+  //      mathematically determined even though ESPN's `period` field
+  //      doesn't advance to 3 until R3 actually starts (Saturday
+  //      morning). This is the post-R2-pre-R3 window we used to miss,
+  //      where leaderboards displayed every golfer as `active` for
+  //      ~14h Friday evening.
   //
-  //   2. inferred per-golfer missed_cut  ⇐  linescores.length < 3
-  //      AND R1+R2 are both present. A golfer who finished 36 holes
-  //      but didn't appear in R3 missed the cut. Applied only when
-  //      ESPN's per-golfer status was the default 'active' (i.e.
-  //      scoreboard fallback) — we trust an explicit WD/DQ/MC from
-  //      the leaderboard endpoint when present.
-  //
-  // We also derive an inferred cut line from cut-survivor totals so
-  // tournament.cut_score can still be populated for the made-cut
-  // cap in applyFantasyRules. Strictly informational under the new
-  // top-3-of-non-MC rule, but it keeps the field meaningful.
-  const cutHasBeenMade = currentRound >= 3 || espnCut !== null;
+  // When ESPN doesn't supply cutLine, fall back to PGA Tour's
+  // standard top-65-and-ties rule applied to all 36-hole totals.
+  // ESPN's value always wins when present. Major variations (Masters
+  // top-50+10, USGA/R&A/PGA-Championship top-60-70+ties) are not
+  // modeled — see TODO.md.
+  const r2PlayComplete = currentRound === 2 && status === 'STATUS_PLAY_COMPLETE';
+  const cutHasBeenMade = currentRound >= 3 || r2PlayComplete || espnCut !== null;
 
   let effectiveCut: number | null = espnCut ?? cut_score;
   if (cutHasBeenMade && effectiveCut === null) {
-    const survivorTotals: number[] = [];
+    const totals: number[] = [];
     for (const c of competitors) {
       const ls = c.linescores ?? [];
-      if (ls.length >= 3) {
-        const r1 = ls[0]?.value, r2 = ls[1]?.value;
-        if (typeof r1 === 'number' && typeof r2 === 'number') {
-          survivorTotals.push(r1 + r2);
-        }
+      const r1 = ls[0]?.value, r2 = ls[1]?.value;
+      if (typeof r1 === 'number' && typeof r2 === 'number') {
+        totals.push(r1 + r2);
       }
     }
-    if (survivorTotals.length > 0) {
-      // Cut line = worst 36-hole total that still made the cut.
-      effectiveCut = Math.max(...survivorTotals);
+    if (totals.length > 0) {
+      // PGA Tour standard: top 65 + ties. Sort ascending (low = good
+      // in golf); the 65th-best total IS the cut score, and anyone
+      // tied at or better than it makes the cut. Fields under 65 →
+      // everyone makes the cut, which the Math.min clamp delivers.
+      totals.sort((a, b) => a - b);
+      effectiveCut = totals[Math.min(64, totals.length - 1)];
     }
   }
 
@@ -222,31 +221,31 @@ async function syncTournament(tournament: {
     const scoreStr  = c.score?.displayValue ?? 'E';
     const rounds    = c.linescores?.map(ls => ls.value) ?? [];
 
-    // Cut-day backstop (revised 2026-05-17).
+    // Cut-day backstop (revised 2026-05-23).
     //
-    // ESPN's /pga/scoreboard fallback doesn't carry a per-golfer
-    // status, so normalizeScoreboardCompetitor defaults every golfer
-    // to 'active'. We need a way to flip post-cut golfers to
-    // missed_cut without relying on a cut-score comparison (since
-    // ESPN often doesn't return cutScore either).
+    // With effectiveCut now computed at end of R2 (top-65+ties, see
+    // the comment block above), missed-cut detection is a clean
+    // score comparison: (r1 + r2) > effectiveCut → missed_cut.
     //
-    // The cleanest signal is the LENGTH of the linescores array:
-    // ESPN includes R3 entries only for golfers who continued past
-    // the cut, regardless of whether they've actually played R3 yet
-    // (the entry will exist with value=0 and displayValue='-' for
-    // not-yet-played). A golfer who finished 36 holes (both R1 and
-    // R2 present) but has fewer than 3 linescores entries didn't
-    // continue → missed the cut.
+    // The legacy "linescores.length < 3" heuristic (proxy for "didn't
+    // continue to R3") survives only as a fallback for the unlikely
+    // case where effectiveCut couldn't be computed — e.g. nobody in
+    // the field has both R1 and R2 line scores yet. Once R3 starts
+    // it remains a valid signal too, since ESPN includes R3
+    // placeholders for cut survivors but not for missed-cut golfers.
     //
     // Applied only when ESPN status was the default 'active' so we
     // don't override an explicit WD / DQ / MC from the leaderboard
-    // endpoint when it is reachable. Also requires the cut to have
-    // been made (avoids classifying mid-R2 WDs as missed_cut).
+    // endpoint when reachable. Also requires the cut to have been
+    // made (avoids classifying mid-R2 WDs as missed_cut).
     if (cutMade && espnStatus === 'active') {
       const r1 = rounds[0], r2 = rounds[1];
-      const continuedPastCut = rounds.length >= 3;
-      if (!continuedPastCut && r1 != null && r2 != null) {
-        espnStatus = 'missed_cut';
+      if (r1 != null && r2 != null) {
+        if (effectiveCut !== null) {
+          if ((r1 + r2) > effectiveCut) espnStatus = 'missed_cut';
+        } else if (rounds.length < 3) {
+          espnStatus = 'missed_cut';
+        }
       }
     }
 
@@ -423,5 +422,291 @@ async function recomputeResults(tournamentId: string) {
         })),
       )
       .execute();
+  }
+}
+
+// ── Field availability sync (pre-tournament) ─────────────────
+//
+// Hits ESPN once per upcoming tournament whose field hasn't been
+// published yet, and stamps `tournaments.field_published_at` the
+// first time ESPN returns a non-empty competitors collection.
+// Also seeds `golfers` + zero-score `scores` rows so the picks
+// UI can filter the dropdown to actual field members and the
+// `JOIN scores ON tournament_id` lookup just works.
+//
+// Called by the systemd `fairway-field.timer` (hourly Mon-Wed) via
+// the /api/sync-field route. See infra/systemd/fairway-field.*.
+//
+// Why a separate sweep from runScoreSync():
+//   - Scope: runScoreSync targets tournaments that have already
+//     started (start_date <= now). Field publication is the BEFORE
+//     window (start_date > now). The windowing is non-overlapping.
+//   - Idempotency: once field_published_at is set we stop polling
+//     that tournament. runScoreSync re-runs every 10 min Thu-Sun
+//     to refresh in-progress scores.
+//   - Different endpoint: fetchLiveLeaderboard uses
+//     /pga/scoreboard?event=X, which silently returns the CURRENTLY
+//     LIVE event regardless of the ?event= filter (observed
+//     2026-05-23: requesting CSC returned Byron Nelson's roster).
+//     runFieldSync uses fetchUpcomingEventField which date-filters
+//     and verifies the returned event id matches the request.
+
+export interface FieldSyncResult {
+  tournament:    string;
+  espn_event_id: string;
+  competitors?:  number;
+  /** True when this run stamped field_published_at for the first time. */
+  published?:    boolean;
+  /** True when ESPN's competitors collection was still empty. */
+  pending?:      boolean;
+  error?:        string;
+}
+
+export interface FieldSyncSummary {
+  ok:        boolean;
+  results?:  FieldSyncResult[];
+  error?:    string;
+  /** Number of tournaments whose field_published_at flipped this run. */
+  touched?:  number;
+}
+
+export async function runFieldSync(): Promise<FieldSyncSummary> {
+  try {
+    const now     = new Date();
+    // 14-day horizon: covers the standard Mon-Wed-of-tournament-week
+    // polling window with slack for early-publishing fields and
+    // tournaments whose start_date drifts (weather, schedule shuffle).
+    const horizon = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+    const candidates = await db.selectFrom('tournaments')
+      .select(['id', 'espn_event_id', 'name', 'start_date'])
+      .where('field_published_at', 'is', null)
+      .where('start_date', '>',  now.toISOString())
+      .where('start_date', '<', horizon.toISOString())
+      .execute();
+
+    if (candidates.length === 0) {
+      return { ok: true, results: [], touched: 0 };
+    }
+
+    const results: FieldSyncResult[] = [];
+    for (const t of candidates) {
+      results.push(await checkAndPublishField(t));
+    }
+    const touched = results.filter(r => r.published).length;
+    return { ok: true, results, touched };
+  } catch (err) {
+    console.error('Field sync error:', err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+async function checkAndPublishField(tournament: {
+  id:            string;
+  espn_event_id: string;
+  name:          string;
+  start_date:    string;
+}): Promise<FieldSyncResult> {
+  const { id, espn_event_id, name, start_date } = tournament;
+
+  let competitors;
+  try {
+    competitors = await fetchUpcomingEventField(espn_event_id, start_date);
+  } catch (err) {
+    return { tournament: name, espn_event_id, error: String(err) };
+  }
+
+  if (!competitors.length) {
+    return { tournament: name, espn_event_id, competitors: 0, pending: true };
+  }
+
+  // Field is out. Seed golfers + zero-score scores rows + stamp the
+  // publication timestamp. `scores` rows use ON CONFLICT DO NOTHING
+  // so later runScoreSync passes (which write real round/score data)
+  // never get clobbered if this sweep happens to fire after R1
+  // tee-off in some odd edge case.
+  const nowIso = new Date().toISOString();
+  for (const c of competitors) {
+    let golfer = await db.selectFrom('golfers')
+      .select('id')
+      .where('espn_id', '=', c.id)
+      .executeTakeFirst();
+    if (!golfer) {
+      golfer = await db.insertInto('golfers')
+        .values({
+          espn_id:      c.id,
+          name:         c.displayName,
+          headshot_url: c.headshot?.href ?? null,
+        })
+        .returning('id')
+        .executeTakeFirst();
+    }
+    if (!golfer) continue;
+
+    await db.insertInto('scores')
+      .values({
+        tournament_id:  id,
+        golfer_id:      golfer.id,
+        espn_golfer_id: c.id,
+        round_1:        null,
+        round_2:        null,
+        round_3:        null,
+        round_4:        null,
+        score_to_par:   null,
+        position:       '',
+        status:         'active',
+        fantasy_score:  null,
+        last_synced:    nowIso,
+      })
+      .onConflict(oc => oc
+        .columns(['tournament_id', 'golfer_id'])
+        .doNothing(),
+      )
+      .execute();
+  }
+
+  await db.updateTable('tournaments')
+    .set({ field_published_at: nowIso })
+    .where('id', '=', id)
+    .execute();
+
+  // "Field is set" notifications — fire once, on the NULL → set
+  // transition. Routes through the same notifier pipeline as
+  // pick-deadline reminders (src/lib/notifier.ts), so it inherits
+  // the REMINDERS_LIVE gate: console logs in dev/staging, real
+  // delivery only once a ChannelDriver is registered AND
+  // REMINDERS_LIVE=true (today only the console driver is wired).
+  //
+  // We don't write to reminder_log here — the existing dedup index
+  // is (user_id, tournament_id, channel), and reusing it would block
+  // future pick-deadline reminders for the same user. The natural
+  // dedup is the `field_published_at IS NULL` guard at the top of
+  // runFieldSync: this code path runs at most once per tournament.
+  // Failures within the loop are logged via console; the stamp above
+  // commits the unlock regardless so users aren't blocked.
+  await notifyFieldPublished({ tournamentId: id, tournamentName: name });
+
+  return {
+    tournament:  name,
+    espn_event_id,
+    competitors: competitors.length,
+    published:   true,
+  };
+}
+
+/**
+ * Build + dispatch "field is set" notifications for every member of
+ * every league whose date window includes this tournament. Honors
+ * `reminder_preferences.*_enabled` per channel (default: email on,
+ * sms/push off). Best-effort — errors per recipient are logged but
+ * don't fail the parent sync run.
+ */
+async function notifyFieldPublished(args: {
+  tournamentId:   string;
+  tournamentName: string;
+}): Promise<void> {
+  const { tournamentId, tournamentName } = args;
+  try {
+    // Hydrate the tournament row for the message template.
+    const t = await db.selectFrom('tournaments')
+      .select(['id', 'pick_deadline', 'pick_deadline_override'])
+      .where('id', '=', tournamentId)
+      .executeTakeFirst();
+    if (!t) return;
+    const pickDeadline = effectivePickDeadline(t);
+
+    // Notify members of EVERY league. We intentionally don't filter
+    // by `leagues.start_date`/`end_date` (the per-league date window
+    // used elsewhere to scope tournaments): there's schema drift on
+    // those columns vs the canonical init script, and the cost of
+    // a broader audience is minimal — a member of a league whose
+    // window has already closed simply gets a heads-up about a
+    // tournament their league isn't scoring. Worth the resilience
+    // over a stricter filter that silently no-ops when the columns
+    // aren't there.
+    const leagues = await db.selectFrom('leagues')
+      .select(['id', 'slug'])
+      .execute();
+    if (leagues.length === 0) return;
+
+    const members = await db.selectFrom('league_members')
+      .select(['user_id', 'league_id'])
+      .execute();
+    if (members.length === 0) return;
+
+    const userIds = Array.from(new Set(members.map(m => m.user_id)));
+    const [profiles, prefsRows] = await Promise.all([
+      db.selectFrom('profiles')
+        .select(['id', 'email', 'display_name'])
+        .where('id', 'in', userIds)
+        .execute(),
+      db.selectFrom('reminder_preferences')
+        .selectAll()
+        .where('user_id', 'in', userIds)
+        .execute(),
+    ]);
+    const profileById = new Map(profiles.map(p => [p.id, p]));
+    const prefsByUser = new Map(prefsRows.map(r => [r.user_id, r]));
+    const slugByLeague = new Map(leagues.map(l => [l.id, l.slug]));
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+
+    for (const m of members) {
+      const profile = profileById.get(m.user_id);
+      if (!profile) continue;
+      const prefs = prefsByUser.get(m.user_id);
+      // Default-on for email when no prefs row exists (migration 004
+      // back-filled prefs rows for existing users; safe fallback for
+      // any user created before that ran).
+      const emailOn = prefs ? prefs.email_enabled : true;
+      const smsOn   = prefs ? prefs.sms_enabled   : false;
+      const pushOn  = prefs ? prefs.push_enabled  : false;
+
+      // Per-channel resolution: email uses prefs.email_addr override
+      // when set, else falls back to the profile email. Skip channels
+      // with no destination.
+      const channels: Array<{ ch: Channel; dest: string | null }> = [];
+      if (emailOn) channels.push({ ch: 'email', dest: prefs?.email_addr ?? profile.email ?? null });
+      if (smsOn)   channels.push({ ch: 'sms',   dest: prefs?.phone_e164 ?? null });
+      if (pushOn)  channels.push({ ch: 'push',  dest: prefs?.push_token ?? null });
+
+      const picksUrl = `${siteUrl}/league/${slugByLeague.get(m.league_id) ?? ''}/picks`;
+
+      for (const { ch, dest } of channels) {
+        if (!dest) continue;
+        const task: ReminderTask = {
+          user_id:       m.user_id,
+          league_id:     m.league_id,
+          tournament_id: tournamentId,
+          channel:       ch,
+          destination:   dest,
+        };
+        try {
+          const result = await dispatchReminder(task, t2 =>
+            fieldPublishedMessage({
+              task:           t2,
+              tournamentName,
+              pickDeadline,
+              picksUrl,
+            }),
+          );
+          // eslint-disable-next-line no-console
+          console.log(
+            `[field-publish] ${tournamentName} → user=${m.user_id} ch=${ch} status=${result.status}` +
+              (result.error ? ` err=${result.error}` : ''),
+          );
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[field-publish] dispatch failed for user=${m.user_id} ch=${ch}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    // Never fail the parent sync run because of a notification glitch.
+    // eslint-disable-next-line no-console
+    console.error('[field-publish] notify pass failed:', err);
   }
 }

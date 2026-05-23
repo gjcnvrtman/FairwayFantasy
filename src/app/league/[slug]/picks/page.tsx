@@ -54,6 +54,11 @@ export default function PicksPage() {
   const router = useRouter();
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
+  // Server-set flag from /api/picks/setup (Migration 007). When false,
+  // the picks UI replaces the slot/search panel with a "field not yet
+  // available" banner. ESPN hasn't published the field, so picking
+  // from last week's roster would be a footgun.
+  const [fieldPublished, setFieldPublished] = useState(true);
   const [golfers, setGolfers]       = useState<Golfer[]>([]);
   const [selected, setSelected]     = useState<(Golfer | null)[]>([null, null, null, null]);
   const [activeSlot, setActiveSlot] = useState<Slot | null>(null);
@@ -93,6 +98,7 @@ export default function PicksPage() {
         const data = await res.json();
         if (!alive) return;
         setTournament(data.tournament);
+        setFieldPublished(data.fieldPublished !== false);
         setGolfers(data.golfers ?? []);
         setLeagueId(data.leagueId);
         setAlreadyPicked(data.alreadyPickedIds ?? []);
@@ -294,8 +300,17 @@ export default function PicksPage() {
           {/* ── Lock deadline status row ───────────────────── */}
           <LockStatusRow isLocked={isLocked} lockDeadline={lockDeadline} />
 
+          {/* Field-availability gate (Migration 007). When ESPN hasn't
+              published the field yet, replace the entire pick interaction
+              with a banner. Header + lock deadline row stay so users see
+              what tournament and when. */}
+          {!fieldPublished && !isLocked && (
+            <FieldPendingBanner />
+          )}
+
           {/* Layout uses flex-wrap so on narrow viewports the search panel
               wraps below the slots column. No media queries needed. */}
+          {fieldPublished && (
           <div style={{ display: 'flex', flexFlow: 'row wrap', gap: '1.5rem',
                          alignItems: 'flex-start', marginTop: '1rem' }}>
 
@@ -494,6 +509,7 @@ export default function PicksPage() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 
@@ -518,6 +534,30 @@ export default function PicksPage() {
 // ─────────────────────────────────────────────────────────────
 // Subcomponents
 // ─────────────────────────────────────────────────────────────
+
+function FieldPendingBanner() {
+  return (
+    <div className="card" style={{
+      marginTop: '1rem',
+      padding: '1.75rem',
+      textAlign: 'center',
+      borderLeft: '4px solid var(--brand-green, #2d7a3e)',
+    }}>
+      <div style={{ fontSize: '2.25rem', marginBottom: '0.75rem' }}>⛳</div>
+      <h3 style={{ marginBottom: '0.5rem' }}>Field not yet available</h3>
+      <p style={{ color: 'var(--slate-mid)', marginBottom: '0.75rem', maxWidth: 540, marginLeft: 'auto', marginRight: 'auto' }}>
+        ESPN hasn&rsquo;t published the player field for this tournament yet.
+        Picks will unlock automatically as soon as it&rsquo;s available
+        (typically by Tuesday of tournament week).
+      </p>
+      <p style={{ color: 'var(--slate-light)', fontSize: '0.85rem' }}>
+        An automated check runs hourly Monday&ndash;Wednesday. If the
+        deadline gets close and the field still isn&rsquo;t out, your
+        commissioner can extend the pick deadline.
+      </p>
+    </div>
+  );
+}
 
 function PageShell({ children }: { children: React.ReactNode }) {
   // We can't reuse the league Nav (it requires a userName etc.). Local

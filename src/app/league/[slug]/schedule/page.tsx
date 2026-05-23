@@ -112,8 +112,16 @@ export default async function SchedulePage({ params }: Props) {
                         })
                       : '—';
 
-                    // Link target: completed → history; otherwise picks
-                    const isComplete = t.status === 'complete';
+                    // Link target: completed → history; otherwise picks.
+                    // For upcoming events, picks are gated until ESPN
+                    // publishes the field (Migration 007 / runFieldSync).
+                    // When field_published_at IS NULL we render disabled
+                    // "Field pending" text instead of a click target — the
+                    // picks page itself would just show the same banner.
+                    const isComplete    = t.status === 'complete';
+                    const isUpcoming    = t.status === 'upcoming';
+                    const fieldPending  = isUpcoming && !t.field_published_at;
+
                     const linkHref = isComplete
                       ? `/league/${params.slug}/history`
                       : `/league/${params.slug}/picks`;
@@ -152,9 +160,24 @@ export default async function SchedulePage({ params }: Props) {
                           </span>
                         </td>
                         <td style={{ textAlign: 'right' }}>
-                          <Link href={linkHref} style={{ color: 'var(--brass)', fontSize: '0.85rem', fontWeight: 600 }}>
-                            {linkLabel}
-                          </Link>
+                          {fieldPending ? (
+                            <span
+                              title="ESPN hasn't published the field yet. Picks unlock automatically when it's available."
+                              style={{
+                                color: 'var(--slate-light)',
+                                fontSize: '0.85rem',
+                                fontWeight: 600,
+                                fontStyle: 'italic',
+                                cursor: 'not-allowed',
+                              }}
+                            >
+                              Field pending
+                            </span>
+                          ) : (
+                            <Link href={linkHref} style={{ color: 'var(--brass)', fontSize: '0.85rem', fontWeight: 600 }}>
+                              {linkLabel}
+                            </Link>
+                          )}
                         </td>
                       </tr>
                     );

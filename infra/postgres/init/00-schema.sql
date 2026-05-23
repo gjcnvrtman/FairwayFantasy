@@ -115,6 +115,9 @@ CREATE TABLE tournaments (
   status                 TEXT DEFAULT 'upcoming'
                          CHECK (status IN ('upcoming','active','cut_made','complete')),
   course_name            TEXT,
+  -- First observation of a non-empty ESPN competitors collection
+  -- (Migration 007). NULL = field not yet published; picks gated.
+  field_published_at     TIMESTAMPTZ,
   created_at             TIMESTAMPTZ DEFAULT NOW()
 );
 

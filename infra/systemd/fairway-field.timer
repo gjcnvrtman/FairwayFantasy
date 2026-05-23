@@ -1,0 +1,26 @@
+# /etc/systemd/system/fairway-field.timer
+#
+# Fires fairway-field.service hourly on Monday, Tuesday, and
+# Wednesday, 06:00 to 23:00 local time. That's the window in which
+# ESPN typically publishes the next PGA event's field (commitment
+# deadline is Friday 5pm ET of the week before; ESPN posts the
+# field to its API by Mon-Tue of tournament week).
+#
+# Once field_published_at flips for an event, runFieldSync sees it
+# as no longer pending and skips. From Thursday on, the existing
+# fairway-scores.timer (every 10 min Thu-Sun) takes over with live
+# score data — same scores rows, now populated.
+#
+# 54 fires/week (Mon..Wed * 18h). The service is cheap when no
+# candidates are in the 14-day horizon (one SELECT count).
+
+[Unit]
+Description=Hourly Mon-Wed: check ESPN for upcoming tournament field
+
+[Timer]
+OnCalendar=Mon,Tue,Wed *-*-* 06..23:00:00
+Persistent=true
+Unit=fairway-field.service
+
+[Install]
+WantedBy=timers.target

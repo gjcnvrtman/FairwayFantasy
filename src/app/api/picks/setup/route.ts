@@ -37,11 +37,31 @@ export async function GET(req: NextRequest) {
 
   if (!tournament) return NextResponse.json({ tournament: null, golfers: [], leagueId: league.id });
 
-  // Get all golfers sorted by OWGR rank, unranked at the bottom
-  const golfers = await db.selectFrom('golfers')
-    .select(['id', 'espn_id', 'name', 'owgr_rank', 'is_dark_horse', 'headshot_url', 'country'])
-    .orderBy('owgr_rank', sb => sb.asc().nullsLast())
-    .execute();
+  // Field gating (Migration 007 / runFieldSync in src/lib/sync.ts).
+  // `field_published_at IS NULL` means ESPN hasn't published the
+  // tournament's field yet, so the picks UI can't offer a meaningful
+  // dropdown. We return an empty golfer list + the flag; the UI
+  // renders a "field not yet available" banner in place of the
+  // slot/search panel. POST /api/picks enforces the same gate.
+  const fieldPublished = tournament.field_published_at !== null;
+
+  // Once published, restrict the golfer list to the actual field —
+  // the join against `scores` is the source of truth for "is this
+  // golfer in tournament X?" (runFieldSync seeds zero-score rows at
+  // publish time, runScoreSync upserts them later with live data).
+  // Without this filter the picks page surfaces every golfer the DB
+  // has ever known about (e.g. last week's tournament), which is the
+  // bug Greg spotted on the leaderboard for CSC.
+  const golfers = fieldPublished
+    ? await db.selectFrom('golfers')
+        .innerJoin('scores', 'scores.golfer_id', 'golfers.id')
+        .select(['golfers.id', 'golfers.espn_id', 'golfers.name',
+                 'golfers.owgr_rank', 'golfers.is_dark_horse',
+                 'golfers.headshot_url', 'golfers.country'])
+        .where('scores.tournament_id', '=', tournament.id)
+        .orderBy('golfers.owgr_rank', sb => sb.asc().nullsLast())
+        .execute()
+    : [];
 
   // Get current user's existing pick (if any)
   const existingPick = await db.selectFrom('picks')
@@ -75,6 +95,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     leagueId:    league.id,
     tournament,
+    fieldPublished,
     golfers,
     existingPick,
     alreadyPickedIds,

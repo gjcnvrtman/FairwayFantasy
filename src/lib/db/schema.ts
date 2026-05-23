@@ -109,6 +109,9 @@ export interface TournamentsTable {
   cut_score:               number | null;
   status:                  Generated<'upcoming' | 'active' | 'cut_made' | 'complete'>;
   course_name:             string | null;
+  // First observation of a non-empty ESPN competitors collection (set
+  // by runFieldSync in src/lib/sync.ts). NULL = picks gated.
+  field_published_at:      Timestamp | null;
   created_at:              Generated<Timestamp>;
 }
 

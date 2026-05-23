@@ -139,6 +139,53 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   };
 }
 
+// ── Upcoming-event field (pre-tournament) ────────────────────
+// Pulls the field for a tournament whose start_date is in the
+// future. Used by runFieldSync in src/lib/sync.ts.
+//
+// Why not fetchLiveLeaderboard for this:
+//   /pga/scoreboard?event=X silently returns the CURRENTLY LIVE
+//   event regardless of the ?event= filter. For an upcoming
+//   tournament X this returns the wrong field — confirmed
+//   empirically 2026-05-23 with CSC (event 401811949): the filter
+//   was ignored and Byron Nelson's 147 golfers came back instead
+//   of CSC's 0. Catastrophic for field-sync — we'd seed CSC with
+//   the wrong roster and unlock picks against a fictional field.
+//
+// Date-filtered scoreboard (?dates=YYYYMMDD) returns events that
+// START on that date, with `competitions[0].competitors` populated
+// only once ESPN publishes the field. Multiple events on the same
+// date are possible (rare on PGA Tour but not impossible), so we
+// defensively filter by event id before returning.
+//
+// Returns an empty array when the field isn't out yet (NOT throws)
+// so the caller distinguishes "field not published" from a real
+// fetch error.
+export async function fetchUpcomingEventField(
+  espnEventId: string,
+  startDate:   Date | string,
+): Promise<ESPNCompetitor[]> {
+  const d = typeof startDate === 'string' ? new Date(startDate) : startDate;
+  const yyyymmdd = `${d.getUTCFullYear()}` +
+    `${String(d.getUTCMonth() + 1).padStart(2, '0')}` +
+    `${String(d.getUTCDate()).padStart(2, '0')}`;
+  const url = `${ESPN_WEB}/pga/scoreboard?dates=${yyyymmdd}`;
+
+  const res = await fetch(url, { cache: 'no-store' } as RequestInit);
+  if (!res.ok) throw new Error(`ESPN dates scoreboard failed: ${res.status}`);
+  const data = await res.json();
+
+  const event = (data.events ?? []).find(
+    (e: any) => String(e.id) === String(espnEventId),
+  );
+  if (!event) return [];
+
+  const rawCompetitors = event.competitions?.[0]?.competitors ?? [];
+  return rawCompetitors
+    .map(normalizeScoreboardCompetitor)
+    .filter((c: ESPNCompetitor | null): c is ESPNCompetitor => c !== null);
+}
+
 // ── All Players in Field ─────────────────────────────────────
 export async function fetchEventField(espnEventId: string): Promise<Array<{
   espn_id: string;
