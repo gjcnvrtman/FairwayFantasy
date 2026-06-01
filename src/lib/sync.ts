@@ -607,25 +607,34 @@ async function notifyFieldPublished(args: {
 }): Promise<void> {
   const { tournamentId, tournamentName } = args;
   try {
-    // Hydrate the tournament row for the message template.
+    // Hydrate the tournament row for the message template AND for the
+    // league-window filter below. start_date / end_date anchor the
+    // overlap check against each league's [start_date, end_date].
     const t = await db.selectFrom('tournaments')
-      .select(['id', 'pick_deadline', 'pick_deadline_override'])
+      .select(['id', 'start_date', 'end_date',
+               'pick_deadline', 'pick_deadline_override'])
       .where('id', '=', tournamentId)
       .executeTakeFirst();
     if (!t) return;
     const pickDeadline = effectivePickDeadline(t);
 
-    // Notify members of EVERY league. We intentionally don't filter
-    // by `leagues.start_date`/`end_date` (the per-league date window
-    // used elsewhere to scope tournaments): there's schema drift on
-    // those columns vs the canonical init script, and the cost of
-    // a broader audience is minimal — a member of a league whose
-    // window has already closed simply gets a heads-up about a
-    // tournament their league isn't scoring. Worth the resilience
-    // over a stricter filter that silently no-ops when the columns
-    // aren't there.
+    // Filter leagues to those whose date window overlaps the
+    // tournament. Open-ended on either side (NULL start_date or
+    // end_date) means "no constraint on that side" — those leagues
+    // always receive. Migration 008 (2026-05-30) restored this
+    // filter; pre-migration the columns were referenced in code but
+    // not created by any committed SQL, so the safer move was to
+    // notify members of every league.
     const leagues = await db.selectFrom('leagues')
       .select(['id', 'slug'])
+      .where(eb => eb.or([
+        eb('start_date', 'is', null),
+        eb('start_date', '<=', t.end_date),
+      ]))
+      .where(eb => eb.or([
+        eb('end_date', 'is', null),
+        eb('end_date', '>=', t.start_date),
+      ]))
       .execute();
     if (leagues.length === 0) return;
 

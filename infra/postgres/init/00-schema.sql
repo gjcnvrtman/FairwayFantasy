@@ -26,13 +26,22 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- LEAGUES
 -- ============================================================
 CREATE TABLE leagues (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name            TEXT NOT NULL,
-  slug            TEXT NOT NULL UNIQUE,
-  invite_code     TEXT NOT NULL UNIQUE,
-  commissioner_id UUID,
-  max_players     INT DEFAULT 20,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name              TEXT NOT NULL,
+  slug              TEXT NOT NULL UNIQUE,
+  invite_code       TEXT NOT NULL UNIQUE,
+  commissioner_id   UUID,
+  max_players       INT DEFAULT 20,
+  -- start_date / end_date define the tournament window this league scores
+  -- (NULL on either side = no bound on that side). Used by:
+  --   src/lib/sync.ts (notifyFieldPublished filter)
+  --   src/app/league/[slug]/{page,stats,history}.tsx
+  --   src/app/api/admin/league-{settings,delete}/route.ts
+  -- See migration 008 for the historical backfill on existing installs.
+  start_date        TIMESTAMPTZ,
+  end_date          TIMESTAMPTZ,
+  weekly_bet_amount NUMERIC(10,2) NOT NULL DEFAULT 10.00,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================
