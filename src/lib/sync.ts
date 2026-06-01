@@ -82,14 +82,82 @@ export async function runScoreSync(): Promise<SyncSummary> {
   }
 }
 
+/**
+ * Per-tournament cut rule for the fallback used when ESPN doesn't
+ * supply `cutLine`. ESPN's explicit cut value always wins when present;
+ * this rule only fires during the post-R2 / pre-ESPN-cut-publish
+ * window (typically Friday evening to Saturday morning).
+ *
+ * - `topN`             — top N players + ties make the cut. The Nth-
+ *                        best 36-hole total IS the cut score.
+ * - `topN+strokesBack` — Masters rule: top N + ties OR within K
+ *                        strokes of the leader. The cut score is the
+ *                        *more lenient* (higher / worse) of the two.
+ *
+ * Exported for tests/cut-rule.test.ts pinning the per-Major contract.
+ */
+export type CutRule =
+  | { kind: 'topN'; n: number }
+  | { kind: 'topN+strokesBack'; n: number; strokesBack: number };
+
+export function inferCutRule(
+  tournamentName: string,
+  type: 'regular' | 'major',
+): CutRule {
+  if (type !== 'major') return { kind: 'topN', n: 65 };
+  const name = tournamentName.toLowerCase();
+  // The Masters — top 50 + ties AND within 10 strokes of the leader.
+  if (name.includes('masters')) {
+    return { kind: 'topN+strokesBack', n: 50, strokesBack: 10 };
+  }
+  // U.S. Open — top 60 + ties (USGA standard).
+  if (name.includes('u.s. open') || name.includes('us open') || name.includes('u s open')) {
+    return { kind: 'topN', n: 60 };
+  }
+  // The Open Championship (British Open) — top 70 + ties (R&A standard).
+  if (name.includes('open championship') || name.includes('british open')) {
+    return { kind: 'topN', n: 70 };
+  }
+  // PGA Championship — top 70 + ties (historical PGA of America rule).
+  if (name.includes('pga championship')) {
+    return { kind: 'topN', n: 70 };
+  }
+  // Unknown major — default to PGA Tour standard top 65 + ties.
+  return { kind: 'topN', n: 65 };
+}
+
+/**
+ * Apply a CutRule against a sorted ascending array of 36-hole totals
+ * (low = good in golf). Returns the cut score (worst total that still
+ * makes the cut — anyone tied at or better makes the cut).
+ *
+ * Fields under the rule's N (e.g. 40-man invitational) → everyone
+ * makes the cut, delivered by the Math.min clamp on totals.length.
+ *
+ * Exported alongside inferCutRule for tests.
+ */
+export function applyCutRule(rule: CutRule, totalsSortedAsc: number[]): number {
+  if (totalsSortedAsc.length === 0) {
+    throw new Error('applyCutRule: empty totals array');
+  }
+  const cutByPosition = totalsSortedAsc[Math.min(rule.n - 1, totalsSortedAsc.length - 1)];
+  if (rule.kind === 'topN') return cutByPosition;
+  // Masters: cut is the MORE LENIENT (higher / worse) of position and
+  // strokes-back. A player not in top 50 still makes the cut if within
+  // K of the leader.
+  const cutByStrokes = totalsSortedAsc[0] + rule.strokesBack;
+  return Math.max(cutByPosition, cutByStrokes);
+}
+
 async function syncTournament(tournament: {
   id:             string;
   espn_event_id:  string;
   name:           string;
+  type:           'regular' | 'major';
   cut_score:      number | null;
   end_date:       string;
 }): Promise<SyncResult> {
-  const { espn_event_id, id, cut_score, end_date } = tournament;
+  const { espn_event_id, id, name, type, cut_score, end_date } = tournament;
   const { competitors, cutScore: espnCut, status, currentRound } =
     await fetchLiveLeaderboard(espn_event_id);
 
@@ -112,11 +180,17 @@ async function syncTournament(tournament: {
   //      where leaderboards displayed every golfer as `active` for
   //      ~14h Friday evening.
   //
-  // When ESPN doesn't supply cutLine, fall back to PGA Tour's
-  // standard top-65-and-ties rule applied to all 36-hole totals.
-  // ESPN's value always wins when present. Major variations (Masters
-  // top-50+10, USGA/R&A/PGA-Championship top-60-70+ties) are not
-  // modeled — see TODO.md.
+  // When ESPN doesn't supply cutLine, fall back to a per-tournament
+  // cut rule via inferCutRule + applyCutRule. ESPN's explicit cutLine
+  // always wins when present; this branch only fires during the
+  // post-R2 / pre-ESPN-cut-publish window.
+  //
+  // Regular PGA Tour events → top 65 + ties.
+  // Majors → per-tournament rule:
+  //   • The Masters       → top 50 + ties AND within 10 of the leader
+  //   • U.S. Open         → top 60 + ties
+  //   • The Open / British → top 70 + ties
+  //   • PGA Championship  → top 70 + ties
   const r2PlayComplete = currentRound === 2 && status === 'STATUS_PLAY_COMPLETE';
   const cutHasBeenMade = currentRound >= 3 || r2PlayComplete || espnCut !== null;
 
@@ -131,12 +205,8 @@ async function syncTournament(tournament: {
       }
     }
     if (totals.length > 0) {
-      // PGA Tour standard: top 65 + ties. Sort ascending (low = good
-      // in golf); the 65th-best total IS the cut score, and anyone
-      // tied at or better than it makes the cut. Fields under 65 →
-      // everyone makes the cut, which the Math.min clamp delivers.
       totals.sort((a, b) => a - b);
-      effectiveCut = totals[Math.min(64, totals.length - 1)];
+      effectiveCut = applyCutRule(inferCutRule(name, type), totals);
     }
   }
 
