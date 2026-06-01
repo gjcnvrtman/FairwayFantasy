@@ -70,15 +70,9 @@ _(`leagues` schema drift closed 2026-05-30 — commit `65c9213`. Migration 008 a
 
 ## P2 — quality / monitoring / future-proofing
 
-- [ ] **No fallback if ESPN doesn't publish the field by the pick deadline** — shipped 2026-05-23 alongside the field-availability gate (Migration 007, `runFieldSync` in `src/lib/sync.ts`, `/api/sync-field`, `fairway-field.timer`). Picks are now hard-blocked when `tournaments.field_published_at IS NULL`. The hourly Mon-Wed poll catches the field as soon as ESPN posts it (commitment deadline = Friday 5pm ET, ESPN typically populates Mon-Tue of tournament week). **Gap:** if ESPN doesn't publish by Wednesday evening of tournament week, picks stay locked through the original pick deadline. Today's mitigation is the existing commissioner `pick_deadline_override` ([src/lib/pick-deadline.ts](src/lib/pick-deadline.ts)) — Greg can push the deadline back manually. **Proper fix:** commissioner-uploadable field CSV at `/league/:slug/admin` (writes scores rows + stamps `field_published_at`), OR a scraper of `<tournamentsite>.com/players` as an automated fallback. Either way, surface a clear "ESPN late — using manual field" indicator in the picks UI so users know the data came from a different source. Not urgent until we actually hit a Wed-night-still-empty event.
+_(ESPN-late-publish fallback closed 2026-05-30 — commit `085f319`. New commissioner-driven Manual Field Upload section on `/league/[slug]/admin` (collapsible card, only renders when ≥1 upcoming tournament has `field_published_at = NULL`). Paste names from the tournament site → `POST /api/admin/upload-field` → server normalizes names (lowercase, strip accents, drop punctuation, collapse whitespace), matches against `golfers.name` by canonical key, seeds `scores` rows + stamps `field_published_at`. Unmatched names reported back via a collapsible details block so spellings can be fixed and re-uploaded. Refuses for non-`upcoming` tournaments to protect finalized fantasy_results. 14 new helper tests pin the contract. See Done.)_
 
-- [ ] **Cut-line inference assumes top-65+ties for every tournament** — landed 2026-05-23 in `src/lib/sync.ts`. After R2 play-complete (or any time ESPN doesn't return `cutLine`), `syncTournament` computes the cut from 36-hole totals as `sorted[64]` (PGA Tour standard, top 65 + ties). ESPN's explicit cutLine always wins when present, so this is purely a fallback — but the fallback applies the same rule to the four Majors, whose cut rules differ:
-  - **The Masters** — top 50 + ties AND within 10 strokes of the leader.
-  - **U.S. Open** — top 60 + ties (historically; check the year).
-  - **The Open Championship** — top 70 + ties (historically).
-  - **PGA Championship** — top 70 + ties (historically, and matches the 2026-05 event we saw 404'ing).
-
-  Likely fix: per-tournament cut rule keyed off `tournaments.type='major'` AND `name` (since each major has its own rule). Either a small lookup table in `src/lib/sync.ts` or a `cut_rule` enum column on `tournaments`. Until ESPN starts populating `cutLine` again, the Majors will have slightly-wrong missed-cut classifications during the Friday-evening-to-Saturday-morning window. Once R3 starts and ESPN actually drops missed-cut golfers from the field, the score-based comparison still keys off OUR inferred cut, so the wrong line can persist for those events. Severity: scoring math drifts by 1 stroke per misclassified MC vs the user's foursome — bounded but real. Worth fixing before the next Major.
+_(Per-tournament cut rule closed 2026-05-30 — commit `085f319`. New `inferCutRule(name, type)` + `applyCutRule(rule, sortedTotals)` exported from `src/lib/sync.ts`. Masters → top 50 + ties OR within 10 of leader (more-lenient threshold wins). U.S. Open → top 60 + ties. The Open Championship / British Open → top 70 + ties. PGA Championship → top 70 + ties. Regular → top 65 + ties (unchanged default). Defensive fallback for unknown majors = top 65. ESPN's explicit `cutLine` still wins when present; this is purely the post-R2 / pre-publish fallback. 13 new tests pin every Major + edge cases (field smaller than N, empty totals, accent/case variants of names). See Done.)_
 
 - [x] **TS strict mode + flip `next.config.js` ignore flags** *(P1 #4.10, #4.11)* — Shipped 2026-05-17 in `445f11a`. `typescript.ignoreBuildErrors` and `eslint.ignoreDuringBuilds` both off; `tsconfig.json` flipped from explicit `strictNullChecks: true` to full `strict: true` superset (adds noImplicitAny, strictFunctionTypes, strictPropertyInitialization, alwaysStrict, useUnknownInCatchVariables, noImplicitThis). Codebase was already strict-ready — tsc clean with no source changes, `next build` 24 routes 0 errors with the new gates, 200/200 tests still passing.
 - [x] **`calculateTop3` partial-data semantics — documented as intentional** *(P1 #5.3)* — Closed 2026-05-17 in `e095e90`. `validatePick` already rejects picks with fewer than 4 golfers at submission time, so the only way `calculateTop3` sees <4 valid scores is the transient mid-tournament state (Thursday morning, some picks teed off, others haven't posted round_1 yet). Sum-of-scored is the right call there — penalising unscored slots would make Thursday-morning leaderboards meaningless. JSDoc rewritten to reflect the actual design rationale rather than a "pinned bug."
@@ -132,6 +126,27 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 ## Done
 
 (Newest first.)
+
+### 2026-05-30 — Per-tournament cut rule + commissioner field-upload fallback
+
+Both P2 items from the 2026-05-23 follow-up sweep shipped in commit `085f319`. 296/296 tests, build clean, service active on prod, HTTPS 200.
+
+- [x] **Per-tournament cut rule (`inferCutRule` + `applyCutRule`).** Pre-fix: hard-coded top 65 + ties for every event, mis-classified missed-cut golfers at all 4 Majors by 1 stroke per MC. Post-fix:
+  * Masters → top 50 + ties OR within 10 of leader (MORE LENIENT wins)
+  * U.S. Open → top 60 + ties
+  * The Open / British Open → top 70 + ties
+  * PGA Championship → top 70 + ties
+  * Regular PGA event → top 65 + ties (default)
+  * Defensive: unknown major → top 65 default
+  * ESPN's explicit `cutLine` still wins when present
+  * Both helpers exported from [src/lib/sync.ts](src/lib/sync.ts), used at the existing post-R2 / pre-ESPN-cut-publish fallback site
+  * 13 new tests in [tests/cut-rule.test.ts](tests/cut-rule.test.ts) — per-Major lookup + Masters compound rule (lenient/strict cases) + small-field clamps + empty-totals error + accent/case name tolerance + integration tests for PGA Championship + Charles Schwab
+
+- [x] **Commissioner field-upload fallback (`/api/admin/upload-field`).** Pre-fix: if ESPN didn't publish the field by Wednesday evening, picks stayed hard-blocked through the original deadline; only mitigation was the commissioner `pick_deadline_override` (move the goalposts). Post-fix: a proper escape hatch.
+  * [src/lib/field-upload.ts](src/lib/field-upload.ts) — pure helpers. `normalizeGolferName` (lowercase + strip accents + drop punctuation + collapse whitespace) tolerates "Joaquín" vs "Joaquin", "TOM KIM" vs "Tom Kim", CSV-export shapes (first cell taken). `parseUploadedNames` splits by newline, dedupes by canonical key. `matchNamesToGolfers` indexes once + returns `{ matched: [{originalName, golferId, espnId}], unmatched: [] }`.
+  * [src/app/api/admin/upload-field/route.ts](src/app/api/admin/upload-field/route.ts) — `POST { slug, tournamentId, names: string }`. requireCommissioner gate (not co-commissioner — this seeds the field for every league scoring this tournament). same-origin CSRF. Refuses `t.status !== 'upcoming'` to protect finalized fantasy_results. Pulls all golfers in one query (~200 rows post-seed), matches in memory, batched `INSERT scores ON CONFLICT DO NOTHING` (idempotent re-uploads), stamps `tournaments.field_published_at` if currently NULL. Returns `matched count` + `unmatched` list.
+  * [src/app/league/[slug]/admin/AdminPanel.tsx](src/app/league/[slug]/admin/AdminPanel.tsx) — new collapsible "Manual Field Upload" card. Only renders when ≥1 upcoming tournament has `field_published_at = NULL` (so it's invisible noise the rest of the time). Pending count shown in red in the header. Per-tournament textarea (monospace, 6 rows, placeholder showing the expected paste shape) + Upload button + Clear button. Unmatched names show in a `<details>` block with a "click to expand" affordance + remediation hint. Field-published-at stamps trigger `router.refresh()` so the page reflects the new state.
+  * 14 new tests in [tests/field-upload.test.ts](tests/field-upload.test.ts).
 
 ### 2026-05-30 — leagues schema drift closed + NEXTAUTH_URL already-fixed
 
