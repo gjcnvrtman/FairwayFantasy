@@ -235,6 +235,78 @@ email.
   return { subject, text, html };
 }
 
+// ============================================================
+// Password-reset template.
+// ============================================================
+
+export function passwordResetEmail(params: {
+  displayName: string;
+  resetUrl:    string;
+}): { subject: string; text: string; html: string } {
+  const { displayName, resetUrl } = params;
+
+  const subject = 'Reset your Fairway Fantasy password';
+
+  const text = `
+Hi ${displayName},
+
+We received a request to reset the password on your Fairway Fantasy account.
+
+Click here to choose a new password:
+${resetUrl}
+
+This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email — your password will not change.
+
+— Fairway Fantasy
+`.trim();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #2c2c2c;">
+  <div style="text-align: center; margin-bottom: 32px;">
+    <div style="font-size: 48px; margin-bottom: 8px;">🏌️</div>
+    <h1 style="font-family: Georgia, serif; font-weight: 700; font-size: 28px; margin: 0;">
+      Fairway Fantasy
+    </h1>
+  </div>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    Hi ${escapeHtml(displayName)},
+  </p>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    We received a request to reset the password on your Fairway Fantasy
+    account. Click below to choose a new password.
+  </p>
+
+  <div style="text-align: center; margin: 32px 0;">
+    <a href="${escapeHtml(resetUrl)}"
+       style="display: inline-block; padding: 14px 32px; background: #2d6a4f; color: #ffffff;
+              text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 16px;">
+      Reset Password
+    </a>
+  </div>
+
+  <p style="font-size: 14px; color: #6a6a6a; line-height: 1.5;">
+    Or paste this link into your browser:<br/>
+    <a href="${escapeHtml(resetUrl)}" style="color: #2d6a4f; word-break: break-all;">
+      ${escapeHtml(resetUrl)}
+    </a>
+  </p>
+
+  <p style="font-size: 13px; color: #999999; margin-top: 32px; padding-top: 16px;
+            border-top: 1px solid #e0e0e0;">
+    This link expires in 1 hour. If you didn't request a password reset,
+    you can safely ignore this email — your password will not change.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

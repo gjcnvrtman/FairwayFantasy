@@ -33,6 +33,27 @@ export function countPasswordClasses(password: string): number {
   return n;
 }
 
+/**
+ * Validate password complexity (length + character classes). Returns
+ * an error string when invalid, ``null`` when OK. Shared by
+ * registration AND the password-reset flow so the rules can't drift.
+ */
+export function validatePassword(password: string): string | null {
+  if (!password) {
+    return 'Password is required.';
+  }
+  if (password.length < AUTH_LIMITS.PASSWORD_MIN) {
+    return `Password must be at least ${AUTH_LIMITS.PASSWORD_MIN} characters.`;
+  }
+  if (password.length > AUTH_LIMITS.PASSWORD_MAX) {
+    return `Password is too long (max ${AUTH_LIMITS.PASSWORD_MAX} characters).`;
+  }
+  if (countPasswordClasses(password) < AUTH_LIMITS.PASSWORD_MIN_CLASSES) {
+    return `Password must contain at least ${AUTH_LIMITS.PASSWORD_MIN_CLASSES} of: lowercase letter, uppercase letter, digit, symbol.`;
+  }
+  return null;
+}
+
 export function validateRegistration(input: {
   email:        string;
   display_name: string;
@@ -56,15 +77,8 @@ export function validateRegistration(input: {
     errors.display_name = `Display name must be ${AUTH_LIMITS.DISPLAY_NAME_MAX} characters or fewer.`;
   }
 
-  if (!input.password) {
-    errors.password = 'Password is required.';
-  } else if (input.password.length < AUTH_LIMITS.PASSWORD_MIN) {
-    errors.password = `Password must be at least ${AUTH_LIMITS.PASSWORD_MIN} characters.`;
-  } else if (input.password.length > AUTH_LIMITS.PASSWORD_MAX) {
-    errors.password = `Password is too long (max ${AUTH_LIMITS.PASSWORD_MAX} characters).`;
-  } else if (countPasswordClasses(input.password) < AUTH_LIMITS.PASSWORD_MIN_CLASSES) {
-    errors.password = `Password must contain at least ${AUTH_LIMITS.PASSWORD_MIN_CLASSES} of: lowercase letter, uppercase letter, digit, symbol.`;
-  }
+  const pwError = validatePassword(input.password);
+  if (pwError) errors.password = pwError;
 
   return errors;
 }

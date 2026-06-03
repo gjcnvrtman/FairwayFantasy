@@ -14,6 +14,9 @@ function SignInForm() {
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get('redirect') || '/dashboard';
+  // /auth/reset-password redirects here with ?reset=ok on success so we
+  // can show a confirmation banner above the form.
+  const justReset = params.get('reset') === 'ok';
 
   const [email, setEmail]         = useState('');
   const [password, setPassword]   = useState('');
@@ -91,6 +94,11 @@ function SignInForm() {
         </div>
 
         <div className="card">
+          {justReset && (
+            <div className="alert alert-success" style={{ marginBottom: '1rem' }}>
+              Password reset successful. Sign in with your new password below.
+            </div>
+          )}
           <form onSubmit={handleSignIn}>
             {error && (
               <div className="alert alert-error">
@@ -126,6 +134,11 @@ function SignInForm() {
               <label className="label">Password</label>
               <input className="input" type="password" required autoComplete="current-password"
                 placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+              <p className="hint" style={{ marginTop: '0.4rem', textAlign: 'right' }}>
+                <Link href="/auth/forgot-password" style={{ color: 'var(--brass)', fontWeight: 600 }}>
+                  Forgot password?
+                </Link>
+              </p>
             </div>
 
             <button type="submit" className="btn btn-primary btn-full btn-lg" disabled={loading} style={{ marginTop: '0.5rem' }}>
