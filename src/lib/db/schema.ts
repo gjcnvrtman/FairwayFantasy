@@ -174,6 +174,11 @@ export interface ScoresTable {
   fantasy_score:         number | null;
   was_replaced:          Generated<boolean>;
   replaced_by_golfer_id: string | null;
+  // ESPN status.thru — holes completed in the current round (0..18).
+  // NULL when ESPN didn't provide it (scoreboard fallback path,
+  // pre-tee-off, between rounds with no fresh data). Constrained
+  // 0..18 at the DB layer. Added by migration 003 (2026-06-04).
+  holes_played:          number | null;
   last_synced:           Generated<Timestamp>;
 }
 

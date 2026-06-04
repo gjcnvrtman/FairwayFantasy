@@ -129,7 +129,12 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
     displayName: name,
     shortName:   c.athlete?.shortName ?? name,
     headshot:    c.athlete?.headshot ?? c.headshot ?? undefined,
-    status:      c.status ?? { type: { name: 'active' }, thru: 0, currentRound: 0 },
+    // Scoreboard fallback doesn't include status.thru / currentRound —
+    // null them out (was: defaulted to 0, which the scores table
+    // couldn't distinguish from a real "round started, 0 holes done")
+    // so syncTournament can preserve any previously-recorded
+    // holes_played value instead of overwriting with a fake 0.
+    status:      c.status ?? { type: { name: 'active' }, thru: null, currentRound: null },
     score:       { displayValue: rawScore, value: parseESPNScore(rawScore) },
     linescores,
     statistics:  [],

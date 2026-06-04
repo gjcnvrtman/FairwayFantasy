@@ -93,6 +93,9 @@ export interface Score {
   fantasy_score: number | null;
   was_replaced: boolean;
   replaced_by_golfer_id: string | null;
+  // Holes completed in the current round (0..18). NULL when ESPN
+  // didn't provide it — see scores.holes_played in db/schema.ts.
+  holes_played: number | null;
   last_synced: string;
 }
 
@@ -135,8 +138,12 @@ export interface ESPNCompetitor {
   headshot?: { href: string };
   status: {
     type: { name: string }; // "active", "cut", "wd"
-    thru: number;
-    currentRound: number;
+    // `thru` and `currentRound` are present on the /pga/leaderboard
+    // payload but absent on the /pga/scoreboard fallback. The
+    // normalizer (src/lib/espn.ts) leaves them null when missing so
+    // syncTournament can distinguish "no data" from a real zero.
+    thru: number | null;
+    currentRound: number | null;
   };
   score: { displayValue: string; value: number };
   linescores: Array<{ displayValue: string; value: number }>;

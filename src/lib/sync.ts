@@ -279,6 +279,7 @@ async function syncTournament(tournament: {
     position:       string;
     status:         Score['status'];
     fantasy_score:  number | null;
+    holes_played:   number | null;
     last_synced:    string;
   }> = [];
 
@@ -336,6 +337,15 @@ async function syncTournament(tournament: {
     const { fantasyScore, status: mappedStatus } = applyFantasyRules({
       scoreToParRaw: scoreStr, espnStatus, cutScore: effectiveCut, cutMade,
     });
+    // ESPN's status.thru is round-relative (holes completed in the
+    // CURRENT round, 0..18). Persist verbatim. Null when ESPN didn't
+    // give us a value — we preserve any prior holes_played via the
+    // COALESCE in the ON CONFLICT clause below so a scoreboard-fallback
+    // sync doesn't blow away a real thru value from the prior
+    // leaderboard sync.
+    const holesPlayedFromEspn =
+      typeof c.status?.thru === 'number' ? c.status.thru : null;
+
     scoreUpdates.push({
       tournament_id:  id,
       golfer_id:      golfer.id,
@@ -346,6 +356,7 @@ async function syncTournament(tournament: {
       position:       String(c.sortOrder ?? ''),
       status:         mappedStatus,
       fantasy_score:  fantasyScore,
+      holes_played:   holesPlayedFromEspn,
       last_synced:    new Date().toISOString(),
     });
   }
@@ -366,6 +377,14 @@ async function syncTournament(tournament: {
           position:       eb.ref('excluded.position'),
           status:         eb.ref('excluded.status'),
           fantasy_score:  eb.ref('excluded.fantasy_score'),
+          // Don't overwrite a real holes_played from a prior leaderboard
+          // sync with NULL from a scoreboard-fallback sync. COALESCE
+          // keeps the existing value when the new payload didn't carry
+          // status.thru.
+          holes_played:   eb.fn.coalesce(
+            eb.ref('excluded.holes_played'),
+            eb.ref('scores.holes_played'),
+          ),
           last_synced:    eb.ref('excluded.last_synced'),
         })),
       )

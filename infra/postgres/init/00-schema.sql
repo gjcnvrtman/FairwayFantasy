@@ -230,6 +230,15 @@ CREATE TABLE scores (
   fantasy_score         INT,
   was_replaced          BOOLEAN DEFAULT FALSE,
   replaced_by_golfer_id UUID REFERENCES golfers(id),
+  -- ESPN status.thru — holes completed in the CURRENT round (0..18).
+  -- NULL when ESPN didn't provide a value (scoreboard fallback path,
+  -- pre-tee-off, between rounds with no fresh leaderboard data).
+  -- Migration 003 added this column on 2026-06-04. Drives the "Thru
+  -- N / F / —" cell on the league + tournament leaderboard cards via
+  -- formatThruIndicator in src/lib/scoring.ts.
+  holes_played          INT,
+  CONSTRAINT scores_holes_played_range
+    CHECK (holes_played IS NULL OR (holes_played >= 0 AND holes_played <= 18)),
   last_synced           TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(tournament_id, golfer_id)
 );

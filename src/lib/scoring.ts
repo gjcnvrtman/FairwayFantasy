@@ -451,6 +451,50 @@ export function scoreColorClass(score: number | null): string {
   return 'text-blue-600';
 }
 
+// ── Thru indicator (leaderboard "right-of-score" cell) ───────
+/**
+ * Format the "thru N / F / —" indicator that renders to the right of
+ * each golfer's score on both leaderboard cards.
+ *
+ * Per Greg's 2026-06-04 spec:
+ *   - "Thru N"  during a round (holes_played 1..17)
+ *   - "F"       when the current round is complete (holes_played === 18)
+ *               and the tournament is still in flight
+ *   - ""        when the golfer is MC / WD / DQ / complete (the
+ *               existing badge handles that case)
+ *   - ""        when the tournament status is 'complete' (the final
+ *               score is the story; no thru column needed)
+ *   - "—"       in every other gap case (NULL data, 0 pre-tee-off)
+ *
+ * Pure formatter. No timezone math, no clock — just maps the recorded
+ * holes_played + golfer + tournament status to the right string.
+ */
+export function formatThruIndicator(
+  holesPlayed: number | null,
+  golferStatus: string | null | undefined,
+  tournamentStatus: string | null | undefined,
+): string {
+  // Tournament's over → no thru is meaningful.
+  if (tournamentStatus === 'complete') return '';
+  // Out of contention / done with this event → existing badge tells
+  // the story; don't double-render in the thru column.
+  if (
+    golferStatus === 'missed_cut' ||
+    golferStatus === 'withdrawn'  ||
+    golferStatus === 'disqualified' ||
+    golferStatus === 'complete'
+  ) {
+    return '';
+  }
+  if (holesPlayed === null || holesPlayed === undefined) return '—';
+  if (holesPlayed === 0)  return '—';  // tee-off pending
+  if (holesPlayed === 18) return 'F';
+  if (holesPlayed > 0 && holesPlayed < 18) return `Thru ${holesPlayed}`;
+  // Out-of-range fallback — shouldn't happen given the DB CHECK
+  // constraint, but be defensive in render.
+  return '—';
+}
+
 // ── Auto-Lineup Builder (missed-deadline sweep) ──────────────
 /**
  * How many of the highest-ranked golfers in each tier are excluded

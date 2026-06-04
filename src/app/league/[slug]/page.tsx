@@ -17,7 +17,7 @@ import {
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney } from '@/lib/money';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
-import { formatScore } from '@/lib/scoring';
+import { formatScore, formatThruIndicator } from '@/lib/scoring';
 import {
   deriveLockStatus,
   shouldRevealOtherPicks,
@@ -257,7 +257,10 @@ export default async function LeaguePage({ params }: Props) {
                   field regardless of whether they were picked, so the
                   sidebar is useful even when your foursome flames out. */}
               {activeTournament && (
-                <TournamentLeaderboardCard leaders={tournamentLeaders} />
+                <TournamentLeaderboardCard
+                  leaders={tournamentLeaders}
+                  tournamentStatus={activeTournament.status}
+                />
               )}
 
               {/* League money card — cumulative $ won/lost per user
@@ -459,6 +462,7 @@ function ActiveTournamentSection({
                   reveal={canReveal && !!rowPick}
                   scoresByGolferId={scoresByGolferId}
                   postCut={postCut}
+                  tournamentStatus={tournament.status}
                 />
               );
             });
@@ -476,7 +480,7 @@ function ActiveTournamentSection({
 }
 
 function LeaderboardRow({
-  result, pick, index, isMe, reveal, scoresByGolferId, postCut,
+  result, pick, index, isMe, reveal, scoresByGolferId, postCut, tournamentStatus,
 }: {
   result: any;
   pick:   any;
@@ -487,6 +491,9 @@ function LeaderboardRow({
   /** True once tournament.status flips to cut_made/complete — enables
    *  the missed-cut summary section under the foursome rows. */
   postCut: boolean;
+  /** Tournament status string passed through so the thru-indicator
+   *  formatter can return empty once the event is complete. */
+  tournamentStatus: string;
 }) {
   const totalClass =
     result.total_score < 0 ? 'score-under'
@@ -602,6 +609,23 @@ function LeaderboardRow({
                 <strong className={fClass} style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
                   {fantasy == null ? '—' : formatScore(fantasy)}
                 </strong>
+                {/* Thru indicator — right of the fantasy score per
+                    Greg's 2026-06-04 spec. Pulled from the
+                    scoresByGolferId map already wired into this row;
+                    no extra query. formatThruIndicator handles
+                    MC/WD/DQ + tournament-complete by returning empty. */}
+                <span style={{
+                  fontSize: '0.7rem', color: 'var(--slate-mid)',
+                  flexShrink: 0, marginLeft: '0.4rem',
+                  width: '3rem', textAlign: 'right',
+                  fontVariantNumeric: 'tabular-nums',
+                }}>
+                  {formatThruIndicator(
+                    scoresByGolferId.get(g.id)?.holes_played ?? null,
+                    scoresByGolferId.get(g.id)?.status,
+                    tournamentStatus,
+                  )}
+                </span>
               </div>
             );
           })}
@@ -892,9 +916,15 @@ interface TournamentLeader {
   position:      string | null;
   status:        'active' | 'missed_cut' | 'withdrawn' | 'disqualified' | 'complete';
   total_strokes: number | null;
+  holes_played:  number | null;
 }
 
-function TournamentLeaderboardCard({ leaders }: { leaders: TournamentLeader[] }) {
+function TournamentLeaderboardCard({
+  leaders, tournamentStatus,
+}: {
+  leaders:          TournamentLeader[];
+  tournamentStatus: string;
+}) {
   if (!leaders.length) {
     return (
       <div className="card">
@@ -960,6 +990,19 @@ function TournamentLeaderboardCard({ leaders }: { leaders: TournamentLeader[] })
               } style={{ fontSize: '0.9rem', flexShrink: 0, marginLeft: '0.5rem' }}>
                 {formatScore(g.score_to_par)}
               </strong>
+              {/* Thru indicator — sits to the right of the score per
+                  Greg's 2026-06-04 spec. Fixed-width so the column
+                  doesn't jitter as values flip between "Thru 14" / "F"
+                  / em-dash. formatThruIndicator handles MC/WD/DQ +
+                  tournament-complete by returning empty. */}
+              <span style={{
+                fontSize: '0.72rem', color: 'var(--slate-mid)',
+                flexShrink: 0, marginLeft: '0.6rem',
+                width: '3rem', textAlign: 'right',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {formatThruIndicator(g.holes_played, g.status, tournamentStatus)}
+              </span>
             </div>
           );
         })}

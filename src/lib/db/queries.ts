@@ -236,6 +236,7 @@ export async function getTournamentLeaderboard(
       'scores.round_2',
       'scores.round_3',
       'scores.round_4',
+      'scores.holes_played',
       'golfers.name as golfer_name',
       'golfers.owgr_rank',
       'golfers.country',
