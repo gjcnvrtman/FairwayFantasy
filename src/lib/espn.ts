@@ -142,17 +142,25 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   let derivedThru:         number | null = null;
   let derivedCurrentRound: number | null = null;
   if (Array.isArray(c.linescores) && c.linescores.length > 0) {
-    const highest = c.linescores.reduce(
-      (best: any, ls: any) =>
-        (best == null || (ls?.period ?? 0) > (best?.period ?? 0)) ? ls : best,
-      null,
+    // The CURRENT round is the highest-period outer entry whose
+    // inner linescores array is non-empty. ESPN returns placeholder
+    // entries for future rounds (period=2 with inner=[] when R1 is
+    // in flight); naively picking the highest period would treat the
+    // placeholder as "no holes yet" and force thru=0 forever. By
+    // filtering on "actually has holes scored" we land on the
+    // in-progress (or last-completed) round.
+    const candidates = c.linescores.filter(
+      (ls: any) => Array.isArray(ls?.linescores) && ls.linescores.length > 0,
     );
-    if (highest) {
-      derivedCurrentRound = typeof highest.period === 'number' ? highest.period : null;
-      if (Array.isArray(highest.linescores)) {
-        // Defensive: cap at 18 in case ESPN ever returns a junk run-on.
-        derivedThru = Math.min(highest.linescores.length, 18);
-      }
+    if (candidates.length > 0) {
+      const current = candidates.reduce(
+        (best: any, ls: any) =>
+          (best == null || (ls?.period ?? 0) > (best?.period ?? 0)) ? ls : best,
+        null,
+      );
+      derivedCurrentRound = typeof current.period === 'number' ? current.period : null;
+      // Defensive: cap at 18 in case ESPN ever returns a junk run-on.
+      derivedThru = Math.min(current.linescores.length, 18);
     }
   }
   const fallbackStatus = c.status ?? {
