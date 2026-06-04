@@ -170,6 +170,13 @@ CREATE TABLE picks (
   golfer_tuple_hash  TEXT,
   is_locked          BOOLEAN DEFAULT FALSE,
   submitted_at       TIMESTAMPTZ DEFAULT NOW(),
+  -- Added strokes applied at scoring time. Writer today is the
+  -- missed-deadline auto-assign sweep (sync.ts:sweepMissedPicks),
+  -- which sets this to 2 when it auto-generates a lineup for a
+  -- user who didn't submit by pick_deadline. Reserved as a generic
+  -- penalty channel for future classes. Migration 002 added this
+  -- column on 2026-06-04; historical picks default to 0.
+  penalty_strokes    INT NOT NULL DEFAULT 0,
   UNIQUE(league_id, tournament_id, user_id)
 );
 

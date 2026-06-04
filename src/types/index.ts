@@ -65,6 +65,11 @@ export interface Pick {
   golfer_4_id: string;
   is_locked: boolean;
   submitted_at: string;
+  // Added strokes at scoring time. Default 0. Set to 2 by the
+  // missed-deadline auto-assign sweep (sync.ts:sweepMissedPicks);
+  // generic channel reserved for future penalty classes. See
+  // migration 002 (2026-06-04).
+  penalty_strokes: number;
   // Joined data
   golfer_1?: Golfer;
   golfer_2?: Golfer;

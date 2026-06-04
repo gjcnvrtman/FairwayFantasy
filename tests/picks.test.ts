@@ -472,18 +472,20 @@ function makePick(p: {
   g4: string | null;
   league_id?: string;
   tournament_id?: string;
+  penalty_strokes?: number;
 }): Pick {
   return {
-    id:           `pick-${p.user_id}`,
-    league_id:     p.league_id     ?? 'lg1',
-    tournament_id: p.tournament_id ?? 'tour1',
-    user_id:       p.user_id,
-    golfer_1_id:   p.g1,
-    golfer_2_id:   p.g2,
-    golfer_3_id:   p.g3,
-    golfer_4_id:   p.g4,
-    is_locked:     true,
-    submitted_at:  '2026-04-10T00:00:00Z',
+    id:               `pick-${p.user_id}`,
+    league_id:         p.league_id        ?? 'lg1',
+    tournament_id:     p.tournament_id    ?? 'tour1',
+    user_id:           p.user_id,
+    golfer_1_id:       p.g1,
+    golfer_2_id:       p.g2,
+    golfer_3_id:       p.g3,
+    golfer_4_id:       p.g4,
+    is_locked:         true,
+    submitted_at:      '2026-04-10T00:00:00Z',
+    penalty_strokes:   p.penalty_strokes ?? 0,
   } as Pick;
 }
 
@@ -591,6 +593,101 @@ describe('computeLeagueResults — only some completed', () => {
     const r = computeLeagueResults(picks, scoreMap);
     expect(r[0].total_score).toBeNull();
     expect(r[0].rank).toBeNull();
+  });
+});
+
+// ── pick.penalty_strokes integration (missed-deadline auto-assign) ──
+//
+// Greg's 2026-06-04 spec: a user who misses the pick deadline is given
+// a random lineup AND a 2-stroke penalty. The penalty rides on the
+// `picks.penalty_strokes` column and is read by computeLeagueResults.
+// These tests pin the contract for both "with scores" and the
+// pre-tee-off / all-WD edge cases.
+describe('computeLeagueResults — penalty_strokes from missed-deadline auto-assign', () => {
+  it('adds penalty_strokes to a normal best-3 total', () => {
+    const picks = [makePick({
+      user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd',
+      penalty_strokes: 2,
+    })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +4 }), // dropped
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // base best-3 = -2, plus penalty 2 → 0
+    expect(r[0].total_score).toBe(0);
+  });
+
+  it('layers on top of missed-cut penalties (both apply)', () => {
+    const picks = [makePick({
+      user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd',
+      penalty_strokes: 2,
+    })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -2 }),
+      makeScore({ golfer_id: 'b', fantasy_score: +1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: null, status: 'missed_cut' }),
+      makeScore({ golfer_id: 'd', fantasy_score: null, status: 'missed_cut' }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // best-3 = -2 + +1 = -1 (only 2 valid post-missed-cut), missed-cut
+    // penalty = 2 (1 per missed cut), pick.penalty_strokes = 2
+    // total = -1 + 2 + 2 = 3
+    expect(r[0].total_score).toBe(3);
+  });
+
+  it('surfaces as the total when no scores have posted yet (pre-tee-off)', () => {
+    // The auto-assign sweep can fire BEFORE the tournament starts;
+    // until R1 tees off, all scores are null. The penalty alone
+    // should give the user a non-null score so they show up on the
+    // leaderboard with their 2-stroke handicap visible.
+    const picks = [makePick({
+      user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd',
+      penalty_strokes: 2,
+    })];
+    const scoreMap = buildScoreMap([]);  // empty — no score rows yet
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(2);
+  });
+
+  it('default penalty_strokes=0 is a no-op for normal picks', () => {
+    // Belt-check on the omitted-field path (every existing test).
+    const picks = [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +4 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    expect(r[0].total_score).toBe(-2);  // pure best-3, no penalty
+  });
+
+  it('auto-assigned user ranks BELOW a non-penalty user with identical scores', () => {
+    const picks = [
+      makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd', penalty_strokes: 0 }),
+      makePick({ user_id: 'u2', g1: 'e', g2: 'f', g3: 'g', g4: 'h', penalty_strokes: 2 }),
+    ];
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'd', fantasy_score: +4 }),
+      makeScore({ golfer_id: 'e', fantasy_score: -3 }),
+      makeScore({ golfer_id: 'f', fantasy_score: -1 }),
+      makeScore({ golfer_id: 'g', fantasy_score: +2 }),
+      makeScore({ golfer_id: 'h', fantasy_score: +4 }),
+    ]);
+    const r = computeLeagueResults(picks, scoreMap);
+    // u1: -2, u2: 0 (-2 + 2 penalty) → u1 rank 1, u2 rank 2
+    const u1 = r.find(x => x.user_id === 'u1')!;
+    const u2 = r.find(x => x.user_id === 'u2')!;
+    expect(u1.total_score).toBe(-2);
+    expect(u2.total_score).toBe(0);
+    expect(u1.rank).toBe(1);
+    expect(u2.rank).toBe(2);
   });
 });
 

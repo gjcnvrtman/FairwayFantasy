@@ -150,6 +150,11 @@ export interface PicksTable {
   golfer_tuple_hash:  ColumnType<string | null, never, never>;
   is_locked:          Generated<boolean>;
   submitted_at:       Generated<Timestamp>;
+  // Added strokes applied at scoring time. Default 0. Writer today is
+  // the missed-deadline auto-assign sweep (sync.ts:sweepMissedPicks),
+  // which sets this to 2 when it auto-generates a lineup for a user
+  // who didn't submit by pick_deadline. See migration 002.
+  penalty_strokes:    Generated<number>;
 }
 
 // ── scores ───────────────────────────────────────────────────

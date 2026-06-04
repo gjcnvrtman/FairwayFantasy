@@ -245,9 +245,19 @@ export function computeLeagueResults(
     // null total only when nothing has happened — no scored golfers
     // AND no missed cuts. Otherwise the penalty alone gives us a
     // meaningful total (e.g. all 4 missed cut → total = 4).
+    //
+    // pick.penalty_strokes (default 0) layers a SECOND penalty class:
+    // the missed-deadline auto-assign sweep (sync.ts:sweepMissedPicks)
+    // sets it to 2 when a user didn't submit by pick_deadline. It
+    // applies the same way as the missed-cut penalty: always added to
+    // the user's total regardless of whether any score has posted. So
+    // a user who missed the deadline + had all 4 golfers miss the cut
+    // = top3=null + missedCutCount=4 + penalty_strokes=2 → total = 6.
+    const pickPenalty = pick.penalty_strokes ?? 0;
     let totalScore: number | null;
-    if (top3Total !== null)         totalScore = top3Total + penaltyTotal;
-    else if (missedCutCount > 0)    totalScore = penaltyTotal;
+    if (top3Total !== null)         totalScore = top3Total + penaltyTotal + pickPenalty;
+    else if (missedCutCount > 0)    totalScore = penaltyTotal + pickPenalty;
+    else if (pickPenalty > 0)       totalScore = pickPenalty;
     else                            totalScore = null;
 
     return {
@@ -439,4 +449,188 @@ export function scoreColorClass(score: number | null): string {
   if (score < 0)  return 'text-red-500';
   if (score === 0) return 'text-gray-900';
   return 'text-blue-600';
+}
+
+// ── Auto-Lineup Builder (missed-deadline sweep) ──────────────
+/**
+ * How many of the highest-ranked golfers in each tier are excluded
+ * from the auto-pick pool. Greg's rule (2026-06-04): a user who missed
+ * the deadline doesn't get to ride the consensus best names — neither
+ * the top-4 top-tier (lowest owgr_rank with is_dark_horse=false) nor
+ * the top-4 dark-horse (lowest owgr_rank with is_dark_horse=true).
+ */
+export const AUTO_LINEUP_EXCLUDE_TOP_N = 4;
+
+/**
+ * The penalty in strokes applied to an auto-assigned lineup. Stored
+ * on `picks.penalty_strokes` at INSERT time; `computeLeagueResults`
+ * reads it and adds it to the user's best-3-of-4 total.
+ */
+export const MISSED_DEADLINE_PENALTY_STROKES = 2;
+
+/**
+ * Compute the canonical sorted-pipe-delimited hash of a 4-golfer set.
+ * Must match the Postgres trigger `picks_compute_tuple_hash` in
+ * infra/postgres/init/00-schema.sql so app-layer dedupe via Set<hash>
+ * agrees with the DB-layer UNIQUE INDEX `picks_unique_complete_foursome`.
+ *
+ * Exported because the auto-lineup sweep needs to seed `takenHashes`
+ * from existing picks BEFORE the trigger fires.
+ */
+export function computeFoursomeHash(golferIds: [string, string, string, string]): string {
+  return [...golferIds].sort().join('|');
+}
+
+/**
+ * Result of buildAutoLineup. Discriminated so the caller can distinguish
+ * a successful generation from a graceful failure (pool too small,
+ * unique combos exhausted, etc.).
+ */
+export type AutoLineupResult =
+  | {
+      ok: true;
+      golferIds: [string, string, string, string];
+      hash:      string;
+      // Slot 1 + 2 from this pool (top-tier minus excluded top-N).
+      topGolferIds:  [string, string];
+      // Slot 3 + 4 from this pool (dark-horse minus excluded top-N).
+      darkGolferIds: [string, string];
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Build a random, valid, unique auto-lineup for a user who missed the
+ * pick deadline.
+ *
+ * Rules enforced (matches validatePick semantics):
+ *   - 2 top-tier golfers in slots 1+2 (is_dark_horse === false)
+ *   - 2 dark-horse golfers in slots 3+4 (is_dark_horse !== false)
+ *   - All 4 distinct
+ *   - Top-N (default 4) of each tier by owgr_rank are EXCLUDED from
+ *     the pool. Ties are broken stably so the exclusion is
+ *     deterministic given the input ordering.
+ *   - Generated 4-set must NOT collide with any hash in
+ *     `takenHashes` (existing picks for this league + tournament).
+ *
+ * Strategy:
+ *   1. Random sampling with `attempts` retries (default 50). Cheap
+ *      and fast for the realistic case (taken set is small vs the
+ *      combinatorial space).
+ *   2. If random sampling can't find an unused combo, deterministic
+ *      exhaustive search over all top-pair × dark-pair tuples in
+ *      input order. Guarantees a hit if any unique combo exists.
+ *   3. If exhaustive search also returns nothing, `ok: false` with a
+ *      reason — sweep caller logs and skips the user (no pick row
+ *      inserted, so the tournament treats them as before).
+ *
+ * `rng` defaults to Math.random; tests pass a deterministic source.
+ */
+export function buildAutoLineup(args: {
+  fieldGolfers: Array<{
+    id:            string;
+    name:          string;
+    owgr_rank:     number | null;
+    is_dark_horse: boolean | null;
+  }>;
+  takenHashes:    Set<string>;
+  excludeTopN?:   number;
+  attempts?:      number;
+  rng?:           () => number;
+}): AutoLineupResult {
+  const excludeTopN = args.excludeTopN ?? AUTO_LINEUP_EXCLUDE_TOP_N;
+  const attempts    = args.attempts    ?? 50;
+  const rng         = args.rng         ?? Math.random;
+
+  // Split by tier — same predicates as isTopTierEligible /
+  // isDarkHorseEligible above for one source of truth.
+  const topTierAll  = args.fieldGolfers.filter(g => g.is_dark_horse === false);
+  const darkHorseAll = args.fieldGolfers.filter(g => g.is_dark_horse !== false);
+
+  // Sort each tier by owgr_rank ascending, NULL ranks LAST so they're
+  // never accidentally treated as "best". Drop the first N → pool.
+  const byRankNullsLast = (a: { owgr_rank: number | null }, b: { owgr_rank: number | null }) => {
+    const ar = a.owgr_rank ?? Number.POSITIVE_INFINITY;
+    const br = b.owgr_rank ?? Number.POSITIVE_INFINITY;
+    return ar - br;
+  };
+  const topPool  = [...topTierAll].sort(byRankNullsLast).slice(excludeTopN);
+  const darkPool = [...darkHorseAll].sort(byRankNullsLast).slice(excludeTopN);
+
+  if (topPool.length < 2) {
+    return {
+      ok: false,
+      reason: `top-tier pool too small (have ${topPool.length} after excluding top ${excludeTopN}, need ≥2)`,
+    };
+  }
+  if (darkPool.length < 2) {
+    return {
+      ok: false,
+      reason: `dark-horse pool too small (have ${darkPool.length} after excluding top ${excludeTopN}, need ≥2)`,
+    };
+  }
+
+  // ── Strategy 1: random sampling, retry on collision ──
+  const pick2 = <T>(pool: T[]): [T, T] => {
+    // Reservoir-y unordered draw of 2 distinct indices via Fisher-Yates
+    // partial shuffle of {0..n-1} on the first 2 slots. Avoids the
+    // bias of "pick one, then pick another != first".
+    const i = Math.floor(rng() * pool.length);
+    let j = Math.floor(rng() * (pool.length - 1));
+    if (j >= i) j += 1;
+    return [pool[i], pool[j]];
+  };
+
+  for (let tryNum = 0; tryNum < attempts; tryNum++) {
+    const [t1, t2] = pick2(topPool);
+    const [d1, d2] = pick2(darkPool);
+    const ids: [string, string, string, string] = [t1.id, t2.id, d1.id, d2.id];
+    // Distinctness across tiers — defensive, shouldn't actually happen
+    // since topPool / darkPool are disjoint by definition, but the
+    // schema allows null is_dark_horse which we lump into dark-horse.
+    if (new Set(ids).size !== 4) continue;
+    const hash = computeFoursomeHash(ids);
+    if (!args.takenHashes.has(hash)) {
+      return {
+        ok: true,
+        golferIds:     ids,
+        hash,
+        topGolferIds:  [t1.id, t2.id],
+        darkGolferIds: [d1.id, d2.id],
+      };
+    }
+  }
+
+  // ── Strategy 2: deterministic exhaustive search ──
+  // Iterate top-pair × dark-pair in input order. Guaranteed to find
+  // any unique combo that exists. Complexity is O((|top| C 2) × (|dark| C 2));
+  // with realistic pools (~30 top, ~100 dark post-exclusion) this is
+  // ~435 × 4950 ≈ 2M iterations worst case — well under 100ms.
+  for (let i = 0; i < topPool.length; i++) {
+    for (let j = i + 1; j < topPool.length; j++) {
+      for (let k = 0; k < darkPool.length; k++) {
+        for (let l = k + 1; l < darkPool.length; l++) {
+          const ids: [string, string, string, string] = [
+            topPool[i].id, topPool[j].id,
+            darkPool[k].id, darkPool[l].id,
+          ];
+          if (new Set(ids).size !== 4) continue;
+          const hash = computeFoursomeHash(ids);
+          if (!args.takenHashes.has(hash)) {
+            return {
+              ok: true,
+              golferIds:     ids,
+              hash,
+              topGolferIds:  [topPool[i].id, topPool[j].id],
+              darkGolferIds: [darkPool[k].id, darkPool[l].id],
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'no unique foursome possible — every combination collides with an existing pick',
+  };
 }

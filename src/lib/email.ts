@@ -409,6 +409,144 @@ is an FYI so you know the field is locked in for the week.
   return { subject, text, html };
 }
 
+// ============================================================
+// Missed-deadline auto-assign template.
+//
+// Fired once per (user, league, tournament) by the missed-deadline
+// sweep in sync.ts:sweepMissedPicks() when:
+//   - the tournament's pick_deadline (or commissioner override) has
+//     passed,
+//   - the user belongs to a league whose window includes the
+//     tournament,
+//   - they didn't submit a pick before the deadline.
+//
+// The sweep builds a random unique lineup excluding the top-4 of
+// each tier by OWGR (see buildAutoLineup in scoring.ts), inserts it
+// with penalty_strokes=2 + is_locked=true, then calls this template
+// to tell the user what happened and what they got.
+// ============================================================
+
+export function missedDeadlineEmail(params: {
+  displayName:    string;
+  leagueName:     string;
+  leagueSlug:     string;
+  tournamentName: string;
+  golfers:        Array<{ slot: number; name: string }>;
+  penaltyStrokes: number;
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const {
+    displayName, leagueName, leagueSlug, tournamentName,
+    golfers, penaltyStrokes, siteUrl,
+  } = params;
+
+  const picksUrl = `${siteUrl}/league/${leagueSlug}/picks`;
+
+  // Plain-text bullet list with slot label.
+  const golfersTextList = golfers
+    .map(g => {
+      const tierLabel = g.slot <= 2 ? 'Top tier' : 'Dark horse';
+      return `  ${g.slot}. ${g.name}  (${tierLabel})`;
+    })
+    .join('\n');
+
+  // HTML rows for the same. Slot column + tier badge.
+  const golfersHtmlList = golfers
+    .map(g => {
+      const tierLabel = g.slot <= 2 ? 'Top tier' : 'Dark horse';
+      const tierBg    = g.slot <= 2 ? '#2d6a4f' : '#a47148';
+      return `<li style="margin-bottom: 6px;">
+        <strong>${escapeHtml(g.name)}</strong>
+        <span style="display: inline-block; margin-left: 8px;
+                     padding: 1px 8px; font-size: 11px; font-weight: 600;
+                     color: white; background: ${tierBg}; border-radius: 999px;">
+          ${tierLabel}
+        </span>
+      </li>`;
+    })
+    .join('\n');
+
+  const subject = `[Fairway Fantasy] Auto-assigned lineup for ${tournamentName}`;
+
+  const text = `
+Hi ${displayName},
+
+You didn't submit a pick before the deadline for ${tournamentName}
+in your league "${leagueName}", so a random lineup has been assigned
+on your behalf with a ${penaltyStrokes}-stroke penalty.
+
+Your assigned lineup:
+${golfersTextList}
+
+The penalty is applied to your best-3-of-4 total at scoring time —
+your total will be ${penaltyStrokes} strokes higher than it otherwise
+would be.
+
+The lineup is locked. You can still watch it run alongside everyone
+else's at:
+${picksUrl}
+
+Next week, submit before the deadline to choose your own foursome.
+
+— Fairway Fantasy
+`.trim();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #2c2c2c;">
+  <div style="text-align: center; margin-bottom: 24px;">
+    <div style="font-size: 40px; margin-bottom: 4px;">⛳</div>
+    <h1 style="font-family: Georgia, serif; font-weight: 700; font-size: 24px; margin: 0;">
+      Fairway Fantasy
+    </h1>
+  </div>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    Hi ${escapeHtml(displayName)},
+  </p>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    You didn't submit a pick before the deadline for
+    <strong>${escapeHtml(tournamentName)}</strong>
+    in your league <strong>${escapeHtml(leagueName)}</strong>,
+    so a random lineup has been assigned on your behalf with a
+    <strong>${penaltyStrokes}-stroke penalty</strong>.
+  </p>
+
+  <p style="font-size: 16px; line-height: 1.5; margin-top: 24px; margin-bottom: 8px;">
+    Your assigned lineup:
+  </p>
+  <ol style="font-size: 15px; line-height: 1.5; padding-left: 24px;">
+    ${golfersHtmlList}
+  </ol>
+
+  <p style="font-size: 14px; color: #555555; line-height: 1.5;">
+    The penalty is applied to your best-3-of-4 total at scoring time —
+    your total will be ${penaltyStrokes} strokes higher than it
+    otherwise would be.
+  </p>
+
+  <div style="text-align: center; margin: 32px 0;">
+    <a href="${escapeHtml(picksUrl)}"
+       style="display: inline-block; padding: 14px 28px; background: #2d6a4f; color: #ffffff;
+              text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 15px;">
+      View Picks Page
+    </a>
+  </div>
+
+  <p style="font-size: 13px; color: #777777; margin-top: 24px; padding-top: 16px;
+            border-top: 1px solid #e0e0e0; line-height: 1.5;">
+    The lineup is locked for this tournament. Next week, submit before
+    the deadline to choose your own foursome.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

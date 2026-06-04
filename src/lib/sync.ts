@@ -13,10 +13,14 @@
 
 import { db } from './db';
 import { fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore } from './espn';
-import { applyFantasyRules, computeLeagueResults } from './scoring';
+import {
+  applyFantasyRules, computeLeagueResults,
+  buildAutoLineup, computeFoursomeHash,
+  MISSED_DEADLINE_PENALTY_STROKES,
+} from './scoring';
 import { dispatchReminder, fieldPublishedMessage } from './notifier';
 import { effectivePickDeadline } from './pick-deadline';
-import { sendEmail, rosterSetAdminEmail } from './email';
+import { sendEmail, rosterSetAdminEmail, missedDeadlineEmail } from './email';
 import type { Channel, ReminderTask } from './reminders';
 import type { Score, Pick, FantasyResult } from '@/types';
 
@@ -69,6 +73,12 @@ export async function runScoreSync(): Promise<SyncSummary> {
       .execute();
 
     if (activeTournaments.length === 0) {
+      // Even when no tournaments are mid-flight, the missed-deadline
+      // sweep can still have work to do: a tournament whose pick
+      // deadline JUST passed but whose start_date is hours away
+      // won't appear in the activeTournaments list. The sweep has
+      // its own filter and is idempotent.
+      await sweepMissedPicks();
       return { ok: true, message: 'No tournaments in active window', touched: 0, results: [] };
     }
 
@@ -76,6 +86,9 @@ export async function runScoreSync(): Promise<SyncSummary> {
     for (const t of activeTournaments) {
       results.push(await syncTournament(t));
     }
+    // Sweep AFTER syncTournament finishes so any newly-flipped
+    // status / cut_score is in place when we check eligibility.
+    await sweepMissedPicks();
     return { ok: true, results, touched: results.length };
   } catch (err) {
     console.error('Sync error:', err);
@@ -557,6 +570,10 @@ export async function runFieldSync(): Promise<FieldSyncSummary> {
       .execute();
 
     if (candidates.length === 0) {
+      // No field-publish work pending, but the missed-deadline sweep
+      // may still have a Mon-Wed-deadline tournament to handle.
+      // Idempotent, so safe to call here AND from runScoreSync.
+      await sweepMissedPicks();
       return { ok: true, results: [], touched: 0 };
     }
 
@@ -564,6 +581,7 @@ export async function runFieldSync(): Promise<FieldSyncSummary> {
     for (const t of candidates) {
       results.push(await checkAndPublishField(t));
     }
+    await sweepMissedPicks();
     const touched = results.filter(r => r.published).length;
     return { ok: true, results, touched };
   } catch (err) {
@@ -916,5 +934,262 @@ export async function notifyAdminsRosterSet(args: {
     // Never fail the caller because of a notification glitch.
     // eslint-disable-next-line no-console
     console.error('[roster-set-admin] notify pass failed:', err);
+  }
+}
+
+// ============================================================
+// MISSED-DEADLINE AUTO-ASSIGN SWEEP
+// ============================================================
+/**
+ * Find every (user, league, tournament) where:
+ *   - the pick deadline (effective: override-aware) has passed,
+ *   - the user belongs to a league whose date window includes the
+ *     tournament,
+ *   - the tournament status is 'upcoming' or 'active' (no point
+ *     auto-assigning after the cut or after final scoring),
+ *   - the user has not submitted a pick for that league+tournament,
+ *
+ * and for each such gap:
+ *   1. Generate a random unique lineup excluding top-4 of each tier
+ *      by OWGR (buildAutoLineup in scoring.ts).
+ *   2. INSERT a picks row with penalty_strokes=MISSED_DEADLINE_PENALTY_STROKES
+ *      and is_locked=true.
+ *   3. Send the missed-deadline email to the user.
+ *
+ * Idempotent: a user who already has any picks row (including a
+ * previously auto-assigned one) is skipped — the existence of the row,
+ * not the value of penalty_strokes, is the gate. Failures per
+ * assignment are logged and don't abort the loop.
+ *
+ * Called from both runScoreSync (Thu-Sun every 10 min) and
+ * runFieldSync (Mon-Wed hourly) so the latency between deadline-pass
+ * and assignment is bounded to ≤1 hour across the whole week.
+ */
+async function sweepMissedPicks(): Promise<void> {
+  try {
+    const nowIso = new Date().toISOString();
+
+    // ── 1. Candidate tournaments: deadline passed, status not done.
+    const candidates = await db.selectFrom('tournaments')
+      .select([
+        'id', 'name', 'start_date', 'end_date',
+        'pick_deadline', 'pick_deadline_override', 'status',
+      ])
+      .where('status', 'in', ['upcoming', 'active'])
+      .execute();
+
+    const dueNow = candidates.filter(t => {
+      const dl = effectivePickDeadline(t);
+      return dl !== null && dl.getTime() <= Date.now();
+    });
+
+    if (dueNow.length === 0) return;
+
+    for (const t of dueNow) {
+      await sweepMissedPicksForTournament(t, nowIso);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[missed-deadline-sweep] pass failed:', err);
+  }
+}
+
+/**
+ * Per-tournament arm of sweepMissedPicks. Split out so a failure on
+ * one tournament doesn't stop the others.
+ */
+async function sweepMissedPicksForTournament(
+  t: {
+    id: string;
+    name: string;
+    start_date: string;
+    end_date:   string;
+    pick_deadline:          string | null;
+    pick_deadline_override: string | null;
+    status:                 string;
+  },
+  nowIso: string,
+): Promise<void> {
+  // ── 2. Leagues whose window includes this tournament.
+  const leagues = await db.selectFrom('leagues')
+    .select(['id', 'name', 'slug'])
+    .where(eb => eb.or([
+      eb('start_date', 'is', null),
+      eb('start_date', '<=', t.end_date),
+    ]))
+    .where(eb => eb.or([
+      eb('end_date', 'is', null),
+      eb('end_date', '>=', t.start_date),
+    ]))
+    .execute();
+  if (leagues.length === 0) return;
+
+  const leagueIds = leagues.map(l => l.id);
+  const leagueById = new Map(leagues.map(l => [l.id, l]));
+
+  // ── 3. Members + existing picks across all candidate leagues.
+  const [members, existingPicks] = await Promise.all([
+    db.selectFrom('league_members')
+      .select(['user_id', 'league_id'])
+      .where('league_id', 'in', leagueIds)
+      .execute(),
+    db.selectFrom('picks')
+      .select(['league_id', 'user_id', 'golfer_tuple_hash'])
+      .where('league_id', 'in', leagueIds)
+      .where('tournament_id', '=', t.id)
+      .execute(),
+  ]);
+
+  if (members.length === 0) return;
+
+  // ── 4. Compute missing-pick set per league + seed taken hashes per league.
+  // Key: `${leagueId}\t${userId}`. Easier than nested maps for the
+  // set-difference computation below.
+  const submitted = new Set<string>();
+  const takenHashByLeague = new Map<string, Set<string>>();
+  for (const lid of leagueIds) takenHashByLeague.set(lid, new Set());
+
+  for (const p of existingPicks) {
+    submitted.add(`${p.league_id}\t${p.user_id}`);
+    if (p.golfer_tuple_hash) {
+      takenHashByLeague.get(p.league_id)!.add(p.golfer_tuple_hash);
+    }
+  }
+
+  const missing = members.filter(m =>
+    !submitted.has(`${m.league_id}\t${m.user_id}`),
+  );
+  if (missing.length === 0) return;
+
+  // ── 5. Field for the tournament. Same query the picks page uses.
+  // We need id, name, owgr_rank, is_dark_horse on every golfer in the
+  // field (joined via scores). One query for the whole tournament —
+  // doesn't matter how many users we auto-assign.
+  const fieldRows = await db.selectFrom('scores')
+    .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+    .select([
+      'golfers.id as id', 'golfers.name as name',
+      'golfers.owgr_rank as owgr_rank', 'golfers.is_dark_horse as is_dark_horse',
+    ])
+    .where('scores.tournament_id', '=', t.id)
+    .execute();
+  if (fieldRows.length === 0) {
+    // No field means we can't auto-assign; tournament hasn't published
+    // yet. The picks page is also blocked in this state, so a user
+    // technically didn't have anything to pick. Skip silently.
+    return;
+  }
+
+  // ── 6. Profile lookup for emails.
+  const userIds = Array.from(new Set(missing.map(m => m.user_id)));
+  const profiles = await db.selectFrom('profiles')
+    .select(['id', 'email', 'display_name'])
+    .where('id', 'in', userIds)
+    .execute();
+  const profileById = new Map(profiles.map(p => [p.id, p]));
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+
+  // ── 7. Per-missing-user assign loop.
+  for (const m of missing) {
+    const league = leagueById.get(m.league_id);
+    if (!league) continue;
+    const profile = profileById.get(m.user_id);
+
+    const taken = takenHashByLeague.get(m.league_id)!;
+    const lineup = buildAutoLineup({
+      fieldGolfers: fieldRows.map(r => ({
+        id:            r.id,
+        name:          r.name,
+        owgr_rank:     r.owgr_rank,
+        is_dark_horse: r.is_dark_horse,
+      })),
+      takenHashes: taken,
+    });
+
+    if (!lineup.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[missed-deadline-sweep] cannot build lineup for user=${m.user_id} ` +
+        `league=${m.league_id} tournament=${t.id}: ${lineup.reason}`,
+      );
+      continue;
+    }
+
+    // Insert. The DB trigger recomputes golfer_tuple_hash; we pre-compute
+    // the same value (via computeFoursomeHash, kept in lockstep with the
+    // trigger) so we can immediately seed `taken` for any LATER user we
+    // assign in this same sweep.
+    try {
+      await db.insertInto('picks')
+        .values({
+          league_id:        m.league_id,
+          tournament_id:    t.id,
+          user_id:          m.user_id,
+          golfer_1_id:      lineup.golferIds[0],
+          golfer_2_id:      lineup.golferIds[1],
+          golfer_3_id:      lineup.golferIds[2],
+          golfer_4_id:      lineup.golferIds[3],
+          is_locked:        true,
+          submitted_at:     nowIso,
+          penalty_strokes:  MISSED_DEADLINE_PENALTY_STROKES,
+        })
+        // Idempotency belt: if a previous sweep pass already inserted
+        // a row for this user+league+tournament, the (league_id,
+        // tournament_id, user_id) unique constraint catches it and
+        // we skip — DON'T overwrite, because that would re-fire the
+        // email AND possibly invalidate a user-submitted pick if some
+        // sequencing weirdness landed them as missing.
+        .onConflict(oc => oc
+          .columns(['league_id', 'tournament_id', 'user_id'])
+          .doNothing(),
+        )
+        .execute();
+      taken.add(computeFoursomeHash(lineup.golferIds));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[missed-deadline-sweep] insert failed for user=${m.user_id} ` +
+        `league=${m.league_id} tournament=${t.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+
+    // ── Email the user. Best-effort; failure doesn't roll back the
+    // insert (the user has a valid lineup; they'd just not get the
+    // heads-up email).
+    if (profile?.email) {
+      try {
+        // Build slot-labeled golfer list for the email. The pick row
+        // stores ids in slot order, so we can do a direct lookup.
+        const golfersByIdLocal = new Map(fieldRows.map(r => [r.id, r.name]));
+        const lineupNamed = lineup.golferIds.map((id, idx) => ({
+          slot: idx + 1,
+          name: golfersByIdLocal.get(id) ?? '(unknown)',
+        }));
+
+        const { subject, text, html } = missedDeadlineEmail({
+          displayName:    profile.display_name || 'Player',
+          leagueName:     league.name,
+          leagueSlug:     league.slug,
+          tournamentName: t.name,
+          golfers:        lineupNamed,
+          penaltyStrokes: MISSED_DEADLINE_PENALTY_STROKES,
+          siteUrl,
+        });
+        const ok = await sendEmail({ to: profile.email, subject, text, html });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[missed-deadline-sweep] ${t.name} / ${league.name} → ${profile.email} ` +
+          `sent=${ok}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[missed-deadline-sweep] email failed for user=${m.user_id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 }

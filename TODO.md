@@ -127,6 +127,21 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 
 (Newest first.)
 
+### 2026-06-04 — Missed-deadline auto-assign + 2-stroke penalty
+
+Pre-fix: a user who didn't submit a pick by the deadline got nothing —
+no lineup, no score, automatic last place. Post-fix: the sweep generates
+a random valid unique lineup, locks it, applies a 2-stroke penalty,
+and emails the user.
+
+- [x] **Migration 002 — `picks.penalty_strokes`** *(scripts/migrations/002-picks-penalty-strokes.sql)*. New `INT NOT NULL DEFAULT 0` column with `RAISE EXCEPTION` verify block. Applied to .150 prod in a transaction (12 existing picks, all read 0). Canonical schema in `infra/postgres/init/00-schema.sql` updated; Kysely `PicksTable` + the `Pick` type in `src/types/index.ts` extended.
+
+- [x] **`buildAutoLineup` pure helper** *(src/lib/scoring.ts)*. Splits the field into top-tier (`is_dark_horse=false`) and dark-horse (`is_dark_horse=true OR NULL`), sorts each by OWGR (null ranks last), drops the top-4 of each. Random sampling with seedable RNG → exhaustive fallback if every sample collides → discriminated `{ok:false, reason}` failure. Exported `computeFoursomeHash` (mirrors the Postgres trigger `picks_compute_tuple_hash`) so the sweep can seed the taken-hash set in lockstep with the DB constraint. 14 new tests in `tests/auto-lineup.test.ts` pin: pool-too-small graceful failures, no top-4 ever picked, custom `excludeTopN`, uniqueness vs takenHashes, deterministic search exhaustion, slot assignment, distinct IDs, null-OWGR treated as dark-horse-but-last.
+
+- [x] **Scoring integration** *(src/lib/scoring.ts:computeLeagueResults)*. `pick.penalty_strokes` is added to the user's total. Layers ON TOP OF the missed-cut penalty (both stack). Pre-tee-off case (no scores yet): the penalty alone surfaces as a non-null total so auto-assigned users appear on the leaderboard with their handicap visible. 5 new tests in `tests/picks.test.ts` pin the contract.
+
+- [x] **`sweepMissedPicks()` + `missedDeadlineEmail()` template** *(src/lib/sync.ts + src/lib/email.ts)*. Sweep filters tournaments where `effectivePickDeadline < now AND status IN ('upcoming', 'active')`, finds league members without picks (joined via the overlap query), generates a unique lineup per missing user, inserts with `is_locked=true` + `penalty_strokes=2`, sends the email. Idempotent via the existing `(league_id, tournament_id, user_id)` UNIQUE constraint + `ON CONFLICT DO NOTHING` belt. Wired into BOTH `runScoreSync` (Thu-Sun every 10 min) and `runFieldSync` (Mon-Wed hourly) so deadline-pass-to-assignment latency is bounded ≤1 hour across the whole week. Best-effort: per-user failures (lineup-build or email-send) are logged and skipped without aborting the loop.
+
 ### 2026-06-04 — Admin-roster-set email + deploy script + remove manual field-upload
 
 Three changes shipped together.
