@@ -28,7 +28,7 @@ import {
 } from './email';
 import { generateDailyScorecardPdf, type ScorecardGolfer } from './scorecard-pdf';
 import type { Channel, ReminderTask } from './reminders';
-import type { Score, Pick, FantasyResult } from '@/types';
+import type { Score, Pick, FantasyResult, ESPNCompetitor } from '@/types';
 
 export interface SyncResult {
   tournament?:   string;
@@ -441,6 +441,14 @@ async function syncTournament(tournament: {
       .execute();
   }
 
+  // ── Derive course par-by-hole from the field ──
+  // ESPN doesn't expose course par directly; we derive it from any
+  // golfer's per-hole (strokes - relative_to_par) pair. All golfers
+  // who play hole N must agree (it's a course constant) — first one
+  // with a definitive value wins. Persist on `tournaments.par_by_hole`
+  // for the daily-scorecard PDF (migration 006, 2026-06-04).
+  await derivePersistPar(id, competitors);
+
   await recomputeResults(id);
   return {
     tournament:   tournament.name,
@@ -448,6 +456,89 @@ async function syncTournament(tournament: {
     currentRound,
     status:       newStatus,
   };
+}
+
+/**
+ * Walk the field's per-hole strokes + relative-to-par arrays and
+ * compute par[0..17] for every hole at least one golfer has played.
+ * Merges with the existing tournaments.par_by_hole so a sync that
+ * only carries the current round doesn't blank out par values for
+ * holes scored on a prior round.
+ *
+ * Course par is a constant — for any hole, par == strokes - relative
+ * for every golfer who played it. We take the first valid sample
+ * we see per hole. Anomalies (e.g. ESPN tagging a 3 as "-2" by
+ * mistake → par=5 for that golfer, par=4 for everyone else) would
+ * surface only as inconsistencies between samples; we don't
+ * cross-check (yet) — it would mask normal partial-data states.
+ */
+async function derivePersistPar(
+  tournamentId: string,
+  competitors: ESPNCompetitor[],
+): Promise<void> {
+  try {
+    // Find existing par-by-hole so we only update on a real change.
+    const existing = await db.selectFrom('tournaments')
+      .select(['par_by_hole'])
+      .where('id', '=', tournamentId)
+      .executeTakeFirst();
+    const par: Array<number | null> = Array.from(
+      { length: 18 },
+      (_, i) => (existing?.par_by_hole?.[i] ?? null) as number | null,
+    );
+
+    let changed = false;
+    for (const c of competitors) {
+      const hbr = c.holesByRound ?? [];
+      const rbr = c.relByRound   ?? [];
+      for (let r = 0; r < 4; r++) {
+        const strokes = hbr[r];
+        const rels    = rbr[r];
+        if (!Array.isArray(strokes) || !Array.isArray(rels)) continue;
+        const n = Math.min(strokes.length, rels.length, 18);
+        for (let h = 0; h < n; h++) {
+          if (par[h] != null) continue;
+          const s = strokes[h];
+          const rel = rels[h];
+          if (typeof s !== 'number' || typeof rel !== 'number') continue;
+          const p = s - rel;
+          if (!Number.isFinite(p) || p < 3 || p > 6) continue;  // sanity
+          par[h] = p;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) return;
+
+    // Write back. We persist nulls as nulls inside the array — pg
+    // arrays support sparse representation, but for simplicity we
+    // strip trailing nulls and store only the prefix that has data.
+    // Holes scored later will fill in via the same code path.
+    let lastReal = -1;
+    for (let i = 0; i < par.length; i++) if (par[i] != null) lastReal = i;
+    const out = par.slice(0, lastReal + 1).map(v => (v == null ? null : v));
+    // kysely doesn't love mixed-null arrays for INT[]; if there's
+    // any null in the prefix, store only the leading contiguous run.
+    let lastContig = 0;
+    for (let i = 0; i < out.length; i++) {
+      if (out[i] != null) lastContig = i + 1;
+      else break;
+    }
+    const finalPar = out.slice(0, lastContig).filter(v => v != null) as number[];
+    if (finalPar.length === 0) return;
+
+    await db.updateTable('tournaments')
+      .set({ par_by_hole: finalPar })
+      .where('id', '=', tournamentId)
+      .execute();
+  } catch (err) {
+    // Par derivation is non-critical — log and move on.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[par-derive] failed for tournament=${tournamentId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 async function recomputeResults(tournamentId: string) {
@@ -1407,6 +1498,14 @@ async function sendDailyScorecardForLeague(args: {
 }): Promise<void> {
   const { tournament, league, roundNum } = args;
 
+  // Pull par_by_hole once per league iteration. Course par is
+  // tournament-wide so this is constant across all recipients.
+  const tRow = await db.selectFrom('tournaments')
+    .select(['par_by_hole'])
+    .where('id', '=', tournament.id)
+    .executeTakeFirst();
+  const parByHole = (tRow?.par_by_hole as number[] | null) ?? null;
+
   // ── Dedup: reserve the (league, tournament, round) slot. If a
   //    concurrent sweep already inserted, this is a no-op and we
   //    bail before doing any of the expensive work below.
@@ -1560,6 +1659,7 @@ async function sendDailyScorecardForLeague(args: {
         userName:       m.display_name || 'Player',
         dateLabel,
         golfers:        pdfGolfers,
+        parByHole,
       });
     } catch (err) {
       // eslint-disable-next-line no-console

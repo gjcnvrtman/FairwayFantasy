@@ -112,6 +112,11 @@ export interface TournamentsTable {
   // First observation of a non-empty ESPN competitors collection (set
   // by runFieldSync in src/lib/sync.ts). NULL = picks gated.
   field_published_at:      Timestamp | null;
+  // Course par per hole (length 0..18). Derived from ESPN's per-hole
+  // scoreType.displayValue at sync time: par = strokes - relative.
+  // NULL = not yet derived (pre-tee-off). Drives the par row on the
+  // daily-scorecard PDF. Migration 006 (2026-06-04).
+  par_by_hole:             number[] | null;
   created_at:              Generated<Timestamp>;
 }
 

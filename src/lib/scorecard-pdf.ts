@@ -34,6 +34,13 @@ export interface ScorecardInput {
   /** Played-on date (e.g. "Thursday, June 4 2026") for the header. */
   dateLabel?:     string;
   golfers:        ScorecardGolfer[];  // expected length 4; we render whatever's given
+  /**
+   * Course par per hole, length 0..18. When provided, a PAR row
+   * renders above the player rows and each stroke cell is color-
+   * coded vs par (under = green, over = red, par = neutral). Pass
+   * `null` (or omit) to fall back to the v1 layout without par.
+   */
+  parByHole?:     Array<number | null> | null;
 }
 
 /**
@@ -126,7 +133,9 @@ export async function generateDailyScorecardPdf(input: ScorecardInput): Promise<
   const tableX     = MARGIN + Math.floor((drawW - tableW) / 2);  // center
 
   const headRowH   = 22;
+  const parRowH    = 22;
   const bodyRowH   = 26;
+  const hasPar     = Array.isArray(input.parByHole) && input.parByHole.length > 0;
 
   // Vertical line offsets — accumulated x positions of column edges.
   const cols: number[] = [];
@@ -140,7 +149,8 @@ export async function generateDailyScorecardPdf(input: ScorecardInput): Promise<
   const tableRightX = cx;
 
   const numBodyRows = input.golfers.length;
-  const tableBottomY = tableY + headRowH + numBodyRows * bodyRowH;
+  const parBlockH   = hasPar ? parRowH : 0;
+  const tableBottomY = tableY + headRowH + parBlockH + numBodyRows * bodyRowH;
 
   // ── Header row background ──────────────────────────────────
   doc.save();
@@ -160,8 +170,39 @@ export async function generateDailyScorecardPdf(input: ScorecardInput): Promise<
   headerLabel('IN',  cols[20], totalsW);
   headerLabel('TOT', cols[21], grandW);
 
+  // ── PAR row (between header and body) ──────────────────────
+  // Course par per hole + course-total OUT/IN/TOT. Rendered with a
+  // soft tint so it visually anchors as "the reference line."
+  let bodyTop = tableY + headRowH;
+  if (hasPar) {
+    const parArr = (input.parByHole as Array<number | null>).slice(0, 18);
+    doc.save();
+    doc.rect(tableX, bodyTop, tableW, parRowH).fill('#e7f0ea');
+    doc.restore();
+
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#1d3a2a');
+    doc.text('PAR', cols[0] + 6, bodyTop + 6, { width: playerW - 8 });
+
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#1d3a2a');
+    for (let h = 0; h < 18; h++) {
+      const p = parArr[h];
+      const txt = (typeof p === 'number' && Number.isFinite(p)) ? String(p) : '';
+      doc.text(txt, cols[h + 1], bodyTop + 6, { width: holeW, align: 'center' });
+    }
+    const parFront = sumRange(parArr.map(p => p ?? NaN).filter(n => !isNaN(n) as boolean) as number[], 0, 9);
+    const parBack  = sumRange(parArr.map(p => p ?? NaN).filter(n => !isNaN(n) as boolean) as number[], 9, 18);
+    // Tighter: sum only when all 9 of that side have par
+    const parFrontReady = parArr.slice(0, 9).every(p => typeof p === 'number');
+    const parBackReady  = parArr.slice(9, 18).every(p => typeof p === 'number');
+    const parTotalReady = parFrontReady && parBackReady;
+    doc.text(parFrontReady ? String(parFront) : '', cols[19], bodyTop + 6, { width: totalsW, align: 'center' });
+    doc.text(parBackReady  ? String(parBack)  : '', cols[20], bodyTop + 6, { width: totalsW, align: 'center' });
+    doc.text(parTotalReady ? String(parFront + parBack) : '', cols[21], bodyTop + 6, { width: grandW, align: 'center' });
+
+    bodyTop += parRowH;
+  }
+
   // ── Body rows ──────────────────────────────────────────────
-  const bodyTop = tableY + headRowH;
   doc.font('Helvetica').fontSize(11).fillColor('#222');
   for (let r = 0; r < numBodyRows; r++) {
     const rowY = bodyTop + r * bodyRowH;
@@ -182,12 +223,24 @@ export async function generateDailyScorecardPdf(input: ScorecardInput): Promise<
       doc.text(g.slotLabel, cols[0] + 6, rowY + 17, { width: playerW - 8 });
     }
 
-    // Per-hole strokes.
-    doc.font('Helvetica').fontSize(11).fillColor('#222');
+    // Per-hole strokes — color-coded vs par when we have par data:
+    //   < par   → green (birdie / eagle)
+    //   = par   → neutral dark
+    //   > par   → red (bogey or worse)
+    const parArr = hasPar ? (input.parByHole as Array<number | null>) : null;
+    doc.font('Helvetica').fontSize(11);
     for (let h = 0; h < 18; h++) {
       const v = g.strokes[h];
       const txt = (typeof v === 'number' && Number.isFinite(v) && v > 0) ? String(v) : '';
-      doc.text(txt, cols[h + 1], rowY + 7, { width: holeW, align: 'center' });
+      let color = '#222';
+      if (parArr && typeof v === 'number' && typeof parArr[h] === 'number') {
+        const par = parArr[h] as number;
+        if      (v <  par) color = '#2d6a4f';   // under par — green
+        else if (v >  par) color = '#b53e3e';   // over par — red
+        else               color = '#222';      // par      — neutral
+      }
+      doc.fillColor(color)
+         .text(txt, cols[h + 1], rowY + 7, { width: holeW, align: 'center' });
     }
 
     // OUT (1-9), IN (10-18), TOT
@@ -213,6 +266,12 @@ export async function generateDailyScorecardPdf(input: ScorecardInput): Promise<
   // Header row divider (heavier)
   doc.lineWidth(1.0).strokeColor('#1d3a2a');
   doc.moveTo(tableX, tableY + headRowH).lineTo(tableRightX, tableY + headRowH).stroke();
+  // PAR row divider (slightly heavier than body dividers so PAR
+  // visually separates from the player block).
+  if (hasPar) {
+    doc.lineWidth(0.8).strokeColor('#92aa9c');
+    doc.moveTo(tableX, bodyTop).lineTo(tableRightX, bodyTop).stroke();
+  }
   // Body row dividers
   doc.lineWidth(0.4).strokeColor('#d8e2dc');
   for (let r = 1; r < numBodyRows; r++) {

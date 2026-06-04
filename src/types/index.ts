@@ -162,6 +162,12 @@ export interface ESPNCompetitor {
   // c.linescores[r].linescores[h].value (ESPN's nested
   // per-round/per-hole structure).
   holesByRound: Array<number[] | null>;
+  // Per-round per-hole relative-to-par values (e.g. -1, 0, +1).
+  // Same indexing as holesByRound. Combined with that array we can
+  // derive par per hole: par = strokes - relative. Extracted from
+  // c.linescores[r].linescores[h].scoreType.displayValue ("E",
+  // "-1", "+1"). Drives tournaments.par_by_hole at sync time.
+  relByRound: Array<number[] | null>;
 }
 
 export interface ESPNLeaderboard {

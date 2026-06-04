@@ -95,6 +95,7 @@ export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
     : rawCompetitors.map((c: any): ESPNCompetitor => ({
         ...c,
         holesByRound: [null, null, null, null],
+        relByRound:   [null, null, null, null],
       }));
 
   const cutRaw = competition.situation?.cutLine?.value ?? null;
@@ -159,6 +160,10 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   // Daily-scorecard PDF generator reads this verbatim (sync.ts
   // persists into scores.round_N_holes via migration 004).
   const holesByRound: Array<number[] | null> = [null, null, null, null];
+  // Parallel array of relative-to-par values for the same holes.
+  // par per hole = strokes - relative. Drives tournaments.par_by_hole
+  // in sync.ts (migration 006). Same indexing as holesByRound.
+  const relByRound: Array<number[] | null> = [null, null, null, null];
   if (Array.isArray(c.linescores) && c.linescores.length > 0) {
     // The CURRENT round is the highest-period outer entry whose
     // inner linescores array is non-empty. ESPN returns placeholder
@@ -181,23 +186,33 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
       derivedThru = Math.min(current.linescores.length, 18);
     }
     // Hole-by-hole extraction for every round that has data. Reads
-    // c.linescores[r].linescores[h].value as the strokes count per
-    // hole. Rounds may be in any order in the payload — we route
-    // each outer entry to its zero-indexed slot by `period`.
+    // c.linescores[r].linescores[h].value as the strokes count and
+    // c.linescores[r].linescores[h].scoreType.displayValue as the
+    // relative-to-par ("E", "-1", "+1"). Rounds may be in any order
+    // in the payload — we route each outer entry to its zero-indexed
+    // slot by `period`. Strokes and rels are kept index-aligned so
+    // par = strokes[i] - rel[i] downstream.
     for (const round of c.linescores) {
       const period = typeof round?.period === 'number' ? round.period : null;
       if (period == null || period < 1 || period > 4) continue;
       const inner = Array.isArray(round.linescores) ? round.linescores : [];
       if (inner.length === 0) continue;
       const strokes: number[] = [];
+      const rels:    number[] = [];
       for (const hole of inner) {
         const v = typeof hole?.value === 'number'
           ? hole.value
           : (typeof hole?.value === 'string' ? parseInt(hole.value, 10) : null);
-        if (v != null && Number.isFinite(v) && v > 0) strokes.push(v);
+        if (v == null || !Number.isFinite(v) || v <= 0) continue;
+        strokes.push(v);
+        // parseESPNScore is defined later in this file but hoists
+        // since both are function declarations. Returns 0 for "E"
+        // and on parse failure, so blank holes default to par.
+        const dv = hole?.scoreType?.displayValue ?? '';
+        rels.push(parseESPNScore(dv));
       }
-      // Cap at 18 — ESPN errors shouldn't bleed past a legal scorecard.
       holesByRound[period - 1] = strokes.slice(0, 18);
+      relByRound[period - 1]   = rels.slice(0, 18);
     }
   }
   const fallbackStatus = c.status ?? {
@@ -230,6 +245,7 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
       ? c.sortOrder
       : typeof c.order === 'number' ? c.order : 0,
     holesByRound,
+    relByRound,
   };
 }
 

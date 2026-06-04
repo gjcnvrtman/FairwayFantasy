@@ -90,6 +90,24 @@ describe('generateDailyScorecardPdf', () => {
     expect(buf.length).toBeGreaterThan(500);
   });
 
+  it('produces a larger PDF when a par row is included', async () => {
+    // par_by_hole adds drawing primitives — bytes should grow.
+    const without = await generateDailyScorecardPdf(makeInput());
+    const withPar = await generateDailyScorecardPdf(makeInput({
+      parByHole: [4,3,4,3,5,4,4,3,4, 4,4,3,4,4,5,3,4,4],  // par 72
+    }));
+    expect(withPar.length).toBeGreaterThan(without.length);
+    expect(withPar.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+  });
+
+  it('handles a partial par array (course not fully derived yet)', async () => {
+    const partial = await generateDailyScorecardPdf(makeInput({
+      parByHole: [4, 3, 4, 3, 5, 4],  // only 6 holes derived
+    }));
+    expect(partial.length).toBeGreaterThan(500);
+    expect(partial.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+  });
+
   it('only sums OUT/IN/TOT when the corresponding 9 holes are complete', async () => {
     // Mid-round case: 12 holes done. OUT (front 9) should appear,
     // IN/TOT should NOT (back 9 incomplete). We verify by ensuring

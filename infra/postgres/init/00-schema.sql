@@ -127,6 +127,12 @@ CREATE TABLE tournaments (
   -- First observation of a non-empty ESPN competitors collection
   -- (Migration 007). NULL = field not yet published; picks gated.
   field_published_at     TIMESTAMPTZ,
+  -- Course par per hole. Derived from ESPN per-hole scoreType
+  -- (par = strokes - relative). Length 0..18, sparse. Drives the
+  -- par row on the daily-scorecard PDF. Migration 006.
+  par_by_hole            INT[],
+  CONSTRAINT tournaments_par_by_hole_len
+    CHECK (par_by_hole IS NULL OR array_length(par_by_hole, 1) IS NULL OR array_length(par_by_hole, 1) <= 18),
   created_at             TIMESTAMPTZ DEFAULT NOW()
 );
 
