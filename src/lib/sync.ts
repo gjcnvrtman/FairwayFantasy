@@ -664,12 +664,13 @@ async function checkAndPublishField(tournament: {
   // and goes through sendEmail directly (no REMINDERS_LIVE gate — the
   // SMTP-not-configured check inside sendEmail is the dev/test safety
   // net). Same once-per-tournament guarantee as the user notification,
-  // via the same NULL-gated runFieldSync prefilter.
+  // via the same NULL-gated runFieldSync prefilter. The hourly ESPN
+  // sync is now the ONLY path that publishes a field — manual upload
+  // was removed on Greg's call (2026-06-04).
   await notifyAdminsRosterSet({
     tournamentId:   id,
     tournamentName: name,
     golferCount:    competitors.length,
-    source:         'auto',
   });
 
   return {
@@ -816,23 +817,18 @@ async function notifyFieldPublished(args: {
  * leagues; a commissioner who runs 3 leagues that all include this
  * tournament doesn't get 3 emails.
  *
- * Best-effort: any error inside is logged, never thrown. Both the
- * auto-sync path (checkAndPublishField) and the commissioner manual
- * upload route call this, guarded by the same once-per-tournament
- * `field_published_at IS NULL → set` transition. The race window
- * between the two is small (sync runs hourly Mon-Wed) and benign —
- * worst case the operator gets a duplicate email.
- *
- * Exported so the upload-field route can call it after its NULL-gated
- * UPDATE.
+ * Best-effort: any error inside is logged, never thrown. Called from
+ * checkAndPublishField on the once-per-tournament
+ * `field_published_at IS NULL → set` transition. The hourly ESPN sync
+ * is now the sole publish path (manual upload was retired 2026-06-04),
+ * so this fires at most once per tournament with no race-with-self.
  */
 export async function notifyAdminsRosterSet(args: {
   tournamentId:   string;
   tournamentName: string;
   golferCount:    number;
-  source:         'auto' | 'manual';
 }): Promise<void> {
-  const { tournamentId, tournamentName, golferCount, source } = args;
+  const { tournamentId, tournamentName, golferCount } = args;
   try {
     const t = await db.selectFrom('tournaments')
       .select(['id', 'start_date', 'end_date'])
@@ -897,7 +893,6 @@ export async function notifyAdminsRosterSet(args: {
         displayName:    profile.display_name || 'Commissioner',
         tournamentName,
         golferCount,
-        source,
         leagues:        userLeagues,
         siteUrl,
       });
@@ -906,7 +901,7 @@ export async function notifyAdminsRosterSet(args: {
         const ok = await sendEmail({ to: profile.email, subject, text, html });
         // eslint-disable-next-line no-console
         console.log(
-          `[roster-set-admin] ${tournamentName} (${source}) → ${profile.email} ` +
+          `[roster-set-admin] ${tournamentName} → ${profile.email} ` +
             `leagues=${userLeagues.length} sent=${ok}`,
         );
       } catch (err) {

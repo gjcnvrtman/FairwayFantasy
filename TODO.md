@@ -70,7 +70,7 @@ _(`leagues` schema drift closed 2026-05-30 — commit `65c9213`. Migration 008 a
 
 ## P2 — quality / monitoring / future-proofing
 
-_(ESPN-late-publish fallback closed 2026-05-30 — commit `085f319`. New commissioner-driven Manual Field Upload section on `/league/[slug]/admin` (collapsible card, only renders when ≥1 upcoming tournament has `field_published_at = NULL`). Paste names from the tournament site → `POST /api/admin/upload-field` → server normalizes names (lowercase, strip accents, drop punctuation, collapse whitespace), matches against `golfers.name` by canonical key, seeds `scores` rows + stamps `field_published_at`. Unmatched names reported back via a collapsible details block so spellings can be fixed and re-uploaded. Refuses for non-`upcoming` tournaments to protect finalized fantasy_results. 14 new helper tests pin the contract. See Done.)_
+_(Manual field-upload feature was REMOVED 2026-06-04 on operator decision — see Done entry for that date. The ESPN auto-sync is now the only publish path; if ESPN is late, the existing commissioner `pick_deadline_override` is the only mitigation.)_
 
 _(Per-tournament cut rule closed 2026-05-30 — commit `085f319`. New `inferCutRule(name, type)` + `applyCutRule(rule, sortedTotals)` exported from `src/lib/sync.ts`. Masters → top 50 + ties OR within 10 of leader (more-lenient threshold wins). U.S. Open → top 60 + ties. The Open Championship / British Open → top 70 + ties. PGA Championship → top 70 + ties. Regular → top 65 + ties (unchanged default). Defensive fallback for unknown majors = top 65. ESPN's explicit `cutLine` still wins when present; this is purely the post-R2 / pre-publish fallback. 13 new tests pin every Major + edge cases (field smaller than N, empty totals, accent/case variants of names). See Done.)_
 
@@ -127,7 +127,48 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 
 (Newest first.)
 
+### 2026-06-04 — Admin-roster-set email + deploy script + remove manual field-upload
+
+Three changes shipped together.
+
+- [x] **Admin notification when a tournament roster is set.** New
+  `notifyAdminsRosterSet(...)` helper in [src/lib/sync.ts](src/lib/sync.ts)
+  fires on the `tournaments.field_published_at` NULL → timestamp flip
+  inside `checkAndPublishField`. Queries leagues whose date window
+  overlaps the tournament → their commissioners + co-commissioners →
+  one deduped email per unique recipient listing all their affected
+  leagues. New `rosterSetAdminEmail(...)` template in
+  [src/lib/email.ts](src/lib/email.ts). Best-effort send: errors are
+  logged, never thrown.
+
+- [x] **`scripts/deploy.sh` + `npm run deploy` / `npm run deploy:check`.**
+  Mirrors DayTrader's post-drift-incident pattern: commit + push to
+  `origin/main` first, then ssh prod and `git pull --ff-only && npm
+  build && systemctl restart`. Pre-flight enforces clean tree on main,
+  in sync with origin. `--check` mode prints the missing commits + prod
+  state without acting. Detects package-lock changes and runs `npm ci`
+  only when the lockfile actually changed (~30s saved per no-op
+  deploy). All env-overridable: `FF_DEPLOY_HOST`, `FF_DEPLOY_DIR`,
+  `FF_DEPLOY_SERVICE`, `FF_LOCAL_PORT`.
+
+- [x] **Manual field-upload feature REMOVED.** Reverses the 2026-05-30
+  ESPN-late-publish fallback. Operator decision: admins should not be
+  able to overwrite the field by hand. ESPN auto-sync is now the
+  single source of truth for the field; if ESPN is late, commissioner
+  `pick_deadline_override` is the only mitigation. Removed:
+  `src/app/api/admin/upload-field/route.ts`,
+  `src/lib/field-upload.ts`,
+  `tests/field-upload.test.ts` (14 tests),
+  the Manual Field Upload section in
+  [src/app/league/\[slug\]/admin/AdminPanel.tsx](src/app/league/[slug]/admin/AdminPanel.tsx)
+  (state + handler + JSX), and the `source: 'auto' | 'manual'`
+  parameter on `notifyAdminsRosterSet` / `rosterSetAdminEmail` (now
+  only 'auto' exists, so the discriminator was redundant).
+
 ### 2026-05-30 — Per-tournament cut rule + commissioner field-upload fallback
+
+_Note: the field-upload portion of this entry was REMOVED 2026-06-04 (see above)._
+
 
 Both P2 items from the 2026-05-23 follow-up sweep shipped in commit `085f319`. 296/296 tests, build clean, service active on prod, HTTPS 200.
 

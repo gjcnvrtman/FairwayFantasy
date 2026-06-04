@@ -311,9 +311,9 @@ This link expires in 1 hour. If you didn't request a password reset, you can saf
 // Roster-set admin-notification template.
 //
 // Fired once per tournament, on the NULL → field_published_at flip
-// (from either runFieldSync auto-publish or the commissioner manual
-// upload route). Recipients are the commissioners + co-commissioners
-// of every league whose date window includes the tournament.
+// in the hourly ESPN sync (sync.ts:checkAndPublishField). Recipients
+// are the commissioners + co-commissioners of every league whose date
+// window includes the tournament.
 //
 // Each recipient gets ONE email listing all their relevant leagues —
 // not N emails for N leagues. That dedup happens in the caller
@@ -325,16 +325,13 @@ export function rosterSetAdminEmail(params: {
   displayName:     string;
   tournamentName:  string;
   golferCount:     number;
-  source:          'auto' | 'manual';
   leagues:         Array<{ name: string; slug: string }>;
   siteUrl:         string;
 }): { subject: string; text: string; html: string } {
-  const { displayName, tournamentName, golferCount, source, leagues, siteUrl } = params;
+  const { displayName, tournamentName, golferCount, leagues, siteUrl } = params;
 
   const sourceText =
-    source === 'auto'
-      ? 'ESPN published the field and the hourly sync seeded it just now.'
-      : 'A commissioner uploaded the field manually via the admin panel.';
+    'ESPN published the field and the hourly sync seeded it just now.';
 
   // One line per league: "• <name> — <picks link>"
   const leagueListText = leagues
