@@ -239,9 +239,41 @@ CREATE TABLE scores (
   holes_played          INT,
   CONSTRAINT scores_holes_played_range
     CHECK (holes_played IS NULL OR (holes_played >= 0 AND holes_played <= 18)),
+  -- Per-round per-hole stroke arrays (length 0..18). Added by
+  -- migration 004 (2026-06-04). Drives the daily-scorecard PDF
+  -- generator (scorecard-pdf.ts) and the post-round-complete
+  -- email sweep (sync.ts:detectAndSendDailyScorecards).
+  round_1_holes         INT[],
+  round_2_holes         INT[],
+  round_3_holes         INT[],
+  round_4_holes         INT[],
+  CONSTRAINT scores_round_1_holes_len
+    CHECK (round_1_holes IS NULL OR array_length(round_1_holes, 1) IS NULL OR array_length(round_1_holes, 1) <= 18),
+  CONSTRAINT scores_round_2_holes_len
+    CHECK (round_2_holes IS NULL OR array_length(round_2_holes, 1) IS NULL OR array_length(round_2_holes, 1) <= 18),
+  CONSTRAINT scores_round_3_holes_len
+    CHECK (round_3_holes IS NULL OR array_length(round_3_holes, 1) IS NULL OR array_length(round_3_holes, 1) <= 18),
+  CONSTRAINT scores_round_4_holes_len
+    CHECK (round_4_holes IS NULL OR array_length(round_4_holes, 1) IS NULL OR array_length(round_4_holes, 1) <= 18),
   last_synced           TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(tournament_id, golfer_id)
 );
+
+-- ============================================================
+-- DAILY_SCORECARD_LOG (dedup for the post-round-complete email)
+-- ============================================================
+-- One row per (league, tournament, round) sent. Migration 005.
+CREATE TABLE daily_scorecard_log (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  league_id       UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  tournament_id   UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  round_num       INT NOT NULL CHECK (round_num >= 1 AND round_num <= 4),
+  sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  emails_sent     INT NOT NULL DEFAULT 0,
+  UNIQUE(league_id, tournament_id, round_num)
+);
+CREATE INDEX daily_scorecard_log_tournament_idx
+  ON daily_scorecard_log (tournament_id);
 
 -- ============================================================
 -- FANTASY_RESULTS

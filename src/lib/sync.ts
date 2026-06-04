@@ -20,7 +20,13 @@ import {
 } from './scoring';
 import { dispatchReminder, fieldPublishedMessage } from './notifier';
 import { effectivePickDeadline } from './pick-deadline';
-import { sendEmail, rosterSetAdminEmail, missedDeadlineEmail } from './email';
+import {
+  sendEmail, rosterSetAdminEmail, missedDeadlineEmail,
+  dailyScorecardEmail,
+  type DailyScorecardLeaderboardRow,
+  type DailyScorecardMyGolfer,
+} from './email';
+import { generateDailyScorecardPdf, type ScorecardGolfer } from './scorecard-pdf';
 import type { Channel, ReminderTask } from './reminders';
 import type { Score, Pick, FantasyResult } from '@/types';
 
@@ -89,6 +95,11 @@ export async function runScoreSync(): Promise<SyncSummary> {
     // Sweep AFTER syncTournament finishes so any newly-flipped
     // status / cut_score is in place when we check eligibility.
     await sweepMissedPicks();
+    // Daily-scorecard email — once every cut-survivor reports
+    // thru=18 for the current round, fire one email per (user,
+    // league) with the leaderboard + PDF scorecard. Idempotent
+    // via daily_scorecard_log.
+    await detectAndSendDailyScorecards();
     return { ok: true, results, touched: results.length };
   } catch (err) {
     console.error('Sync error:', err);
@@ -1249,5 +1260,384 @@ async function sweepMissedPicksForTournament(
         );
       }
     }
+  }
+}
+
+// ============================================================
+// DAILY-SCORECARD EMAIL SWEEP (post-round-complete)
+// ============================================================
+/**
+ * Greg's 2026-06-04 spec: when every cut-survivor in the field
+ * finishes the current round, send one email per (user, league)
+ * with the league standings + an attached PDF scorecard of the
+ * user's foursome.
+ *
+ * Trigger: for each in-flight tournament (status='active' or
+ * 'cut_made'), iterate rounds 1..4. A round is "complete" when
+ * every golfer with status='active' or 'complete' has a non-NULL
+ * round_N_holes array of length 18. (Missed-cut / withdrawn /
+ * disqualified golfers are excluded — they're not expected to
+ * play the post-cut rounds.) For each complete-but-not-yet-sent
+ * round, fire emails to every league whose window includes the
+ * tournament.
+ *
+ * Idempotency: daily_scorecard_log (league_id, tournament_id,
+ * round_num) UNIQUE row guards against double-send. The sweep
+ * runs from runScoreSync every 10 minutes Thu-Sun, so a round
+ * landing on the trigger boundary still only fires once.
+ *
+ * Best-effort throughout: per-tournament, per-round, and per-user
+ * failures are logged and skipped without aborting the loop.
+ */
+async function detectAndSendDailyScorecards(): Promise<void> {
+  try {
+    const candidateTournaments = await db.selectFrom('tournaments')
+      .select(['id', 'name', 'start_date', 'end_date', 'status'])
+      .where('status', 'in', ['active', 'cut_made', 'complete'])
+      .execute();
+
+    for (const t of candidateTournaments) {
+      try {
+        await sendScorecardsForCompletedRounds(t);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[daily-scorecard] failure on tournament=${t.id} (${t.name}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[daily-scorecard] sweep pass failed:', err);
+  }
+}
+
+/**
+ * Per-tournament arm: check rounds 1..4 for completion, send what's
+ * complete-but-not-yet-sent.
+ */
+async function sendScorecardsForCompletedRounds(t: {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date:   string;
+  status:     string;
+}): Promise<void> {
+  // Find every golfer in the field eligible for the round-complete
+  // check. Cut survivors only — golfers with status missed_cut /
+  // withdrawn / disqualified would never reach 18 on R3+.
+  const fieldRows = await db.selectFrom('scores')
+    .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+    .select([
+      'golfers.id as golfer_id',
+      'golfers.name as golfer_name',
+      'scores.status',
+      'scores.round_1_holes',
+      'scores.round_2_holes',
+      'scores.round_3_holes',
+      'scores.round_4_holes',
+    ])
+    .where('scores.tournament_id', '=', t.id)
+    .execute();
+
+  if (fieldRows.length === 0) return;
+
+  // Pre-fetch leagues whose window overlaps this tournament.
+  const leagues = await db.selectFrom('leagues')
+    .select(['id', 'name', 'slug'])
+    .where(eb => eb.or([
+      eb('start_date', 'is', null),
+      eb('start_date', '<=', t.end_date),
+    ]))
+    .where(eb => eb.or([
+      eb('end_date', 'is', null),
+      eb('end_date', '>=', t.start_date),
+    ]))
+    .execute();
+  if (leagues.length === 0) return;
+
+  for (let roundNum = 1; roundNum <= 4; roundNum++) {
+    const col = `round_${roundNum}_holes` as const;
+    // Filter to golfers expected to play this round: status active
+    // or complete. (Pre-cut: all are active. Post-cut: MC/WD/DQ
+    // are excluded.)
+    const expectedPlayers = fieldRows.filter(
+      r => r.status === 'active' || r.status === 'complete',
+    );
+    if (expectedPlayers.length === 0) continue;
+    const completedCount = expectedPlayers.filter(r => {
+      const arr = (r as Record<string, unknown>)[col] as number[] | null;
+      return Array.isArray(arr) && arr.length === 18;
+    }).length;
+    if (completedCount < expectedPlayers.length) {
+      // Round not complete yet. Stop iterating — later rounds
+      // can't be complete either.
+      break;
+    }
+
+    // Round is complete. For each league, check dedup + send.
+    for (const lg of leagues) {
+      try {
+        await sendDailyScorecardForLeague({
+          tournament: t,
+          league:     lg,
+          roundNum,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[daily-scorecard] send failed for league=${lg.id} ` +
+          `tournament=${t.id} round=${roundNum}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * One-league arm: builds the leaderboard + per-user PDFs and sends
+ * emails. Idempotent via the daily_scorecard_log INSERT-or-skip.
+ */
+async function sendDailyScorecardForLeague(args: {
+  tournament: { id: string; name: string; start_date: string; end_date: string; status: string };
+  league:     { id: string; name: string; slug: string };
+  roundNum:   number;
+}): Promise<void> {
+  const { tournament, league, roundNum } = args;
+
+  // ── Dedup: reserve the (league, tournament, round) slot. If a
+  //    concurrent sweep already inserted, this is a no-op and we
+  //    bail before doing any of the expensive work below.
+  const reserved = await db.insertInto('daily_scorecard_log')
+    .values({
+      league_id:      league.id,
+      tournament_id:  tournament.id,
+      round_num:      roundNum,
+      emails_sent:    0,
+    })
+    .onConflict(oc => oc
+      .columns(['league_id', 'tournament_id', 'round_num'])
+      .doNothing(),
+    )
+    .returning('id')
+    .executeTakeFirst();
+  if (!reserved) {
+    // Another sweep cycle (or a different worker) got here first.
+    return;
+  }
+
+  // ── Hydrate everything we need in one batch ──
+  const [members, picks, fantasyResults, scoreRows] = await Promise.all([
+    db.selectFrom('league_members')
+      .innerJoin('profiles', 'profiles.id', 'league_members.user_id')
+      .select(['league_members.user_id', 'profiles.email', 'profiles.display_name'])
+      .where('league_members.league_id', '=', league.id)
+      .execute(),
+    db.selectFrom('picks')
+      .select([
+        'user_id', 'penalty_strokes',
+        'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
+      ])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', '=', tournament.id)
+      .execute(),
+    db.selectFrom('fantasy_results')
+      .select(['user_id', 'total_score', 'rank',
+               'golfer_1_score', 'golfer_2_score', 'golfer_3_score', 'golfer_4_score',
+               'counting_golfers'])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', '=', tournament.id)
+      .execute(),
+    db.selectFrom('scores')
+      .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+      .select([
+        'golfers.id as golfer_id',
+        'golfers.name as golfer_name',
+        'scores.status',
+        'scores.score_to_par',
+        'scores.round_1_holes', 'scores.round_2_holes',
+        'scores.round_3_holes', 'scores.round_4_holes',
+        'scores.round_1', 'scores.round_2', 'scores.round_3', 'scores.round_4',
+      ])
+      .where('scores.tournament_id', '=', tournament.id)
+      .execute(),
+  ]);
+
+  if (members.length === 0) return;
+
+  // ── Build the leaderboard rows for this league ──
+  const profileByUser = new Map(members.map(m => [m.user_id, m]));
+  const frByUser = new Map(fantasyResults.map(f => [f.user_id, f]));
+  const leaderboard: DailyScorecardLeaderboardRow[] = members
+    .map((m, i) => {
+      const fr = frByUser.get(m.user_id);
+      return {
+        rank:        fr?.rank ?? (members.length + i + 1),
+        displayName: m.display_name || 'Player',
+        totalScore:  fr?.total_score ?? null,
+        isMe:        false,  // filled in per-recipient below
+      };
+    })
+    .sort((a, b) => {
+      // null totals sink to the bottom; otherwise lower = better.
+      if (a.totalScore == null && b.totalScore == null) return 0;
+      if (a.totalScore == null) return  1;
+      if (b.totalScore == null) return -1;
+      return a.totalScore - b.totalScore;
+    });
+
+  // ── Per-recipient render loop ──
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+  const dateLabel = formatTournamentRoundDate(tournament, roundNum);
+  const scoreByGolferId = new Map(scoreRows.map(s => [s.golfer_id, s]));
+  const pickByUser = new Map(picks.map(p => [p.user_id, p]));
+
+  let emailsSent = 0;
+
+  for (const m of members) {
+    if (!m.email) continue;
+    const pick = pickByUser.get(m.user_id);
+    if (!pick) continue;        // skipped: no foursome
+    const fr   = frByUser.get(m.user_id);
+
+    // Build the foursome for this user's email body + PDF.
+    const slotGolferIds: Array<string | null> = [
+      pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id,
+    ];
+    const countingSlots = new Set<number>(
+      (fr?.counting_golfers ?? []) as number[],
+    );
+    const myFoursome: DailyScorecardMyGolfer[] = slotGolferIds.map((gid, idx) => {
+      const slot = idx + 1;
+      const s = gid ? scoreByGolferId.get(gid) : null;
+      const roundScoreRaw = s
+        ? ([s.round_1, s.round_2, s.round_3, s.round_4][roundNum - 1] ?? null)
+        : null;
+      const status = s?.status;
+      const statusBadge =
+        status === 'missed_cut'   ? 'MC'
+      : status === 'withdrawn'    ? 'WD'
+      : status === 'disqualified' ? 'DQ'
+      : null;
+      const cumulative = (fr as Record<string, unknown> | undefined)?.[`golfer_${slot}_score`] as number | null | undefined ?? null;
+      return {
+        slot,
+        name:        s?.golfer_name ?? '(unknown)',
+        roundScore:  roundScoreRaw as number | null,
+        cumulative,
+        countedSlot: countingSlots.has(slot),
+        statusBadge,
+      };
+    });
+
+    // Leaderboard with isMe set for this recipient.
+    const lbForRecipient: DailyScorecardLeaderboardRow[] = leaderboard.map(r => ({
+      ...r,
+      isMe: r.displayName === (m.display_name || 'Player'),
+    }));
+
+    // Build the PDF.
+    const pdfGolfers: ScorecardGolfer[] = slotGolferIds.map((gid, idx) => {
+      const s = gid ? scoreByGolferId.get(gid) : null;
+      const arr = s
+        ? ([s.round_1_holes, s.round_2_holes, s.round_3_holes, s.round_4_holes][roundNum - 1] ?? null)
+        : null;
+      return {
+        name:       s?.golfer_name ?? '(unknown)',
+        slotLabel:  idx < 2 ? `Top ${idx + 1}` : `DH ${idx - 1}`,
+        strokes:    Array.isArray(arr) ? arr : [],
+      };
+    });
+
+    let pdf: Buffer | null = null;
+    try {
+      pdf = await generateDailyScorecardPdf({
+        tournamentName: tournament.name,
+        roundNum,
+        leagueName:     league.name,
+        userName:       m.display_name || 'Player',
+        dateLabel,
+        golfers:        pdfGolfers,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[daily-scorecard] PDF generation failed for user=${m.user_id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      // Send the email without the attachment rather than skipping
+      // entirely — the body still has useful info.
+    }
+
+    const { subject, text, html } = dailyScorecardEmail({
+      displayName:    m.display_name || 'Player',
+      leagueName:     league.name,
+      leagueSlug:     league.slug,
+      tournamentName: tournament.name,
+      roundNum,
+      dateLabel,
+      leaderboard:    lbForRecipient,
+      myFoursome,
+      siteUrl,
+    });
+
+    try {
+      const ok = await sendEmail({
+        to:      m.email,
+        subject,
+        text,
+        html,
+        attachments: pdf ? [{
+          filename:    `scorecard-${tournament.name.replace(/\s+/g, '_')}-R${roundNum}.pdf`,
+          content:     pdf,
+          contentType: 'application/pdf',
+        }] : undefined,
+      });
+      if (ok) emailsSent++;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[daily-scorecard] ${tournament.name} R${roundNum} / ${league.name} ` +
+        `→ ${m.email} sent=${ok}`,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[daily-scorecard] send failed for user=${m.user_id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // ── Update the log row with the actual send count ──
+  try {
+    await db.updateTable('daily_scorecard_log')
+      .set({ emails_sent: emailsSent })
+      .where('league_id',     '=', league.id)
+      .where('tournament_id', '=', tournament.id)
+      .where('round_num',     '=', roundNum)
+      .execute();
+  } catch {
+    // Non-critical telemetry — log update failure shouldn't break the run.
+  }
+}
+
+/**
+ * Pretty date label for the email subject + header. Round N happens
+ * on (start_date + N-1 days); displayed in the league timezone is
+ * a future feature, for now just the tournament's local-ish date.
+ */
+function formatTournamentRoundDate(
+  t: { start_date: string }, roundNum: number,
+): string {
+  try {
+    const d = new Date(t.start_date);
+    d.setUTCDate(d.getUTCDate() + (roundNum - 1));
+    return d.toLocaleDateString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    });
+  } catch {
+    return `Round ${roundNum}`;
   }
 }

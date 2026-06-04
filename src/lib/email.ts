@@ -50,11 +50,20 @@ function getTransporter(): Transporter | null {
   return _transporter;
 }
 
+export interface EmailAttachment {
+  filename:    string;
+  content:     Buffer;
+  contentType?: string;
+}
+
 export interface SendEmailParams {
-  to:        string;
-  subject:   string;
-  text:      string;
-  html?:     string;
+  to:           string;
+  subject:      string;
+  text:         string;
+  html?:        string;
+  /** Binary attachments (e.g. the daily-scorecard PDF). Optional —
+   *  passing nothing leaves the email plain. */
+  attachments?: EmailAttachment[];
 }
 
 export async function sendEmail(params: SendEmailParams): Promise<boolean> {
@@ -77,10 +86,15 @@ export async function sendEmail(params: SendEmailParams): Promise<boolean> {
   try {
     await t.sendMail({
       from,
-      to:      params.to,
-      subject: params.subject,
-      text:    params.text,
-      html:    params.html,
+      to:          params.to,
+      subject:     params.subject,
+      text:        params.text,
+      html:        params.html,
+      attachments: params.attachments?.map(a => ({
+        filename:    a.filename,
+        content:     a.content,
+        contentType: a.contentType ?? 'application/octet-stream',
+      })),
     });
     return true;
   } catch (err) {
@@ -539,6 +553,193 @@ Next week, submit before the deadline to choose your own foursome.
             border-top: 1px solid #e0e0e0; line-height: 1.5;">
     The lineup is locked for this tournament. Next week, submit before
     the deadline to choose your own foursome.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
+// ============================================================
+// Daily-scorecard email template (post-round-complete).
+//
+// Sent by sweep in sync.ts:detectAndSendDailyScorecards once every
+// cut-survivor in the field reports thru=18 for the current round.
+// One email per (user, league). The body lists the league
+// standings + the recipient's own foursome breakdown; the PDF
+// scorecard is attached.
+// ============================================================
+
+export interface DailyScorecardLeaderboardRow {
+  rank:             number;
+  displayName:      string;
+  totalScore:       number | null;  // rounded
+  isMe:             boolean;
+}
+
+export interface DailyScorecardMyGolfer {
+  slot:         number;            // 1..4
+  name:         string;
+  roundScore:   number | null;     // this round's strokes total (or null)
+  cumulative:   number | null;     // fantasy_score (score-to-par)
+  countedSlot:  boolean;           // whether this golfer is in the top-3 this round
+  statusBadge:  string | null;     // 'MC' / 'WD' / 'DQ' or null
+}
+
+export function dailyScorecardEmail(params: {
+  displayName:    string;
+  leagueName:     string;
+  leagueSlug:     string;
+  tournamentName: string;
+  roundNum:       number;
+  dateLabel:      string;
+  /** League standings as of end-of-round, ordered by rank ascending. */
+  leaderboard:    DailyScorecardLeaderboardRow[];
+  /** Recipient's own 4 golfers for the round breakdown table. */
+  myFoursome:     DailyScorecardMyGolfer[];
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const {
+    displayName, leagueName, leagueSlug, tournamentName, roundNum,
+    dateLabel, leaderboard, myFoursome, siteUrl,
+  } = params;
+
+  const leagueUrl = `${siteUrl}/league/${leagueSlug}`;
+
+  // ── plain text ────────────────────────────────────────────
+  const fmtNum = (n: number | null) => (n == null ? '—' : (n > 0 ? `+${n}` : String(n)));
+  const lbText = leaderboard
+    .map(r => `  ${String(r.rank).padStart(2)}.  ${r.displayName.padEnd(20)}  ${fmtNum(r.totalScore)}${r.isMe ? '  ← you' : ''}`)
+    .join('\n');
+  const foursomeText = myFoursome
+    .map(g => {
+      const tier = g.slot <= 2 ? 'Top' : 'DH';
+      const badge = g.statusBadge ? `  [${g.statusBadge}]` : '';
+      const counted = g.countedSlot ? '  ✓ counted' : '';
+      return `  ${g.slot}. ${tier}  ${g.name.padEnd(24)}  ` +
+             `R${roundNum}: ${fmtNum(g.roundScore)}  ` +
+             `Total: ${fmtNum(g.cumulative)}${badge}${counted}`;
+    })
+    .join('\n');
+
+  const subject = `[Fairway Fantasy] ${tournamentName} R${roundNum} — daily scorecard for ${leagueName}`;
+
+  const text = `
+Hi ${displayName},
+
+Round ${roundNum} of the ${tournamentName} is done. Here's where
+${leagueName} stands and how your foursome played.
+
+LEAGUE STANDINGS (after R${roundNum}):
+${lbText}
+
+YOUR FOURSOME (this round):
+${foursomeText}
+
+A full 18-hole scorecard PDF is attached.
+
+See the live leaderboard at:
+${leagueUrl}
+
+— Fairway Fantasy
+`.trim();
+
+  // ── HTML ──────────────────────────────────────────────────
+  const lbHtml = leaderboard
+    .map(r => `<tr style="${r.isMe ? 'background:#fff9e6;' : ''}">
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.rank}</td>
+      <td style="padding:4px 8px;">${escapeHtml(r.displayName)}${r.isMe ? ' <span style="color:#a47148; font-size:11px;">← you</span>' : ''}</td>
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${fmtNum(r.totalScore)}</td>
+    </tr>`)
+    .join('');
+
+  const foursomeHtml = myFoursome
+    .map(g => {
+      const tier = g.slot <= 2 ? 'Top' : 'DH';
+      const tierBg = g.slot <= 2 ? '#2d6a4f' : '#a47148';
+      const badge = g.statusBadge
+        ? `<span style="display:inline-block; margin-left:6px; padding:1px 6px; font-size:10px; color:#92400e; background:#fef3c7; border-radius:3px;">${g.statusBadge}</span>`
+        : '';
+      const checkmark = g.countedSlot
+        ? '<span style="color:#2d6a4f; font-weight:700;">✓</span>'
+        : '<span style="color:#bbb;">·</span>';
+      return `<tr>
+        <td style="padding:6px 8px; width:18px; text-align:center;">${checkmark}</td>
+        <td style="padding:6px 8px; width:36px;">
+          <span style="display:inline-block; padding:1px 6px; font-size:10px; color:#fff; background:${tierBg}; border-radius:3px;">${tier}</span>
+        </td>
+        <td style="padding:6px 8px;">${escapeHtml(g.name)}${badge}</td>
+        <td style="padding:6px 8px; text-align:right; font-family:monospace;">${fmtNum(g.roundScore)}</td>
+        <td style="padding:6px 8px; text-align:right; font-family:monospace; font-weight:600;">${fmtNum(g.cumulative)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">⛳</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">Fairway Fantasy</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">Daily Scorecard</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5;">
+    Hi ${escapeHtml(displayName)},<br>
+    Round ${roundNum} of <strong>${escapeHtml(tournamentName)}</strong> is done.
+    Here's where <strong>${escapeHtml(leagueName)}</strong> stands and how
+    your foursome played on ${escapeHtml(dateLabel)}.
+  </p>
+
+  <h3 style="font-family:Georgia, serif; font-size:15px; margin-top:24px; margin-bottom:8px; color:#1d3a2a;">
+    League standings after R${roundNum}
+  </h3>
+  <table style="width:100%; border-collapse:collapse; border:1px solid #e6e6e6;">
+    <thead>
+      <tr style="background:#2d6a4f; color:#fff;">
+        <th style="padding:6px 8px; text-align:right; font-size:11px;">RANK</th>
+        <th style="padding:6px 8px; text-align:left;  font-size:11px;">PLAYER</th>
+        <th style="padding:6px 8px; text-align:right; font-size:11px;">TOTAL</th>
+      </tr>
+    </thead>
+    <tbody>${lbHtml}</tbody>
+  </table>
+
+  <h3 style="font-family:Georgia, serif; font-size:15px; margin-top:24px; margin-bottom:8px; color:#1d3a2a;">
+    Your foursome this round
+  </h3>
+  <table style="width:100%; border-collapse:collapse; border:1px solid #e6e6e6;">
+    <thead>
+      <tr style="background:#f5f5f5; color:#555;">
+        <th style="padding:6px 8px; text-align:center; font-size:11px;">CT</th>
+        <th style="padding:6px 8px; text-align:left;   font-size:11px;">TIER</th>
+        <th style="padding:6px 8px; text-align:left;   font-size:11px;">GOLFER</th>
+        <th style="padding:6px 8px; text-align:right;  font-size:11px;">R${roundNum}</th>
+        <th style="padding:6px 8px; text-align:right;  font-size:11px;">TOT</th>
+      </tr>
+    </thead>
+    <tbody>${foursomeHtml}</tbody>
+  </table>
+  <p style="font-size:11px; color:#888; margin-top:6px;">
+    <strong>CT</strong> column marks the 3 golfers counting toward your fantasy total.
+    R${roundNum} is each golfer's strokes-to-par this round; TOT is the tournament total.
+  </p>
+
+  <p style="font-size:13px; color:#555; line-height:1.5; margin-top:24px;">
+    📎 A full 18-hole scorecard for your foursome is attached as a PDF.
+  </p>
+
+  <div style="text-align:center; margin:28px 0 8px;">
+    <a href="${escapeHtml(leagueUrl)}" style="display:inline-block; padding:12px 22px; background:#2d6a4f; color:#fff; text-decoration:none; border-radius:6px; font-weight:700; font-size:14px;">
+      View live leaderboard
+    </a>
+  </div>
+
+  <p style="font-size:11px; color:#aaa; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6; text-align:center;">
+    You're getting this because you're a member of ${escapeHtml(leagueName)}.
+    Next round: keep an eye on your foursome at the link above.
   </p>
 </body>
 </html>
