@@ -606,12 +606,45 @@ function LeaderboardRow({
             );
           })}
 
+          {/* Missed-deadline penalty line — visible ANY time the user
+              has a non-zero penalty_strokes value on their pick. This
+              is the +N stroke handicap applied by sweepMissedPicks in
+              sync.ts when the user didn't submit a lineup before the
+              deadline; computeLeagueResults adds it to total_score.
+              Shown independent of postCut because the penalty applies
+              from the moment of assignment, not after the cut. */}
+          {reveal && pick && Number(pick.penalty_strokes ?? 0) > 0 && (
+            <div style={{
+              marginTop: '0.5rem',
+              paddingTop: '0.5rem',
+              borderTop: '1px dashed var(--cream-dark)',
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              fontSize: '0.82rem', color: 'var(--slate)',
+            }}>
+              <span style={{
+                flex: '1 1 auto',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                Missed deadline · auto-assigned lineup
+              </span>
+              <strong className="score-over" style={{
+                fontSize: '0.9rem', flexShrink: 0,
+                width: '3rem', textAlign: 'right',
+              }}>
+                {`+${Number(pick.penalty_strokes)}`}
+              </strong>
+            </div>
+          )}
+
           {/* Missed-cut penalty section — visible once the cut has
               been made. Shows one row per missed-cut golfer in the
               user's foursome (each contributing +1 to the total via
               the penalty bucket in computeLeagueResults), or a single
               "No players missed cut" summary line when nobody missed.
-              Total reconciles: top-3 sum + (rows shown here × +1). */}
+              Total reconciles:
+                top-3 sum
+                + (missed-cut rows × +1)
+                + missed-deadline penalty (shown above when applicable). */}
           {reveal && pick && postCut && (() => {
             const mcPicks = [1, 2, 3, 4]
               .map(slot => ({ slot, g: pick[`golfer_${slot}`] }))
