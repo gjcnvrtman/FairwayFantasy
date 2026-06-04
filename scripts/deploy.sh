@@ -60,11 +60,13 @@ if [[ "$current_branch" != "main" ]]; then
   die "Deploy only from 'main'. Current branch: $current_branch"
 fi
 
-# Working tree must be clean. .claude/ and node_modules/ noise is OK
-# if it's gitignored, but `git status --porcelain` only reports
-# tracked changes, so this check stays tight.
-if [[ -n "$(git status --porcelain)" ]]; then
-  die "Working tree has uncommitted changes. Commit or stash first."
+# Working tree must be clean of TRACKED changes (modified, staged,
+# deleted). Untracked files are ignored on purpose: deploy reads from
+# origin/main, not the local working tree, so untracked harness
+# artifacts (.claude/, scratch files) can't ride along anyway. The
+# `-uno` flag drops untracked entries from the porcelain output.
+if [[ -n "$(git status --porcelain -uno)" ]]; then
+  die "Working tree has uncommitted TRACKED changes. Commit or stash first."
 fi
 
 # Local must be up to date with origin/main (deploy reads from origin)
