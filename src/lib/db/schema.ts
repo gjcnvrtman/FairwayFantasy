@@ -179,7 +179,29 @@ export interface ScoresTable {
   // pre-tee-off, between rounds with no fresh data). Constrained
   // 0..18 at the DB layer. Added by migration 003 (2026-06-04).
   holes_played:          number | null;
+  // Per-hole stroke arrays — one per round, length 0..18.
+  // Added by migration 004 (2026-06-04). NULL when round hasn't
+  // been played / no data. Extracted from ESPN scoreboard's
+  // c.linescores[round-1].linescores[hole-1].value.
+  round_1_holes:         number[] | null;
+  round_2_holes:         number[] | null;
+  round_3_holes:         number[] | null;
+  round_4_holes:         number[] | null;
   last_synced:           Generated<Timestamp>;
+}
+
+// ── daily_scorecard_log ──────────────────────────────────────
+// Dedup marker for the post-round-complete daily scorecard email.
+// One row per (league, tournament, round) — the UNIQUE constraint
+// blocks double-sends if the detection loop runs multiple times
+// after the round-complete condition latches. Migration 005.
+export interface DailyScorecardLogTable {
+  id:             Generated<string>;
+  league_id:      string;
+  tournament_id:  string;
+  round_num:      number;
+  sent_at:        Generated<Timestamp>;
+  emails_sent:    Generated<number>;
 }
 
 // ── fantasy_results ──────────────────────────────────────────
@@ -259,4 +281,5 @@ export interface Database {
   reminder_preferences:  ReminderPreferencesTable;
   reminder_log:          ReminderLogTable;
   rate_limits:           RateLimitsTable;
+  daily_scorecard_log:   DailyScorecardLogTable;
 }

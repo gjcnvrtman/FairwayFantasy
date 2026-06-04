@@ -280,6 +280,10 @@ async function syncTournament(tournament: {
     status:         Score['status'];
     fantasy_score:  number | null;
     holes_played:   number | null;
+    round_1_holes:  number[] | null;
+    round_2_holes:  number[] | null;
+    round_3_holes:  number[] | null;
+    round_4_holes:  number[] | null;
     last_synced:    string;
   }> = [];
 
@@ -346,6 +350,14 @@ async function syncTournament(tournament: {
     const holesPlayedFromEspn =
       typeof c.status?.thru === 'number' ? c.status.thru : null;
 
+    // Per-hole strokes per round. ESPN may give us a partial array
+    // for the in-progress round (e.g. 9 entries when thru=9), and
+    // null for rounds not yet played. We pass exactly what the
+    // normalizer extracted; the ON CONFLICT COALESCE further down
+    // preserves a previously-recorded round when this sync's
+    // payload doesn't include it.
+    const hbr = c.holesByRound ?? [null, null, null, null];
+
     scoreUpdates.push({
       tournament_id:  id,
       golfer_id:      golfer.id,
@@ -357,6 +369,10 @@ async function syncTournament(tournament: {
       status:         mappedStatus,
       fantasy_score:  fantasyScore,
       holes_played:   holesPlayedFromEspn,
+      round_1_holes:  hbr[0] ?? null,
+      round_2_holes:  hbr[1] ?? null,
+      round_3_holes:  hbr[2] ?? null,
+      round_4_holes:  hbr[3] ?? null,
       last_synced:    new Date().toISOString(),
     });
   }
@@ -384,6 +400,29 @@ async function syncTournament(tournament: {
           holes_played:   eb.fn.coalesce(
             eb.ref('excluded.holes_played'),
             eb.ref('scores.holes_played'),
+          ),
+          // Per-hole arrays: preserve the prior round's data if this
+          // payload doesn't include it. ESPN's scoreboard includes
+          // the current round's inner linescores but not necessarily
+          // every prior round once the tournament moves on. The
+          // COALESCE pattern lets each round's data stick once
+          // captured, instead of getting wiped by a sync that only
+          // brings the current round.
+          round_1_holes:  eb.fn.coalesce(
+            eb.ref('excluded.round_1_holes'),
+            eb.ref('scores.round_1_holes'),
+          ),
+          round_2_holes:  eb.fn.coalesce(
+            eb.ref('excluded.round_2_holes'),
+            eb.ref('scores.round_2_holes'),
+          ),
+          round_3_holes:  eb.fn.coalesce(
+            eb.ref('excluded.round_3_holes'),
+            eb.ref('scores.round_3_holes'),
+          ),
+          round_4_holes:  eb.fn.coalesce(
+            eb.ref('excluded.round_4_holes'),
+            eb.ref('scores.round_4_holes'),
           ),
           last_synced:    eb.ref('excluded.last_synced'),
         })),

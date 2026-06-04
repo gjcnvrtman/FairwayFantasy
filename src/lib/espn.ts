@@ -82,7 +82,20 @@ export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
     ? rawCompetitors
         .map(normalizeScoreboardCompetitor)
         .filter((c: ESPNCompetitor | null): c is ESPNCompetitor => c !== null)
-    : rawCompetitors;
+    // Leaderboard endpoint shape carries everything we need EXCEPT
+    // `holesByRound`. ESPN's leaderboard payload doesn't expose
+    // per-hole strokes at all (the inner per-hole array lives only
+    // on the /pga/scoreboard payload). So when this path runs we
+    // simply default to empty per-round slots — the daily scorecard
+    // PDF will show "—" cells for hole strokes when we don't have
+    // them. In practice the leaderboard endpoint has been 404-ing
+    // (saw it on Memorial 2026-06-04) and the scoreboard fallback
+    // does carry the data, so this branch is rarely hit in
+    // production today.
+    : rawCompetitors.map((c: any): ESPNCompetitor => ({
+        ...c,
+        holesByRound: [null, null, null, null],
+      }));
 
   const cutRaw = competition.situation?.cutLine?.value ?? null;
 
@@ -141,6 +154,11 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   // leaderboard never lights up.
   let derivedThru:         number | null = null;
   let derivedCurrentRound: number | null = null;
+  // Per-round per-hole strokes, indexed [round-1][hole-1]. We
+  // populate every round we have any inner data for; gaps stay null.
+  // Daily-scorecard PDF generator reads this verbatim (sync.ts
+  // persists into scores.round_N_holes via migration 004).
+  const holesByRound: Array<number[] | null> = [null, null, null, null];
   if (Array.isArray(c.linescores) && c.linescores.length > 0) {
     // The CURRENT round is the highest-period outer entry whose
     // inner linescores array is non-empty. ESPN returns placeholder
@@ -161,6 +179,25 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
       derivedCurrentRound = typeof current.period === 'number' ? current.period : null;
       // Defensive: cap at 18 in case ESPN ever returns a junk run-on.
       derivedThru = Math.min(current.linescores.length, 18);
+    }
+    // Hole-by-hole extraction for every round that has data. Reads
+    // c.linescores[r].linescores[h].value as the strokes count per
+    // hole. Rounds may be in any order in the payload — we route
+    // each outer entry to its zero-indexed slot by `period`.
+    for (const round of c.linescores) {
+      const period = typeof round?.period === 'number' ? round.period : null;
+      if (period == null || period < 1 || period > 4) continue;
+      const inner = Array.isArray(round.linescores) ? round.linescores : [];
+      if (inner.length === 0) continue;
+      const strokes: number[] = [];
+      for (const hole of inner) {
+        const v = typeof hole?.value === 'number'
+          ? hole.value
+          : (typeof hole?.value === 'string' ? parseInt(hole.value, 10) : null);
+        if (v != null && Number.isFinite(v) && v > 0) strokes.push(v);
+      }
+      // Cap at 18 — ESPN errors shouldn't bleed past a legal scorecard.
+      holesByRound[period - 1] = strokes.slice(0, 18);
     }
   }
   const fallbackStatus = c.status ?? {
@@ -192,6 +229,7 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
     sortOrder:   typeof c.sortOrder === 'number'
       ? c.sortOrder
       : typeof c.order === 'number' ? c.order : 0,
+    holesByRound,
   };
 }
 

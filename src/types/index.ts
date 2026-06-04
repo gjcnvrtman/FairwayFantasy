@@ -96,6 +96,12 @@ export interface Score {
   // Holes completed in the current round (0..18). NULL when ESPN
   // didn't provide it — see scores.holes_played in db/schema.ts.
   holes_played: number | null;
+  // Per-hole stroke arrays. NULL when round hasn't been played.
+  // Drives the daily-scorecard PDF generator (migration 004).
+  round_1_holes: number[] | null;
+  round_2_holes: number[] | null;
+  round_3_holes: number[] | null;
+  round_4_holes: number[] | null;
   last_synced: string;
 }
 
@@ -149,6 +155,13 @@ export interface ESPNCompetitor {
   linescores: Array<{ displayValue: string; value: number }>;
   statistics: Array<{ name: string; displayValue: string }>;
   sortOrder: number;
+  // Per-round per-hole strokes, indexed by [round-1][hole-1]. Sparse:
+  // a round that hasn't been played is `null`; a round that's in
+  // progress is a partial array of length 1..18. Extracted by
+  // normalizeScoreboardCompetitor from the scoreboard payload's
+  // c.linescores[r].linescores[h].value (ESPN's nested
+  // per-round/per-hole structure).
+  holesByRound: Array<number[] | null>;
 }
 
 export interface ESPNLeaderboard {
