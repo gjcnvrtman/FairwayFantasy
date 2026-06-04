@@ -115,26 +115,69 @@ export function normalizeScoreboardCompetitor(c: any): ESPNCompetitor | null {
   // what `sync.ts` writes into the `scores.round_N` INT columns. Drop
   // entries that have neither field (un-played future rounds) so they
   // store as NULL via `rounds[i] ?? null` downstream.
-  const linescores = (c.linescores ?? [])
-    .filter((ls: any) => ls?.value !== undefined || ls?.displayValue !== undefined)
-    .map((ls: any) => {
-      const sp = ls.displayValue !== undefined
-        ? parseESPNScore(ls.displayValue)
-        : (ls.value as number);
-      return { value: sp, displayValue: ls.displayValue ?? String(sp) };
-    });
+  const rawLinescores = (c.linescores ?? [])
+    .filter((ls: any) => ls?.value !== undefined || ls?.displayValue !== undefined);
+
+  const linescores = rawLinescores.map((ls: any) => {
+    const sp = ls.displayValue !== undefined
+      ? parseESPNScore(ls.displayValue)
+      : (ls.value as number);
+    return { value: sp, displayValue: ls.displayValue ?? String(sp) };
+  });
+
+  // ── Derive thru / currentRound from the scoreboard linescores ──
+  // The /pga/leaderboard endpoint returns a top-level status.thru
+  // (holes completed in the current round). The /pga/scoreboard
+  // fallback omits that field — but each per-round entry in
+  // `c.linescores[]` carries an INNER `linescores` array with one
+  // entry per hole played, plus a `period` (1..4) field. Use the
+  // highest-period entry as the current round and read its inner
+  // array length to recover the same number.
+  //
+  // Why bother: ESPN's leaderboard endpoint has been 404-ing for
+  // tournaments served only via scoreboard (saw this on The Memorial,
+  // 2026-06-04). Without this derivation, holes_played stays NULL
+  // forever for those events and the new "Thru N" cell on the
+  // leaderboard never lights up.
+  let derivedThru:         number | null = null;
+  let derivedCurrentRound: number | null = null;
+  if (Array.isArray(c.linescores) && c.linescores.length > 0) {
+    const highest = c.linescores.reduce(
+      (best: any, ls: any) =>
+        (best == null || (ls?.period ?? 0) > (best?.period ?? 0)) ? ls : best,
+      null,
+    );
+    if (highest) {
+      derivedCurrentRound = typeof highest.period === 'number' ? highest.period : null;
+      if (Array.isArray(highest.linescores)) {
+        // Defensive: cap at 18 in case ESPN ever returns a junk run-on.
+        derivedThru = Math.min(highest.linescores.length, 18);
+      }
+    }
+  }
+  const fallbackStatus = c.status ?? {
+    type: { name: 'active' },
+    thru: derivedThru,
+    currentRound: derivedCurrentRound,
+  };
+  // If `c.status` exists but lacks thru/currentRound (rare middle
+  // shape), backfill from the derived values.
+  const normalizedStatus = {
+    type:         fallbackStatus.type ?? { name: 'active' },
+    thru:         typeof fallbackStatus.thru === 'number'
+                    ? fallbackStatus.thru
+                    : derivedThru,
+    currentRound: typeof fallbackStatus.currentRound === 'number'
+                    ? fallbackStatus.currentRound
+                    : derivedCurrentRound,
+  };
 
   return {
     id:          String(c.id),
     displayName: name,
     shortName:   c.athlete?.shortName ?? name,
     headshot:    c.athlete?.headshot ?? c.headshot ?? undefined,
-    // Scoreboard fallback doesn't include status.thru / currentRound —
-    // null them out (was: defaulted to 0, which the scores table
-    // couldn't distinguish from a real "round started, 0 holes done")
-    // so syncTournament can preserve any previously-recorded
-    // holes_played value instead of overwriting with a fake 0.
-    status:      c.status ?? { type: { name: 'active' }, thru: null, currentRound: null },
+    status:      normalizedStatus,
     score:       { displayValue: rawScore, value: parseESPNScore(rawScore) },
     linescores,
     statistics:  [],
