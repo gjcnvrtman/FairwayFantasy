@@ -312,6 +312,23 @@ function isDarkHorseEligible(golfer: { is_dark_horse: boolean | null }): boolean
 }
 
 /**
+ * User-facing message when another player in the same league +
+ * tournament has already submitted the identical 4-golfer set.
+ *
+ * Exported as a constant so the app-layer check (validatePick below)
+ * and the DB-layer race fallback (POST /api/picks catch block on
+ * picks_unique_complete_foursome unique-index violation) return the
+ * SAME wording. Prior to 2026-06-04 the two paths had slightly
+ * different copy ("…exact combination of 4 golfers. Please choose a
+ * different lineup." vs "…exact foursome. Pick a different
+ * combination."), which was cosmetic but could surprise users hitting
+ * the race path. Single source of truth here.
+ */
+export const DUPLICATE_FOURSOME_MESSAGE =
+  'Another player in your league has already picked this exact ' +
+  'combination of 4 golfers. Please choose a different lineup.';
+
+/**
  * Validate a pick submission against all rules.
  * Returns array of error messages (empty = valid).
  *
@@ -382,10 +399,7 @@ export function validatePick(params: {
       newSet.size === existingSet.size &&
       [...newSet].every(id => existingSet.has(id))
     ) {
-      errors.push(
-        'Another player in your league has already picked this exact ' +
-        'combination of 4 golfers. Please choose a different lineup.'
-      );
+      errors.push(DUPLICATE_FOURSOME_MESSAGE);
     }
   }
 

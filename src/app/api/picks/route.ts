@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { validatePick, isReplacementEligible } from '@/lib/scoring';
+import { validatePick, isReplacementEligible, DUPLICATE_FOURSOME_MESSAGE } from '@/lib/scoring';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { isPickDeadlinePassed } from '@/lib/pick-deadline';
@@ -127,8 +127,11 @@ export async function POST(req: NextRequest) {
     // narrow race where both POSTs slip past validation.
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('picks_unique_complete_foursome')) {
+      // Match the app-layer copy exactly (see DUPLICATE_FOURSOME_MESSAGE
+      // in src/lib/scoring.ts) so the user sees the same wording
+      // regardless of which layer caught the duplicate.
       return NextResponse.json(
-        { error: 'Another player in your league already submitted that exact foursome. Pick a different combination.' },
+        { error: DUPLICATE_FOURSOME_MESSAGE },
         { status: 409 },
       );
     }
