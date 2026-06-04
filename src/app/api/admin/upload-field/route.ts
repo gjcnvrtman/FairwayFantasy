@@ -21,6 +21,7 @@ import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { parseUploadedNames, matchNamesToGolfers } from '@/lib/field-upload';
+import { notifyAdminsRosterSet } from '@/lib/sync';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,12 +119,30 @@ export async function POST(req: NextRequest) {
   // timer might race us, but ON CONFLICT semantics + the IS NULL
   // guard make this idempotent either way.
   const now = new Date().toISOString();
+  let didPublishHere = false;
   if (t.field_published_at === null) {
-    await db.updateTable('tournaments')
+    const upd = await db.updateTable('tournaments')
       .set({ field_published_at: now })
       .where('id', '=', tournamentId)
       .where('field_published_at', 'is', null)
-      .execute();
+      .executeTakeFirst();
+    // numUpdatedRows is bigint in kysely; > 0 means WE were the one
+    // who flipped NULL → set (vs lost the race to runFieldSync). Only
+    // notify admins in that case so a hourly-sync win doesn't make us
+    // double-email. Coerce via Number to avoid bigint-literal lib
+    // requirements (tsconfig targets ES2019 today).
+    didPublishHere = Number(upd?.numUpdatedRows ?? 0) > 0;
+  }
+
+  // Admin notification — only fires on the actual NULL → set flip.
+  // Best-effort: never fail the upload response on a notify glitch.
+  if (didPublishHere) {
+    await notifyAdminsRosterSet({
+      tournamentId,
+      tournamentName: t.name,
+      golferCount:    matched.length,
+      source:         'manual',
+    });
   }
 
   return NextResponse.json({

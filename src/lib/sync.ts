@@ -16,6 +16,7 @@ import { fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore } from '.
 import { applyFantasyRules, computeLeagueResults } from './scoring';
 import { dispatchReminder, fieldPublishedMessage } from './notifier';
 import { effectivePickDeadline } from './pick-deadline';
+import { sendEmail, rosterSetAdminEmail } from './email';
 import type { Channel, ReminderTask } from './reminders';
 import type { Score, Pick, FantasyResult } from '@/types';
 
@@ -656,6 +657,21 @@ async function checkAndPublishField(tournament: {
   // commits the unlock regardless so users aren't blocked.
   await notifyFieldPublished({ tournamentId: id, tournamentName: name });
 
+  // Admin notification — fire the operator-facing "roster set" email to
+  // commissioners + co-commissioners of every league that overlaps this
+  // tournament. Separate from notifyFieldPublished above: that one goes
+  // to all league members (player-facing), this one is admin-flavored
+  // and goes through sendEmail directly (no REMINDERS_LIVE gate — the
+  // SMTP-not-configured check inside sendEmail is the dev/test safety
+  // net). Same once-per-tournament guarantee as the user notification,
+  // via the same NULL-gated runFieldSync prefilter.
+  await notifyAdminsRosterSet({
+    tournamentId:   id,
+    tournamentName: name,
+    golferCount:    competitors.length,
+    source:         'auto',
+  });
+
   return {
     tournament:  name,
     espn_event_id,
@@ -787,5 +803,123 @@ async function notifyFieldPublished(args: {
     // Never fail the parent sync run because of a notification glitch.
     // eslint-disable-next-line no-console
     console.error('[field-publish] notify pass failed:', err);
+  }
+}
+
+/**
+ * Admin-facing "roster has been set" email. Recipients are the
+ * commissioners + co-commissioners of every league whose date window
+ * includes the tournament — they're the ones who'd need to know the
+ * field is locked in.
+ *
+ * Each unique recipient gets ONE email listing all their relevant
+ * leagues; a commissioner who runs 3 leagues that all include this
+ * tournament doesn't get 3 emails.
+ *
+ * Best-effort: any error inside is logged, never thrown. Both the
+ * auto-sync path (checkAndPublishField) and the commissioner manual
+ * upload route call this, guarded by the same once-per-tournament
+ * `field_published_at IS NULL → set` transition. The race window
+ * between the two is small (sync runs hourly Mon-Wed) and benign —
+ * worst case the operator gets a duplicate email.
+ *
+ * Exported so the upload-field route can call it after its NULL-gated
+ * UPDATE.
+ */
+export async function notifyAdminsRosterSet(args: {
+  tournamentId:   string;
+  tournamentName: string;
+  golferCount:    number;
+  source:         'auto' | 'manual';
+}): Promise<void> {
+  const { tournamentId, tournamentName, golferCount, source } = args;
+  try {
+    const t = await db.selectFrom('tournaments')
+      .select(['id', 'start_date', 'end_date'])
+      .where('id', '=', tournamentId)
+      .executeTakeFirst();
+    if (!t) return;
+
+    // Same overlap query notifyFieldPublished uses — leagues whose
+    // [start_date, end_date] includes this tournament. Open-ended on
+    // either side means "no constraint on that side".
+    const leagues = await db.selectFrom('leagues')
+      .select(['id', 'name', 'slug'])
+      .where(eb => eb.or([
+        eb('start_date', 'is', null),
+        eb('start_date', '<=', t.end_date),
+      ]))
+      .where(eb => eb.or([
+        eb('end_date', 'is', null),
+        eb('end_date', '>=', t.start_date),
+      ]))
+      .execute();
+    if (leagues.length === 0) return;
+
+    const leagueIds = leagues.map(l => l.id);
+    const leagueById = new Map(leagues.map(l => [l.id, l]));
+
+    // Commissioners + co-commissioners only. Regular members get the
+    // player-facing notifyFieldPublished email; this is the admin-tier.
+    const admins = await db.selectFrom('league_members')
+      .select(['user_id', 'league_id'])
+      .where('league_id', 'in', leagueIds)
+      .where('role', 'in', ['commissioner', 'co_commissioner'])
+      .execute();
+    if (admins.length === 0) return;
+
+    const adminIds = Array.from(new Set(admins.map(a => a.user_id)));
+    const profiles = await db.selectFrom('profiles')
+      .select(['id', 'email', 'display_name'])
+      .where('id', 'in', adminIds)
+      .execute();
+    const profileById = new Map(profiles.map(p => [p.id, p]));
+
+    // Group leagues by admin user so each unique recipient gets one
+    // email listing every relevant league they run. Filter to admins
+    // whose profile actually has an email (defensive — profiles.email
+    // is NOT NULL in schema but covers any future schema relaxation).
+    const leaguesByAdmin = new Map<string, Array<{ name: string; slug: string }>>();
+    for (const a of admins) {
+      const l = leagueById.get(a.league_id);
+      if (!l) continue;
+      if (!leaguesByAdmin.has(a.user_id)) leaguesByAdmin.set(a.user_id, []);
+      leaguesByAdmin.get(a.user_id)!.push({ name: l.name, slug: l.slug });
+    }
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+
+    for (const [userId, userLeagues] of leaguesByAdmin) {
+      const profile = profileById.get(userId);
+      if (!profile?.email) continue;
+
+      const { subject, text, html } = rosterSetAdminEmail({
+        displayName:    profile.display_name || 'Commissioner',
+        tournamentName,
+        golferCount,
+        source,
+        leagues:        userLeagues,
+        siteUrl,
+      });
+
+      try {
+        const ok = await sendEmail({ to: profile.email, subject, text, html });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[roster-set-admin] ${tournamentName} (${source}) → ${profile.email} ` +
+            `leagues=${userLeagues.length} sent=${ok}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[roster-set-admin] send failed for user=${userId} email=${profile.email}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  } catch (err) {
+    // Never fail the caller because of a notification glitch.
+    // eslint-disable-next-line no-console
+    console.error('[roster-set-admin] notify pass failed:', err);
   }
 }

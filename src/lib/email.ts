@@ -307,6 +307,111 @@ This link expires in 1 hour. If you didn't request a password reset, you can saf
   return { subject, text, html };
 }
 
+// ============================================================
+// Roster-set admin-notification template.
+//
+// Fired once per tournament, on the NULL → field_published_at flip
+// (from either runFieldSync auto-publish or the commissioner manual
+// upload route). Recipients are the commissioners + co-commissioners
+// of every league whose date window includes the tournament.
+//
+// Each recipient gets ONE email listing all their relevant leagues —
+// not N emails for N leagues. That dedup happens in the caller
+// (notifyAdminsRosterSet in sync.ts), this template just renders
+// whatever list it's given.
+// ============================================================
+
+export function rosterSetAdminEmail(params: {
+  displayName:     string;
+  tournamentName:  string;
+  golferCount:     number;
+  source:          'auto' | 'manual';
+  leagues:         Array<{ name: string; slug: string }>;
+  siteUrl:         string;
+}): { subject: string; text: string; html: string } {
+  const { displayName, tournamentName, golferCount, source, leagues, siteUrl } = params;
+
+  const sourceText =
+    source === 'auto'
+      ? 'ESPN published the field and the hourly sync seeded it just now.'
+      : 'A commissioner uploaded the field manually via the admin panel.';
+
+  // One line per league: "• <name> — <picks link>"
+  const leagueListText = leagues
+    .map(l => `  • ${l.name} — ${siteUrl}/league/${l.slug}/picks`)
+    .join('\n');
+  const leagueListHtml = leagues
+    .map(l => {
+      const url = `${siteUrl}/league/${l.slug}/picks`;
+      return `<li style="margin-bottom: 6px;">
+        <strong>${escapeHtml(l.name)}</strong> —
+        <a href="${escapeHtml(url)}" style="color: #2d6a4f;">view picks page</a>
+      </li>`;
+    })
+    .join('\n');
+
+  const subject = `[Fairway Fantasy] Roster set: ${tournamentName}`;
+
+  const text = `
+Hi ${displayName},
+
+The roster has been set for ${tournamentName} (${golferCount} golfers).
+
+${sourceText}
+
+You're receiving this because you're a commissioner of:
+${leagueListText}
+
+Picks are now unblocked for these leagues. No action required — this
+is an FYI so you know the field is locked in for the week.
+
+— Fairway Fantasy
+`.trim();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #2c2c2c;">
+  <div style="text-align: center; margin-bottom: 24px;">
+    <div style="font-size: 40px; margin-bottom: 4px;">🏌️</div>
+    <h1 style="font-family: Georgia, serif; font-weight: 700; font-size: 24px; margin: 0;">
+      Fairway Fantasy — Admin Notice
+    </h1>
+  </div>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    Hi ${escapeHtml(displayName)},
+  </p>
+
+  <p style="font-size: 16px; line-height: 1.5;">
+    The roster has been set for
+    <strong>${escapeHtml(tournamentName)}</strong>
+    (${golferCount} golfers).
+  </p>
+
+  <p style="font-size: 14px; color: #555555; line-height: 1.5;">
+    ${escapeHtml(sourceText)}
+  </p>
+
+  <p style="font-size: 16px; line-height: 1.5; margin-top: 24px;">
+    You're receiving this because you're a commissioner of:
+  </p>
+  <ul style="font-size: 15px; line-height: 1.5; padding-left: 20px;">
+    ${leagueListHtml}
+  </ul>
+
+  <p style="font-size: 13px; color: #777777; margin-top: 24px; padding-top: 16px;
+            border-top: 1px solid #e0e0e0; line-height: 1.5;">
+    Picks are now unblocked for these leagues. No action required —
+    this is an FYI so you know the field is locked in for the week.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
