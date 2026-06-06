@@ -15,6 +15,19 @@ const nextConfig = {
       { protocol: 'https', hostname: 'pga-tour-res.cloudinary.com' },
     ],
   },
+  experimental: {
+    // pdfkit ships its built-in Helvetica/Courier/Times fonts as .afm
+    // files under node_modules/pdfkit/js/data/. It reads them with a
+    // path relative to its own bundle at runtime. When webpack inlines
+    // pdfkit into a chunk under .next/server/chunks/, the data/ dir is
+    // NOT copied — every doc.text() then throws ENOENT on
+    // '.next/server/chunks/data/Helvetica.afm' and the daily-scorecard
+    // email goes out with no PDF (see sync.ts:detectAndSendDailyScorecards).
+    // Marking pdfkit as a server external leaves it loadable via a
+    // normal require() from node_modules at runtime, where its data/
+    // directory is intact.
+    serverComponentsExternalPackages: ['pdfkit'],
+  },
 };
 
 module.exports = nextConfig;
