@@ -169,18 +169,6 @@ export default async function DashboardPage() {
                 </Link>
               </div>
 
-              {/* Reminder preferences entry point */}
-              <div className="card">
-                <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem', fontWeight: 700, marginBottom: '0.4rem' }}>
-                  🔔 Pick Reminders
-                </h3>
-                <p style={{ color: 'var(--slate-mid)', fontSize: '0.82rem', marginBottom: '1rem' }}>
-                  Email reminders before picks lock — on by default. Manage in your account to turn off.
-                </p>
-                <Link href="/account" className="btn btn-outline btn-sm btn-full">
-                  Manage preferences →
-                </Link>
-              </div>
             </aside>
           </div>
         </div>
