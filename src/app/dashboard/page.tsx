@@ -175,9 +175,9 @@ export default async function DashboardPage() {
                   🔔 Pick Reminders
                 </h3>
                 <p style={{ color: 'var(--slate-mid)', fontSize: '0.82rem', marginBottom: '1rem' }}>
-                  Email reminders before picks lock — on by default. Manage in settings to turn off.
+                  Email reminders before picks lock — on by default. Manage in your account to turn off.
                 </p>
-                <Link href="/settings" className="btn btn-outline btn-sm btn-full">
+                <Link href="/account" className="btn btn-outline btn-sm btn-full">
                   Manage preferences →
                 </Link>
               </div>

@@ -748,6 +748,188 @@ ${leagueUrl}
   return { subject, text, html };
 }
 
+// ============================================================
+// Tournament-recap email template (post-tournament-complete).
+//
+// Sent by sync.ts:detectAndSendTournamentRecaps once a tournament's
+// status flips to 'complete'. One email per (user, league). The body
+// shows final league standings + the recipient's best round + a
+// season-standings snapshot. Dedup is via tournament_recap_log
+// (migration 009). Per-user opt-out is tournament_recap_enabled on
+// reminder_preferences.
+// ============================================================
+
+export interface TournamentRecapLeaderboardRow {
+  rank:             number;
+  displayName:      string;
+  totalScore:       number | null;  // rounded; lower = better
+  isMe:             boolean;
+}
+
+export interface TournamentRecapBestRound {
+  roundNum:   number;            // 1..4
+  score:      number;            // strokes-to-par for that round
+  golfer:     string;            // golfer name driving the best round
+}
+
+export interface TournamentRecapSeasonRow {
+  rank:               number | null;
+  displayName:        string;
+  totalScore:         number;
+  tournamentsPlayed:  number;
+  isMe:               boolean;
+}
+
+export function tournamentRecapEmail(params: {
+  displayName:     string;
+  leagueName:      string;
+  leagueSlug:      string;
+  tournamentName:  string;
+  /** Final league standings for this tournament. */
+  leaderboard:     TournamentRecapLeaderboardRow[];
+  /** Recipient's best round, if any of their golfers' rounds posted. */
+  bestRound:       TournamentRecapBestRound | null;
+  /** Optional season-standings snapshot. Omit entirely for single-
+   *  tournament leagues; the section just won't render. */
+  seasonStandings: TournamentRecapSeasonRow[] | null;
+  siteUrl:         string;
+}): { subject: string; text: string; html: string } {
+  const {
+    displayName, leagueName, leagueSlug, tournamentName,
+    leaderboard, bestRound, seasonStandings, siteUrl,
+  } = params;
+
+  const leagueUrl = `${siteUrl}/league/${leagueSlug}`;
+
+  const fmtNum = (n: number | null) => (n == null ? '—' : (n > 0 ? `+${n}` : String(n)));
+
+  // ── plain text ────────────────────────────────────────────
+  const lbText = leaderboard
+    .map(r => `  ${String(r.rank).padStart(2)}.  ${r.displayName.padEnd(20)}  ${fmtNum(r.totalScore)}${r.isMe ? '  ← you' : ''}`)
+    .join('\n');
+
+  const bestRoundText = bestRound
+    ? `Your best round: R${bestRound.roundNum} — ${bestRound.golfer} at ${fmtNum(bestRound.score)}.\n\n`
+    : '';
+
+  const seasonText = (seasonStandings && seasonStandings.length > 0)
+    ? `SEASON STANDINGS (${leagueName}):\n` +
+      seasonStandings
+        .map(r => `  ${r.rank == null ? '—' : String(r.rank).padStart(2)}.  ` +
+                  `${r.displayName.padEnd(20)}  ` +
+                  `${String(r.totalScore).padStart(5)}  ` +
+                  `(${r.tournamentsPlayed} played)${r.isMe ? '  ← you' : ''}`)
+        .join('\n') + '\n\n'
+    : '';
+
+  const subject = `[Fairway Fantasy] ${tournamentName} — tournament recap for ${leagueName}`;
+
+  const text = `
+Hi ${displayName},
+
+${tournamentName} is in the books. Here's how ${leagueName} finished.
+
+FINAL STANDINGS:
+${lbText}
+
+${bestRoundText}${seasonText}See the full leaderboard at:
+${leagueUrl}
+
+— Fairway Fantasy
+`.trim();
+
+  // ── HTML ──────────────────────────────────────────────────
+  const lbHtml = leaderboard
+    .map(r => `<tr style="${r.isMe ? 'background:#fff9e6;' : ''}">
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.rank}</td>
+      <td style="padding:4px 8px;">${escapeHtml(r.displayName)}${r.isMe ? ' <span style="color:#a47148; font-size:11px;">← you</span>' : ''}</td>
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${fmtNum(r.totalScore)}</td>
+    </tr>`)
+    .join('');
+
+  const bestRoundHtml = bestRound
+    ? `<p style="font-size:15px; line-height:1.5; margin-top:24px;
+                background:#e7f0ea; padding:10px 14px; border-radius:6px;">
+         <strong>Your best round:</strong>
+         R${bestRound.roundNum} — ${escapeHtml(bestRound.golfer)}
+         at <strong>${fmtNum(bestRound.score)}</strong>.
+       </p>`
+    : '';
+
+  const seasonHtml = (seasonStandings && seasonStandings.length > 0)
+    ? `<h3 style="font-family:Georgia, serif; font-size:15px; margin-top:24px; margin-bottom:8px; color:#1d3a2a;">
+         Season standings — ${escapeHtml(leagueName)}
+       </h3>
+       <table style="width:100%; border-collapse:collapse; border:1px solid #e6e6e6;">
+         <thead>
+           <tr style="background:#2d6a4f; color:#fff;">
+             <th style="padding:6px 8px; text-align:right; font-size:11px;">RANK</th>
+             <th style="padding:6px 8px; text-align:left;  font-size:11px;">PLAYER</th>
+             <th style="padding:6px 8px; text-align:right; font-size:11px;">TOTAL</th>
+             <th style="padding:6px 8px; text-align:right; font-size:11px;">PLAYED</th>
+           </tr>
+         </thead>
+         <tbody>
+           ${seasonStandings.map(r => `<tr style="${r.isMe ? 'background:#fff9e6;' : ''}">
+             <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.rank ?? '—'}</td>
+             <td style="padding:4px 8px;">${escapeHtml(r.displayName)}${r.isMe ? ' <span style="color:#a47148; font-size:11px;">← you</span>' : ''}</td>
+             <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${r.totalScore}</td>
+             <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.tournamentsPlayed}</td>
+           </tr>`).join('')}
+         </tbody>
+       </table>`
+    : '';
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">🏆</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">Fairway Fantasy</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">Tournament Recap</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5;">
+    Hi ${escapeHtml(displayName)},<br>
+    <strong>${escapeHtml(tournamentName)}</strong> is in the books.
+    Here's how <strong>${escapeHtml(leagueName)}</strong> finished.
+  </p>
+
+  <h3 style="font-family:Georgia, serif; font-size:15px; margin-top:24px; margin-bottom:8px; color:#1d3a2a;">
+    Final standings
+  </h3>
+  <table style="width:100%; border-collapse:collapse; border:1px solid #e6e6e6;">
+    <thead>
+      <tr style="background:#2d6a4f; color:#fff;">
+        <th style="padding:6px 8px; text-align:right; font-size:11px;">RANK</th>
+        <th style="padding:6px 8px; text-align:left;  font-size:11px;">PLAYER</th>
+        <th style="padding:6px 8px; text-align:right; font-size:11px;">TOTAL</th>
+      </tr>
+    </thead>
+    <tbody>${lbHtml}</tbody>
+  </table>
+
+  ${bestRoundHtml}
+  ${seasonHtml}
+
+  <div style="text-align:center; margin:28px 0 8px;">
+    <a href="${escapeHtml(leagueUrl)}" style="display:inline-block; padding:12px 22px; background:#2d6a4f; color:#fff; text-decoration:none; border-radius:6px; font-weight:700; font-size:14px;">
+      View full leaderboard
+    </a>
+  </div>
+
+  <p style="font-size:11px; color:#aaa; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6; text-align:center;">
+    You're getting this because you're a member of ${escapeHtml(leagueName)}.
+    Toggle the tournament-recap email off in your account if you'd rather not get it.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

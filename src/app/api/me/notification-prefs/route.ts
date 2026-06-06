@@ -29,18 +29,22 @@ export async function GET() {
   if (data) return NextResponse.json({ preferences: data });
 
   // No row yet — return defaults. Don't insert so we don't fill the
-  // table with no-op rows for every page view.
+  // table with no-op rows for every page view. nightly_recap +
+  // tournament_recap default TRUE here to match the DB defaults
+  // from migration 009; a missing row is treated as "still opted in".
   return NextResponse.json({
     preferences: {
-      user_id:       user.id,
-      email_enabled: false,
-      sms_enabled:   false,
-      push_enabled:  false,
-      hours_before:  DEFAULT_HOURS_BEFORE,
-      email_addr:    null,
-      phone_e164:    null,
-      push_token:    null,
-      updated_at:    null,
+      user_id:                   user.id,
+      email_enabled:             false,
+      sms_enabled:               false,
+      push_enabled:              false,
+      nightly_recap_enabled:     true,
+      tournament_recap_enabled:  true,
+      hours_before:              DEFAULT_HOURS_BEFORE,
+      email_addr:                null,
+      phone_e164:                null,
+      push_token:                null,
+      updated_at:                null,
     },
   });
 }
@@ -60,6 +64,11 @@ export async function PUT(req: NextRequest) {
   const emailEnabled = typeof body.email_enabled === 'boolean' ? body.email_enabled : false;
   const smsEnabled   = typeof body.sms_enabled   === 'boolean' ? body.sms_enabled   : false;
   const pushEnabled  = typeof body.push_enabled  === 'boolean' ? body.push_enabled  : false;
+  // Recap toggles default TRUE when missing from the body so a PUT
+  // that only sends `email_enabled` (e.g. an older client, or the
+  // upcoming partial-update path) doesn't silently opt the user out.
+  const nightlyRecapEnabled    = typeof body.nightly_recap_enabled    === 'boolean' ? body.nightly_recap_enabled    : true;
+  const tournamentRecapEnabled = typeof body.tournament_recap_enabled === 'boolean' ? body.tournament_recap_enabled : true;
 
   let hoursBefore = DEFAULT_HOURS_BEFORE;
   if (typeof body.hours_before === 'number') {
@@ -97,25 +106,29 @@ export async function PUT(req: NextRequest) {
   try {
     const data = await db.insertInto('reminder_preferences')
       .values({
-        user_id:        user.id,
-        email_enabled:  emailEnabled,
-        sms_enabled:    smsEnabled,
-        push_enabled:   pushEnabled,
-        hours_before:   hoursBefore,
-        email_addr:     emailAddr,
-        phone_e164:     phoneE164,
-        push_token:     pushToken,
-        updated_at:     new Date().toISOString(),
+        user_id:                   user.id,
+        email_enabled:             emailEnabled,
+        sms_enabled:               smsEnabled,
+        push_enabled:              pushEnabled,
+        nightly_recap_enabled:     nightlyRecapEnabled,
+        tournament_recap_enabled:  tournamentRecapEnabled,
+        hours_before:              hoursBefore,
+        email_addr:                emailAddr,
+        phone_e164:                phoneE164,
+        push_token:                pushToken,
+        updated_at:                new Date().toISOString(),
       })
       .onConflict(oc => oc.column('user_id').doUpdateSet(eb => ({
-        email_enabled:  eb.ref('excluded.email_enabled'),
-        sms_enabled:    eb.ref('excluded.sms_enabled'),
-        push_enabled:   eb.ref('excluded.push_enabled'),
-        hours_before:   eb.ref('excluded.hours_before'),
-        email_addr:     eb.ref('excluded.email_addr'),
-        phone_e164:     eb.ref('excluded.phone_e164'),
-        push_token:     eb.ref('excluded.push_token'),
-        updated_at:     eb.ref('excluded.updated_at'),
+        email_enabled:             eb.ref('excluded.email_enabled'),
+        sms_enabled:               eb.ref('excluded.sms_enabled'),
+        push_enabled:              eb.ref('excluded.push_enabled'),
+        nightly_recap_enabled:     eb.ref('excluded.nightly_recap_enabled'),
+        tournament_recap_enabled:  eb.ref('excluded.tournament_recap_enabled'),
+        hours_before:              eb.ref('excluded.hours_before'),
+        email_addr:                eb.ref('excluded.email_addr'),
+        phone_e164:                eb.ref('excluded.phone_e164'),
+        push_token:                eb.ref('excluded.push_token'),
+        updated_at:                eb.ref('excluded.updated_at'),
       })))
       .returningAll()
       .executeTakeFirstOrThrow();

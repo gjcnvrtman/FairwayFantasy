@@ -84,6 +84,17 @@ export default function Nav({ leagueSlug, leagueName, userName }: NavProps) {
               My Leagues
             </Link>
           )}
+          {userName && (
+            <Link
+              href="/account"
+              className={
+                'btn btn-ghost btn-sm ' + (pathname === '/account' ? 'active' : '')
+              }
+              style={{ color: 'rgba(255,255,255,0.6)' }}
+            >
+              Account
+            </Link>
+          )}
           <button onClick={signOut} className="btn btn-ghost btn-sm" style={{ color: 'rgba(255,255,255,0.6)' }}>
             Sign Out
           </button>

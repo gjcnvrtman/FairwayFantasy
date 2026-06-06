@@ -23,8 +23,12 @@ import { effectivePickDeadline } from './pick-deadline';
 import {
   sendEmail, rosterSetAdminEmail, missedDeadlineEmail,
   dailyScorecardEmail,
+  tournamentRecapEmail,
   type DailyScorecardLeaderboardRow,
   type DailyScorecardMyGolfer,
+  type TournamentRecapLeaderboardRow,
+  type TournamentRecapBestRound,
+  type TournamentRecapSeasonRow,
 } from './email';
 import { generateDailyScorecardPdf, type ScorecardGolfer } from './scorecard-pdf';
 import type { Channel, ReminderTask } from './reminders';
@@ -100,6 +104,11 @@ export async function runScoreSync(): Promise<SyncSummary> {
     // league) with the leaderboard + PDF scorecard. Idempotent
     // via daily_scorecard_log.
     await detectAndSendDailyScorecards();
+    // Tournament-recap email — fires once per (league, tournament)
+    // when a tournament's status flips to 'complete'. One email per
+    // user with final standings + their best round + a season-
+    // standings snapshot. Idempotent via tournament_recap_log.
+    await detectAndSendTournamentRecaps();
     return { ok: true, results, touched: results.length };
   } catch (err) {
     console.error('Sync error:', err);
@@ -1528,10 +1537,18 @@ async function sendDailyScorecardForLeague(args: {
   }
 
   // ── Hydrate everything we need in one batch ──
+  // LEFT JOIN reminder_preferences so we can filter recipients by
+  // nightly_recap_enabled below. NULL (no prefs row) is treated as
+  // opted-in — consistent with the rest of the codebase's
+  // default-on assumption for users predating migration 004.
   const [members, picks, fantasyResults, scoreRows] = await Promise.all([
     db.selectFrom('league_members')
       .innerJoin('profiles', 'profiles.id', 'league_members.user_id')
-      .select(['league_members.user_id', 'profiles.email', 'profiles.display_name'])
+      .leftJoin('reminder_preferences', 'reminder_preferences.user_id', 'league_members.user_id')
+      .select([
+        'league_members.user_id', 'profiles.email', 'profiles.display_name',
+        'reminder_preferences.nightly_recap_enabled',
+      ])
       .where('league_members.league_id', '=', league.id)
       .execute(),
     db.selectFrom('picks')
@@ -1597,6 +1614,10 @@ async function sendDailyScorecardForLeague(args: {
 
   for (const m of members) {
     if (!m.email) continue;
+    // Per-user opt-out from the daily scorecard. nightly_recap_enabled
+    // defaults TRUE in the schema (migration 009) and is treated as
+    // TRUE here when the LEFT JOIN yields NULL (no prefs row at all).
+    if (m.nightly_recap_enabled === false) continue;
     const pick = pickByUser.get(m.user_id);
     if (!pick) continue;        // skipped: no foursome
     const fr   = frByUser.get(m.user_id);
@@ -1717,6 +1738,257 @@ async function sendDailyScorecardForLeague(args: {
       .where('league_id',     '=', league.id)
       .where('tournament_id', '=', tournament.id)
       .where('round_num',     '=', roundNum)
+      .execute();
+  } catch {
+    // Non-critical telemetry — log update failure shouldn't break the run.
+  }
+}
+
+// ============================================================
+// TOURNAMENT-RECAP EMAIL
+//
+// Once a tournament's status flips to 'complete' we send one email
+// per (user, league) with final standings, the user's best round,
+// and a season-standings snapshot. Idempotency is via
+// tournament_recap_log (migration 009).
+//
+// Per-user opt-out via reminder_preferences.tournament_recap_enabled
+// (default TRUE — opt-out, not opt-in).
+//
+// Mirrors the structure of detectAndSendDailyScorecards (above) so
+// they stay easy to read side-by-side.
+// ============================================================
+
+/**
+ * Sweep entry point. Called from runScoreSync once per sync cycle.
+ */
+async function detectAndSendTournamentRecaps(): Promise<void> {
+  try {
+    const completedTournaments = await db.selectFrom('tournaments')
+      .select(['id', 'name', 'start_date', 'end_date', 'status'])
+      .where('status', '=', 'complete')
+      .execute();
+
+    for (const t of completedTournaments) {
+      // Pre-fetch leagues whose window overlaps this tournament. Same
+      // overlap rule as the daily-scorecard arm.
+      const leagues = await db.selectFrom('leagues')
+        .select(['id', 'name', 'slug'])
+        .where(eb => eb.or([
+          eb('start_date', 'is', null),
+          eb('start_date', '<=', t.end_date),
+        ]))
+        .where(eb => eb.or([
+          eb('end_date', 'is', null),
+          eb('end_date', '>=', t.start_date),
+        ]))
+        .execute();
+
+      for (const lg of leagues) {
+        try {
+          await sendTournamentRecapForLeague({ tournament: t, league: lg });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[tournament-recap] send failed for league=${lg.id} ` +
+            `tournament=${t.id}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[tournament-recap] sweep pass failed:', err);
+  }
+}
+
+/**
+ * One-league arm: builds final standings + per-user best round +
+ * season snapshot, then sends. Idempotent via tournament_recap_log.
+ */
+async function sendTournamentRecapForLeague(args: {
+  tournament: { id: string; name: string; start_date: string; end_date: string; status: string };
+  league:     { id: string; name: string; slug: string };
+}): Promise<void> {
+  const { tournament, league } = args;
+
+  // ── Dedup: reserve the (league, tournament) slot. ──
+  const reserved = await db.insertInto('tournament_recap_log')
+    .values({
+      league_id:      league.id,
+      tournament_id:  tournament.id,
+      emails_sent:    0,
+    })
+    .onConflict(oc => oc
+      .columns(['league_id', 'tournament_id'])
+      .doNothing(),
+    )
+    .returning('id')
+    .executeTakeFirst();
+  if (!reserved) return;
+
+  // ── Hydrate everything we need in one batch. LEFT JOIN on
+  //    reminder_preferences so we can filter by tournament_recap_enabled. ──
+  const [members, picks, fantasyResults, scoreRows, seasonRows] = await Promise.all([
+    db.selectFrom('league_members')
+      .innerJoin('profiles', 'profiles.id', 'league_members.user_id')
+      .leftJoin('reminder_preferences', 'reminder_preferences.user_id', 'league_members.user_id')
+      .select([
+        'league_members.user_id', 'profiles.email', 'profiles.display_name',
+        'reminder_preferences.tournament_recap_enabled',
+      ])
+      .where('league_members.league_id', '=', league.id)
+      .execute(),
+    db.selectFrom('picks')
+      .select(['user_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id'])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', '=', tournament.id)
+      .execute(),
+    db.selectFrom('fantasy_results')
+      .select(['user_id', 'total_score', 'rank'])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', '=', tournament.id)
+      .execute(),
+    db.selectFrom('scores')
+      .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+      .select([
+        'golfers.id as golfer_id',
+        'golfers.name as golfer_name',
+        'scores.round_1', 'scores.round_2', 'scores.round_3', 'scores.round_4',
+      ])
+      .where('scores.tournament_id', '=', tournament.id)
+      .execute(),
+    db.selectFrom('season_standings')
+      .innerJoin('profiles', 'profiles.id', 'season_standings.user_id')
+      .select([
+        'season_standings.user_id', 'profiles.display_name',
+        'season_standings.total_score', 'season_standings.tournaments_played',
+        'season_standings.rank',
+      ])
+      .where('season_standings.league_id', '=', league.id)
+      .execute(),
+  ]);
+
+  if (members.length === 0) return;
+
+  // ── Final-standings rows (sorted; lower total_score = better) ──
+  const frByUser  = new Map(fantasyResults.map(f => [f.user_id, f]));
+  const leaderboard: TournamentRecapLeaderboardRow[] = members
+    .map((m, i) => {
+      const fr = frByUser.get(m.user_id);
+      return {
+        rank:        fr?.rank ?? (members.length + i + 1),
+        displayName: m.display_name || 'Player',
+        totalScore:  fr?.total_score ?? null,
+        isMe:        false,  // filled per-recipient
+      };
+    })
+    .sort((a, b) => {
+      if (a.totalScore == null && b.totalScore == null) return 0;
+      if (a.totalScore == null) return  1;
+      if (b.totalScore == null) return -1;
+      return a.totalScore - b.totalScore;
+    });
+
+  // ── Season snapshot (skip if league has no season rows) ──
+  const seasonStandings: TournamentRecapSeasonRow[] | null = seasonRows.length > 0
+    ? [...seasonRows]
+        .sort((a, b) => {
+          // rank: null sinks; otherwise lower = better
+          if (a.rank == null && b.rank == null) return a.total_score - b.total_score;
+          if (a.rank == null) return  1;
+          if (b.rank == null) return -1;
+          return a.rank - b.rank;
+        })
+        .map(s => ({
+          rank:               s.rank,
+          displayName:        s.display_name || 'Player',
+          totalScore:         s.total_score,
+          tournamentsPlayed:  s.tournaments_played,
+          isMe:               false,
+        }))
+    : null;
+
+  // ── Per-recipient render loop ──
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+  const scoreByGolferId = new Map(scoreRows.map(s => [s.golfer_id, s]));
+  const pickByUser = new Map(picks.map(p => [p.user_id, p]));
+
+  let emailsSent = 0;
+
+  for (const m of members) {
+    if (!m.email) continue;
+    if (m.tournament_recap_enabled === false) continue;     // opt-out
+
+    // Best round across the recipient's four golfers (1..4 round
+    // values). Lowest strokes-to-par wins; ties broken by earlier
+    // round. NULL = round not posted, skipped.
+    let bestRound: TournamentRecapBestRound | null = null;
+    const pick = pickByUser.get(m.user_id);
+    if (pick) {
+      const golferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id];
+      for (const gid of golferIds) {
+        if (!gid) continue;
+        const s = scoreByGolferId.get(gid);
+        if (!s) continue;
+        const rounds: Array<number | null> = [s.round_1, s.round_2, s.round_3, s.round_4];
+        for (let i = 0; i < 4; i++) {
+          const r = rounds[i];
+          if (r == null) continue;
+          if (bestRound == null || r < bestRound.score) {
+            bestRound = { roundNum: i + 1, score: r, golfer: s.golfer_name };
+          }
+        }
+      }
+    }
+
+    // Personalize the leaderboard + season snapshot.
+    const myName = m.display_name || 'Player';
+    const lbForRecipient = leaderboard.map(r => ({ ...r, isMe: r.displayName === myName }));
+    const seasonForRecipient = seasonStandings
+      ? seasonStandings.map(r => ({ ...r, isMe: r.displayName === myName }))
+      : null;
+
+    const { subject, text, html } = tournamentRecapEmail({
+      displayName:     myName,
+      leagueName:      league.name,
+      leagueSlug:      league.slug,
+      tournamentName:  tournament.name,
+      leaderboard:     lbForRecipient,
+      bestRound,
+      seasonStandings: seasonForRecipient,
+      siteUrl,
+    });
+
+    try {
+      const ok = await sendEmail({
+        to:      m.email,
+        subject,
+        text,
+        html,
+      });
+      if (ok) emailsSent++;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[tournament-recap] ${tournament.name} / ${league.name} ` +
+        `→ ${m.email} sent=${ok}`,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[tournament-recap] send failed for user=${m.user_id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // ── Update the log row with the actual send count ──
+  try {
+    await db.updateTable('tournament_recap_log')
+      .set({ emails_sent: emailsSent })
+      .where('league_id',     '=', league.id)
+      .where('tournament_id', '=', tournament.id)
       .execute();
   } catch {
     // Non-critical telemetry — log update failure shouldn't break the run.

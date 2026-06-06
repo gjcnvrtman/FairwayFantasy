@@ -239,16 +239,24 @@ export interface SeasonStandingsTable {
 }
 
 // ── reminder_preferences (P9) ────────────────────────────────
+// `email_enabled` gates pick reminders (the only reminder channel
+// today). `nightly_recap_enabled` + `tournament_recap_enabled` were
+// added in migration 009 (2026-06-06) for the Account page recap
+// opt-outs; both default true so existing users keep receiving the
+// daily-scorecard + tournament-recap emails unless they explicitly
+// toggle off.
 export interface ReminderPreferencesTable {
-  user_id:        string;          // PK + FK
-  email_enabled:  Generated<boolean>;
-  sms_enabled:    Generated<boolean>;
-  push_enabled:   Generated<boolean>;
-  hours_before:   Generated<number>;
-  email_addr:     string | null;
-  phone_e164:     string | null;
-  push_token:     string | null;
-  updated_at:     Generated<Timestamp>;
+  user_id:                   string;          // PK + FK
+  email_enabled:             Generated<boolean>;
+  sms_enabled:               Generated<boolean>;
+  push_enabled:              Generated<boolean>;
+  nightly_recap_enabled:     Generated<boolean>;
+  tournament_recap_enabled:  Generated<boolean>;
+  hours_before:              Generated<number>;
+  email_addr:                string | null;
+  phone_e164:                string | null;
+  push_token:                string | null;
+  updated_at:                Generated<Timestamp>;
 }
 
 // ── reminder_log (P9) ────────────────────────────────────────
@@ -287,4 +295,18 @@ export interface Database {
   reminder_log:          ReminderLogTable;
   rate_limits:           RateLimitsTable;
   daily_scorecard_log:   DailyScorecardLogTable;
+  tournament_recap_log:  TournamentRecapLogTable;
+}
+
+// ── tournament_recap_log (migration 009) ─────────────────────
+// One row per (league, tournament) — the UNIQUE constraint blocks
+// double-sends when the detection loop runs after a tournament's
+// status flips to 'complete'. Mirror of DailyScorecardLogTable
+// without the round_num column.
+export interface TournamentRecapLogTable {
+  id:             Generated<string>;
+  league_id:      string;
+  tournament_id:  string;
+  sent_at:        Generated<Timestamp>;
+  emails_sent:    Generated<number>;
 }

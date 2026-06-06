@@ -6,7 +6,7 @@
 // It uses ONLY `@/auth.config` which is bundler-safe.
 //
 // Behavior:
-//   - Protected paths (/league/, /dashboard, /create, /settings)
+//   - Protected paths (/league/, /dashboard, /create, /account)
 //     redirect unauthenticated visitors to /auth/signin?redirect=…
 //   - Authenticated visitors hitting /auth/signin or /auth/signup
 //     bounce to /dashboard.
@@ -22,7 +22,7 @@ import { NextResponse } from 'next/server';
 // loaded here.
 const { auth } = NextAuth(authConfig);
 
-const PROTECTED_PREFIXES = ['/league/', '/dashboard', '/create', '/settings'];
+const PROTECTED_PREFIXES = ['/league/', '/dashboard', '/create', '/account'];
 const AUTH_PAGES         = ['/auth/signin', '/auth/signup'];
 
 export default auth(req => {

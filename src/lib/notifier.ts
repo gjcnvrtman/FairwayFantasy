@@ -153,7 +153,7 @@ export function fieldPublishedMessage(args: {
       `ESPN just published the player list, so you can now build your foursome.${dlPart}\n\n` +
       `Make your picks:\n${picksUrl}\n\n` +
       `(You're receiving this because you opted into pick reminders. ` +
-      `Manage preferences at /settings.)`,
+      `Manage preferences at /account.)`,
   };
 }
 
@@ -187,6 +187,6 @@ export function defaultReminderMessage(args: {
       `Hey — picks for ${tournamentName} lock at ${human}.\n\n` +
       `Submit your foursome:\n${pickUrl}\n\n` +
       `(You're receiving this because you opted into pick reminders. ` +
-      `Manage preferences at /settings.)`,
+      `Manage preferences at /account.)`,
   };
 }

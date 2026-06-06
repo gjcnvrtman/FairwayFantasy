@@ -162,16 +162,18 @@ export async function POST(req: NextRequest) {
       // implicit opt-out (no row → no reminders) to explicit opt-in
       // at signup: every new user gets email reminders ON by default,
       // 24h before the pick deadline. They can toggle off via
-      // /settings if they don't want them. The reminder engine still
+      // /account if they don't want them. The reminder engine still
       // gates on `email_enabled=true`, so toggling off works the
       // same as it always did.
       await tx.insertInto('reminder_preferences')
         .values({
-          user_id:       profile.id,
-          email_enabled: true,
-          sms_enabled:   false,
-          push_enabled:  false,
-          hours_before:  24,
+          user_id:                   profile.id,
+          email_enabled:             true,
+          sms_enabled:               false,
+          push_enabled:              false,
+          nightly_recap_enabled:     true,
+          tournament_recap_enabled:  true,
+          hours_before:              24,
         })
         .onConflict(oc => oc.column('user_id').doNothing())
         .execute();
