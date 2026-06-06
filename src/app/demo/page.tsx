@@ -54,14 +54,14 @@ const DEMO_LEAGUE = {
 // arrays mark which 3 of the 4 picks contributed to the total.
 const DEMO_USERS: DemoUser[] = [
   {
-    name: 'Tyler M.', rank: 1, total: -14, countingIdx: [0, 1, 2],
-    flavor: 'Three of four under par. Best dark-horse call (+1 cut penalty on Eckroat barely matters when the top three are firing).',
+    name: 'Tyler M.', rank: 1, total: -13, countingIdx: [0, 1, 2],
+    flavor: 'Three of four under par. Eckroat’s missed cut adds a +1 to the team total (Tyler goes from −14 to −13), but the top three are firing hard enough that the penalty barely registers.',
     picks: [
       { name: 'Scottie Scheffler', rank:  1, score:  -7, status: 'active' },
       { name: 'Xander Schauffele', rank:  3, score:  -4, status: 'active' },
       { name: 'J.J. Spaun',        rank: 35, score:  -3, status: 'active' },
-      { name: 'Austin Eckroat',    rank: 58, score:   4, status: 'missed_cut',
-        notes: 'Missed cut → score = cut (+3) + 1 = +4. Locked out for the weekend.' },
+      { name: 'Austin Eckroat',    rank: 58, score:   3, status: 'missed_cut',
+        notes: 'Missed cut → his player score is the cut line (+3). The +1 stroke penalty for the MC goes on Tyler’s TEAM total, not on Eckroat’s player score. Penalty applies even though Eckroat is the dropped (4th-lowest) slot.' },
     ],
   },
   {
@@ -98,24 +98,24 @@ const DEMO_USERS: DemoUser[] = [
     ],
   },
   {
-    name: 'Osm L.', rank: 5, total: -3, countingIdx: [1, 2, 3],
-    flavor: 'Justin Thomas missed cut — his +4 is the dropped score. Other three all in the red.',
+    name: 'Osm L.', rank: 5, total: -2, countingIdx: [1, 2, 3],
+    flavor: 'Justin Thomas missed cut — his slot is dropped, but the +1 team penalty still applies (sum of top 3 = −3, plus 1 for the MC = −2). Other three all in the red.',
     picks: [
-      { name: 'Justin Thomas',  rank: 11, score:  4, status: 'missed_cut',
-        notes: 'Missed cut → cut (+3) + 1 = +4. Dropped from team total.' },
+      { name: 'Justin Thomas',  rank: 11, score:  3, status: 'missed_cut',
+        notes: 'Missed cut → player score is the cut line (+3). Slot is dropped from the top-3 count, but the +1 team penalty still applies — that’s the “MC costs you a stroke even if your MC is your 4th-lowest slot” case.' },
       { name: 'Tommy Fleetwood', rank: 14, score: -2, status: 'active' },
       { name: 'Taylor Pendrith', rank: 26, score: -1, status: 'active' },
       { name: 'Greyson Sigg',    rank: 89, score:  0, status: 'active' },
     ],
   },
   {
-    name: 'MJ T.', rank: 6, total: 2, countingIdx: [0, 1, 3],
-    flavor: 'Both top-tier picks playing okay; missed cut on Conners hurts. Davis finds the team total.',
+    name: 'MJ T.', rank: 6, total: 3, countingIdx: [0, 1, 3],
+    flavor: 'Both top-tier picks playing okay; Harman’s missed cut drops out of the counting trio AND adds +1 to the team total. Davis squeaks in as the third counted score.',
     picks: [
       { name: 'Tony Finau',     rank: 15, score:  0, status: 'active' },
       { name: 'Corey Conners',  rank: 20, score: -1, status: 'active' },
-      { name: 'Brian Harman',   rank: 31, score:  4, status: 'missed_cut',
-        notes: 'Missed cut → cut (+3) + 1 = +4. Dropped.' },
+      { name: 'Brian Harman',   rank: 31, score:  3, status: 'missed_cut',
+        notes: 'Missed cut → player score is the cut line (+3). Slot is dropped from top-3 (Cam Davis bumps in), but the +1 team penalty still applies.' },
       { name: 'Cam Davis',      rank: 60, score:  3, status: 'made_cut' },
     ],
   },
@@ -133,15 +133,15 @@ const DEMO_USERS: DemoUser[] = [
     ],
   },
   {
-    name: 'Hambone L.', rank: 8, total: 5, countingIdx: [0, 1, 3],
-    flavor: 'Bottom of the standings — two missed cuts, but the rules cap his damage at "cut + 1" each instead of letting them spiral into +12 / +15.',
+    name: 'Hambone L.', rank: 8, total: 8, countingIdx: [0, 1, 3],
+    flavor: 'Bottom of the standings — two missed cuts. Each MC golfer’s player score is capped at the cut line (+3), but each one ALSO adds +1 to the team total — so the two MCs stack a +2 team penalty on top of an already thin counting trio.',
     picks: [
       { name: 'Hideki Matsuyama', rank:  4, score:  3, status: 'made_cut' },
       { name: 'Will Zalatoris',   rank: 19, score:  0, status: 'active' },
-      { name: 'Davis Thompson',   rank: 33, score:  4, status: 'missed_cut',
-        notes: 'Missed cut → cut (+3) + 1 = +4.' },
-      { name: 'Eric Cole',        rank: 56, score:  4, status: 'missed_cut',
-        notes: 'Also missed cut → +4. Cap rule is the only thing keeping Hambone in single digits.' },
+      { name: 'Davis Thompson',   rank: 33, score:  3, status: 'missed_cut',
+        notes: 'Missed cut → player score is the cut line (+3). +1 team penalty applies.' },
+      { name: 'Eric Cole',        rank: 56, score:  3, status: 'missed_cut',
+        notes: 'Also missed cut → player score is the cut line (+3). A second MC means another +1 to the team total — Hambone carries a stacked +2 penalty.' },
     ],
   },
 ];
@@ -164,22 +164,62 @@ function statusBadge(s: GolferStatus): { label: string; className: string } {
 }
 
 // ─────────────────────────────────────────────────────────────
-export default function DemoPage() {
+// `/demo` is also used as the in-app rules reference (linked from
+// the league hero's "📖 Rules" button). When a logged-in user lands
+// here from inside a league, we need a way back to their league —
+// the marketing "← Home" link sends them to `/`, which is no help.
+//
+// Pass `?back=/league/<slug>` to get a "← Back to <label>" link in
+// the top nav and a "Back to your league" CTA at the bottom. Only
+// same-origin `/league/...` paths are accepted; anything else is
+// ignored and the page falls back to the marketing chrome. `label`
+// is a display string only — escaped for XSS.
+function safeBack(searchParams: { back?: string; label?: string } | undefined): {
+  href:  string | null;
+  label: string;
+} {
+  const raw   = typeof searchParams?.back  === 'string' ? searchParams.back  : '';
+  const lblIn = typeof searchParams?.label === 'string' ? searchParams.label : '';
+  // Path-only same-origin guard: must start with /league/ and contain
+  // no scheme or //-prefixed protocol-relative form. Defends against
+  // open-redirect via ?back=https://evil.com or ?back=//evil.com.
+  if (!raw.startsWith('/league/') || raw.startsWith('//')) {
+    return { href: null, label: '' };
+  }
+  const label = lblIn.trim().slice(0, 60) || 'your league';
+  return { href: raw, label };
+}
+
+export default function DemoPage({
+  searchParams,
+}: {
+  searchParams?: { back?: string; label?: string };
+}) {
   const totalCounting = DEMO_USERS.filter(u => u.total !== null).length;
+  const back = safeBack(searchParams);
 
   return (
     <div className="page-shell">
-      {/* ── Top bar — minimal, no Nav (no auth) ───────────── */}
+      {/* ── Top bar — contextual back link when coming from inside a
+            league, marketing chrome otherwise. */}
       <nav className="nav">
         <div className="nav-inner">
-          <Link href="/" className="nav-logo">Fairway <span>Fantasy</span></Link>
+          <Link href={back.href ?? '/'} className="nav-logo">Fairway <span>Fantasy</span></Link>
           <div className="nav-actions">
-            <Link href="/" className="btn btn-ghost btn-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>
-              ← Home
-            </Link>
-            <Link href="/auth/signup" className="btn btn-brass btn-sm">
-              Create Your League
-            </Link>
+            {back.href ? (
+              <Link href={back.href} className="btn btn-ghost btn-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                ← Back to {back.label}
+              </Link>
+            ) : (
+              <>
+                <Link href="/" className="btn btn-ghost btn-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                  ← Home
+                </Link>
+                <Link href="/auth/signup" className="btn btn-brass btn-sm">
+                  Create Your League
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -402,8 +442,8 @@ export default function DemoPage() {
               </h3>
               <ul style={{ fontSize: '0.875rem', color: 'var(--slate)',
                            lineHeight: 1.75, paddingLeft: '1.1rem' }}>
-                <li><strong>Missed cut</strong> → score is the cut line + 1 stroke. (Eckroat above: cut +3 → his score +4.)</li>
-                <li><strong>Made cut, played badly</strong> → score is capped at the cut line. (Si Woo Kim above: capped at +3 even if he plays poorly.)</li>
+                <li><strong>Missed cut</strong> → that golfer&rsquo;s player score is the cut line, and <strong>+1 stroke is added to your team total</strong>. The team penalty applies whether the MC golfer is in your counting top-3 or your dropped 4th slot. (Eckroat above: his player score is +3, and Tyler&rsquo;s team total picks up +1 even though Eckroat is the dropped slot.)</li>
+                <li><strong>Made cut, played badly</strong> → score is capped at the cut line. No team penalty. (Si Woo Kim above: capped at +3 even if he plays poorly.)</li>
                 <li><strong>Withdrawal before teeing off</strong> → swap in any golfer who hasn&rsquo;t teed off yet. (Jon P. above swapped Tom Kim for Bhatia.)</li>
                 <li><strong>Withdrawal mid-round</strong> → no replacement, that slot stays at WD with no score.</li>
                 <li><strong>Missed the pick deadline?</strong> We auto-assign a random foursome — excluding the top-4 of each tier so you don&rsquo;t accidentally luck into the optimal lineup — and add a <strong>2-stroke penalty</strong> to your team total. Better than getting zero, much worse than picking on time.</li>
@@ -447,19 +487,29 @@ export default function DemoPage() {
           <div className="card card-green" style={{ textAlign: 'center', padding: '2rem 1.5rem' }}>
             <h3 style={{ fontFamily: "'Playfair Display', serif",
                          fontSize: '1.4rem', marginBottom: '0.5rem' }}>
-              Ready to build yours?
+              {back.href ? 'Back to the action' : 'Ready to build yours?'}
             </h3>
             <p style={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.95rem',
                         marginBottom: '1.5rem', maxWidth: 480, margin: '0 auto 1.5rem' }}>
-              Free, private, no ads. Spin up a league in under 3 minutes and send the invite link to your group.
+              {back.href
+                ? `Rules are just the warm-up. ${back.label} is one click away.`
+                : 'Free, private, no ads. Spin up a league in under 3 minutes and send the invite link to your group.'}
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-              <Link href="/auth/signup" className="btn btn-brass btn-lg">
-                Create a League →
-              </Link>
-              <Link href="/" className="btn btn-outline-white btn-lg">
-                Back to Home
-              </Link>
+              {back.href ? (
+                <Link href={back.href} className="btn btn-brass btn-lg">
+                  ← Back to {back.label}
+                </Link>
+              ) : (
+                <>
+                  <Link href="/auth/signup" className="btn btn-brass btn-lg">
+                    Create a League →
+                  </Link>
+                  <Link href="/" className="btn btn-outline-white btn-lg">
+                    Back to Home
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>

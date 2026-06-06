@@ -194,7 +194,10 @@ export default async function LeaguePage({ params }: Props) {
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <HeroCTAButton cta={heroCTA} slug={params.slug} />
-              <Link href="/demo" className="btn btn-outline-white btn-sm">
+              <Link
+                href={`/demo?back=${encodeURIComponent(`/league/${params.slug}`)}&label=${encodeURIComponent(league.name)}`}
+                className="btn btn-outline-white btn-sm"
+              >
                 📖 Rules
               </Link>
               {canSeeAdmin && (
