@@ -2,8 +2,8 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Demo League — Fairway Fantasy',
-  description: 'See a sample league mid-tournament. No sign-up required. Read-only preview of the full Fairway Fantasy experience.',
+  title: 'How It Works · Demo League — Fairway Fantasy',
+  description: 'Full rules walkthrough with a sample league mid-tournament. Scoring, money, automated emails, and edge-case handling — no sign-up required.',
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -406,7 +406,39 @@ export default function DemoPage() {
                 <li><strong>Made cut, played badly</strong> → score is capped at the cut line. (Si Woo Kim above: capped at +3 even if he plays poorly.)</li>
                 <li><strong>Withdrawal before teeing off</strong> → swap in any golfer who hasn&rsquo;t teed off yet. (Jon P. above swapped Tom Kim for Bhatia.)</li>
                 <li><strong>Withdrawal mid-round</strong> → no replacement, that slot stays at WD with no score.</li>
+                <li><strong>Missed the pick deadline?</strong> We auto-assign a random foursome — excluding the top-4 of each tier so you don&rsquo;t accidentally luck into the optimal lineup — and add a <strong>2-stroke penalty</strong> to your team total. Better than getting zero, much worse than picking on time.</li>
                 <li><strong>No copycats</strong> — no two players in your league can pick the identical 4.</li>
+              </ul>
+            </div>
+
+            <div className="card">
+              <h3 style={{ fontFamily: "'Playfair Display', serif",
+                           fontSize: '1.05rem', fontWeight: 700,
+                           marginBottom: '0.85rem' }}>
+                Money &amp; bets
+              </h3>
+              <ul style={{ fontSize: '0.875rem', color: 'var(--slate)',
+                           lineHeight: 1.75, paddingLeft: '1.1rem' }}>
+                <li><strong>Default bet at league setup.</strong> When you create the league you set a weekly bet amount — that&rsquo;s the per-tournament stake everyone plays for by default.</li>
+                <li><strong>Override per tournament.</strong> Commissioners can change the bet for any upcoming tournament from the admin page&rsquo;s Tournament Status table. Typical use: bump the stake for the four majors.</li>
+                <li><strong>How the pot works.</strong> Pot = bet × number of losers. Rank-1 takes the whole pot (split evenly on ties). Everyone else pays the bet.</li>
+                <li><strong>Late joiners don&rsquo;t owe back-bets.</strong> If you join mid-season, you skip every tournament whose picks already locked before you joined. You owe nothing for those events.</li>
+                <li><strong>Majors play differently.</strong> Cuts vary by event — Masters: top 50 + ties (also: within 10 strokes of the leader); U.S. Open: top 60 + ties; The Open &amp; PGA Championship: top 70 + ties. Regular tour stops: top 65 + ties.</li>
+              </ul>
+            </div>
+
+            <div className="card">
+              <h3 style={{ fontFamily: "'Playfair Display', serif",
+                           fontSize: '1.05rem', fontWeight: 700,
+                           marginBottom: '0.85rem' }}>
+                Emails we send you
+              </h3>
+              <ul style={{ fontSize: '0.875rem', color: 'var(--slate)',
+                           lineHeight: 1.75, paddingLeft: '1.1rem' }}>
+                <li><strong>📋 Pick reminders</strong> before the deadline so you don&rsquo;t miss a tournament. Time-before-lock is your call.</li>
+                <li><strong>⛳ Daily scorecard recap</strong> after every round wraps — league standings, your foursome breakdown, and a <strong>printable PDF scorecard</strong> attached.</li>
+                <li><strong>🏆 Tournament recap</strong> when an event ends — final standings, your best round, and a season-standings snapshot.</li>
+                <li><strong>All on by default, all opt-out</strong> from <em>Account</em> in the top nav. Toggle any of the three independently.</li>
               </ul>
             </div>
           </div>
