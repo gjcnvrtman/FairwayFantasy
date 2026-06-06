@@ -5,6 +5,7 @@ import {
   getLeagueBySlug,
   getLeagueMembers,
   getCompletedTournamentsInRange,
+  getEffectiveBetsForTournaments,
   getPicksForTournament,
   isoOrNull,
 } from '@/lib/db/queries';
@@ -68,11 +69,16 @@ export default async function StatsPage({ params }: Props) {
   const withResults = perTournament.filter(t => t.results.length > 0);
 
   // ── Money totals (reuse the same helper as History) ─────────
+  // Per-tournament bet overrides (migration 010); fall back to the
+  // league default for any tournament without an explicit override.
+  const effectiveBets = await getEffectiveBetsForTournaments(
+    league.id, withResults.map(t => t.tournament.id), betAmount,
+  );
   const moneySummary = computeLeagueMoney({
     members: moneyMembers,
     tournaments: withResults.map(({ tournament: t, results }) => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
-      betAmount,
+      betAmount: effectiveBets.get(t.id) ?? betAmount,
       results:   results.map((r: any) => ({ user_id: r.user_id, rank: r.rank })),
     })),
   });

@@ -300,6 +300,43 @@ describe('computeLeagueMoney', () => {
     expect(r.byTournament).toHaveLength(3);
   });
 
+  it('honors per-tournament betAmount (overrides shipped 2026-06-06)', () => {
+    // T1 keeps the league default $10; T2 has an admin-set override of
+    // $25. computeLeagueMoney should compute pots independently per
+    // tournament, not blend them.
+    const r = computeLeagueMoney({
+      members: mk(['u1', 'u2', 'u3', 'u4']),
+      tournaments: [
+        {
+          lockedAt:  LOCK_TIME, betAmount: 10,            // league default
+          results: [
+            { user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 2 },
+            { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 4 },
+          ],
+        },
+        {
+          lockedAt:  LOCK_TIME, betAmount: 25,            // overridden
+          results: [
+            { user_id: 'u2', rank: 1 }, { user_id: 'u1', rank: 2 },
+            { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 4 },
+          ],
+        },
+      ],
+    });
+    const byId = Object.fromEntries(r.totals.map(d => [d.user_id, d.amount]));
+    // T1: u1 wins pot of 3×$10=$30; losers each pay $10.
+    // T2: u2 wins pot of 3×$25=$75; losers each pay $25.
+    expect(byId.u1).toBe(30 + (-25));   // +5
+    expect(byId.u2).toBe(-10 + 75);     // +65
+    expect(byId.u3).toBe(-10 + -25);    // -35
+    expect(byId.u4).toBe(-10 + -25);    // -35
+    expect(r.totals.reduce((s, d) => s + d.amount, 0)).toBe(0);
+    // Per-tournament breakdown reflects the per-tournament pot, not
+    // a blended one.
+    expect(r.byTournament[0].find(d => d.user_id === 'u1')?.amount).toBe(30);
+    expect(r.byTournament[1].find(d => d.user_id === 'u2')?.amount).toBe(75);
+  });
+
   it('handles a no-pick user across multiple tournaments', () => {
     const r = computeLeagueMoney({
       members: mk(['u1', 'u2', 'u3']),

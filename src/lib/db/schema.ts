@@ -296,6 +296,20 @@ export interface Database {
   rate_limits:           RateLimitsTable;
   daily_scorecard_log:   DailyScorecardLogTable;
   tournament_recap_log:  TournamentRecapLogTable;
+  league_tournament_bets:LeagueTournamentBetsTable;
+}
+
+// ── league_tournament_bets (migration 010) ───────────────────
+// Per-(league, tournament) bet override. The league-wide
+// `leagues.weekly_bet_amount` is the league's default; an entry
+// here overrides it for one tournament inside one league only.
+// Missing row = use the league default at read time.
+// Commissioner-editable on `upcoming` tournaments only.
+export interface LeagueTournamentBetsTable {
+  league_id:      string;        // PK part 1
+  tournament_id:  string;        // PK part 2
+  bet_amount:     string;        // NUMERIC(10,2) — pg returns string for precision
+  updated_at:     Generated<Timestamp>;
 }
 
 // ── tournament_recap_log (migration 009) ─────────────────────

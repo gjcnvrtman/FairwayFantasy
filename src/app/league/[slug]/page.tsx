@@ -13,6 +13,7 @@ import {
   getTournamentLeaderboard,
   getCompletedTournamentsInRange,
   getFantasyResultsForTournaments,
+  getEffectiveBetsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney } from '@/lib/money';
@@ -78,6 +79,11 @@ export default async function LeaguePage({ params }: Props) {
     league.id, completedIds,
   );
   const betAmount      = Number(league.weekly_bet_amount ?? 0);
+  // Per-tournament bet overrides (migration 010). Tournaments without
+  // an override resolve to the league default `betAmount`.
+  const effectiveBets  = await getEffectiveBetsForTournaments(
+    league.id, completedIds, betAmount,
+  );
   // Group the result rows by tournament so we can pass an ordered
   // array into computeLeagueMoney that matches completedTournaments.
   const resultsByTourn = new Map<string, Array<{ user_id: string; rank: number | null }>>();
@@ -97,7 +103,7 @@ export default async function LeaguePage({ params }: Props) {
     members: moneyMembers,
     tournaments: completedTournaments.map(t => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
-      betAmount,
+      betAmount: effectiveBets.get(t.id) ?? betAmount,
       results:   resultsByTourn.get(t.id) ?? [],
     })),
   });

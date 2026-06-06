@@ -73,6 +73,17 @@ export default async function AdminPage({ params }: Props) {
     .execute();
   const tournamentIdsWithPicks = pickedRows.map(r => r.tournament_id);
 
+  // Per-tournament bet overrides for this league (migration 010).
+  // NULL row → AdminPanel resolves to league.weekly_bet_amount.
+  const betRows = await db.selectFrom('league_tournament_bets')
+    .select(['tournament_id', 'bet_amount'])
+    .where('league_id', '=', league.id)
+    .execute();
+  const tournamentBets: Record<string, string> = {};
+  for (const r of betRows) {
+    tournamentBets[r.tournament_id] = r.bet_amount;
+  }
+
   return (
     <div className="page-shell">
       <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
@@ -96,6 +107,7 @@ export default async function AdminPage({ params }: Props) {
             tournaments={tournaments}
             activeTournament={activeTournament}
             tournamentIdsWithPicks={tournamentIdsWithPicks}
+            tournamentBets={tournamentBets}
             viewerRole={viewerRole}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />

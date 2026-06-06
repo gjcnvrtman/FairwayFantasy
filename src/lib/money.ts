@@ -47,7 +47,11 @@ export interface TournamentMoneyInput {
   /** Fantasy result rows for this tournament. May be sparse — only
    *  contains users who submitted a pick. */
   results: Array<{ user_id: string; rank: number | null }>;
-  /** Per-tournament stake in dollars. From `leagues.weekly_bet_amount`. */
+  /** Per-tournament stake in dollars. Resolved by the caller as
+   *  `league_tournament_bets.bet_amount ?? leagues.weekly_bet_amount`
+   *  (migration 010, 2026-06-06). Different tournaments in the same
+   *  league can carry different stakes when a commissioner overrides
+   *  the league default for a specific upcoming tournament. */
   betAmount: number;
 }
 

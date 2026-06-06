@@ -50,6 +50,11 @@ interface Props {
    *  complete pick. Drives the "Tournament Status" filter — show
    *  only past events the league actually participated in. */
   tournamentIdsWithPicks: string[];
+  /** Per-tournament bet overrides for THIS league (migration 010).
+   *  Map of tournament_id → NUMERIC bet_amount (pg returns string).
+   *  Missing key = no override; renderers fall back to
+   *  `league.weekly_bet_amount` as the effective bet. */
+  tournamentBets:   Record<string, string>;
   /** The current viewer's role in this league. The admin page only
    *  renders this component for commissioners + co_commissioners.
    *  Used here to hide structural sections (Danger Zone, role
@@ -60,7 +65,7 @@ interface Props {
 
 export default function AdminPanel({
   league, members, tournaments, activeTournament,
-  tournamentIdsWithPicks, viewerRole, inviteUrl,
+  tournamentIdsWithPicks, tournamentBets, viewerRole, inviteUrl,
 }: Props) {
   const isCommissioner = viewerRole === 'commissioner';
   const router = useRouter();
@@ -116,6 +121,73 @@ export default function AdminPanel({
   const [betBusy,   setBetBusy]   = useState(false);
   const [betMsg,    setBetMsg]    = useState('');
   const [betErr,    setBetErr]    = useState('');
+
+  // ── Per-tournament bet overrides (migration 010) ─────────────
+  // Initialize from the SSR-supplied map; key by tournament_id.
+  // Empty string = no override yet (renderer shows the league default
+  // as the placeholder so the input looks pre-filled but the override
+  // is only created on edit-and-save).
+  const leagueDefaultBet = Number(league.weekly_bet_amount);
+  const initialTournBets: Record<string, string> = {};
+  for (const [tid, amt] of Object.entries(tournamentBets)) {
+    initialTournBets[tid] = Number(amt).toFixed(2);
+  }
+  const [tournBetInputs,  setTournBetInputs]  = useState<Record<string, string>>(initialTournBets);
+  const [tournBetSaved,   setTournBetSaved]   = useState<Record<string, number | null>>(() => {
+    const out: Record<string, number | null> = {};
+    for (const [tid, amt] of Object.entries(tournamentBets)) out[tid] = Number(amt);
+    return out;
+  });
+  const [tournBetBusy,    setTournBetBusy]    = useState<Record<string, boolean>>({});
+  const [tournBetMsg,     setTournBetMsg]     = useState<Record<string, string>>({});
+  const [tournBetErr,     setTournBetErr]     = useState<Record<string, string>>({});
+
+  // Save handler — extracted so the per-row input can call it without
+  // a giant inline arrow.
+  async function saveTournamentBet(tournamentId: string) {
+    const raw = (tournBetInputs[tournamentId] ?? '').trim();
+    const num = Number(raw);
+    if (!raw || !Number.isFinite(num)) {
+      setTournBetErr(e => ({ ...e, [tournamentId]: 'Enter a number ≥ 0.' }));
+      return;
+    }
+    if (Math.round(num * 100) !== num * 100) {
+      setTournBetErr(e => ({ ...e, [tournamentId]: 'Use at most 2 decimal places.' }));
+      return;
+    }
+    setTournBetBusy(b => ({ ...b, [tournamentId]: true }));
+    setTournBetMsg(m => ({ ...m, [tournamentId]: '' }));
+    setTournBetErr(e => ({ ...e, [tournamentId]: '' }));
+    try {
+      const res = await fetch('/api/admin/tournament-bet', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          slug:         league.slug,
+          tournamentId,
+          betAmount:    num,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTournBetErr(e => ({ ...e, [tournamentId]: data.error ?? `Failed (HTTP ${res.status})` }));
+        return;
+      }
+      // Reflect the saved value back so the input shows what the server
+      // accepted (e.g. server rounded or coerced).
+      const savedNum = typeof data.bet_amount === 'number' ? data.bet_amount : num;
+      setTournBetSaved(s => ({ ...s, [tournamentId]: savedNum }));
+      setTournBetInputs(i => ({ ...i, [tournamentId]: savedNum.toFixed(2) }));
+      setTournBetMsg(m => ({ ...m, [tournamentId]: `Saved $${savedNum.toFixed(2)}` }));
+    } catch (err) {
+      setTournBetErr(e => ({
+        ...e,
+        [tournamentId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setTournBetBusy(b => ({ ...b, [tournamentId]: false }));
+    }
+  }
 
   // ── Pick Deadlines section ───────────────────────────────────
   // Collapsible header — defaults to COLLAPSED. Pick-deadline
@@ -1035,37 +1107,96 @@ export default function AdminPanel({
                 <th>Starts</th>
                 <th>Status</th>
                 <th className="hide-mobile">Cut</th>
+                <th>Bet</th>
               </tr>
             </thead>
             <tbody>
-              {visibleTourns.map(t => (
-                <tr key={t.id}>
-                  <td><strong style={{ fontSize: '0.875rem' }}>{t.name}</strong></td>
-                  <td className="hide-mobile">
-                    <span className={`badge ${t.type === 'major' ? 'badge-brass' : 'badge-gray'}`}>
-                      {t.type === 'major' ? '🏆 Major' : 'Regular'}
-                    </span>
-                  </td>
-                  <td style={{ fontSize: '0.82rem', color: 'var(--slate-mid)' }}>
-                    {new Date(t.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </td>
-                  <td>
-                    <span className={`badge ${
-                      t.status === 'active'   ? 'badge-live'
-                      : t.status === 'complete' ? 'badge-green'
-                      : t.status === 'cut_made' ? 'badge-blue'
-                      : 'badge-gray'
-                    }`}>
-                      {t.status}
-                    </span>
-                  </td>
-                  <td className="hide-mobile" style={{ fontSize: '0.85rem' }}>
-                    {t.cut_score !== null
-                      ? `${t.cut_score > 0 ? '+' : ''}${t.cut_score}`
-                      : '—'}
-                  </td>
-                </tr>
-              ))}
+              {visibleTourns.map(t => {
+                const savedOverride = tournBetSaved[t.id];
+                const effective     = savedOverride ?? leagueDefaultBet;
+                const inputVal      = tournBetInputs[t.id] ?? effective.toFixed(2);
+                const busy          = !!tournBetBusy[t.id];
+                const msg           = tournBetMsg[t.id] ?? '';
+                const err           = tournBetErr[t.id] ?? '';
+                const editable      = t.status === 'upcoming';
+                return (
+                  <tr key={t.id}>
+                    <td><strong style={{ fontSize: '0.875rem' }}>{t.name}</strong></td>
+                    <td className="hide-mobile">
+                      <span className={`badge ${t.type === 'major' ? 'badge-brass' : 'badge-gray'}`}>
+                        {t.type === 'major' ? '🏆 Major' : 'Regular'}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '0.82rem', color: 'var(--slate-mid)' }}>
+                      {new Date(t.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </td>
+                    <td>
+                      <span className={`badge ${
+                        t.status === 'active'   ? 'badge-live'
+                        : t.status === 'complete' ? 'badge-green'
+                        : t.status === 'cut_made' ? 'badge-blue'
+                        : 'badge-gray'
+                      }`}>
+                        {t.status}
+                      </span>
+                    </td>
+                    <td className="hide-mobile" style={{ fontSize: '0.85rem' }}>
+                      {t.cut_score !== null
+                        ? `${t.cut_score > 0 ? '+' : ''}${t.cut_score}`
+                        : '—'}
+                    </td>
+                    <td>
+                      {editable ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--slate-mid)' }}>$</span>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              min={0}
+                              step="0.01"
+                              value={inputVal}
+                              disabled={busy}
+                              onChange={e => setTournBetInputs(i => ({ ...i, [t.id]: e.target.value }))}
+                              aria-label={`Bet for ${t.name}`}
+                              style={{
+                                width: 90,
+                                padding: '4px 6px',
+                                fontSize: '0.85rem',
+                                border: '1px solid var(--cream-dark)',
+                                borderRadius: 4,
+                                background: 'var(--cream)',
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={() => saveTournamentBet(t.id)}
+                              disabled={busy || Number(inputVal) === effective}
+                              aria-busy={busy}
+                              style={{ padding: '4px 10px', fontSize: '0.78rem' }}
+                            >
+                              {busy ? '…' : 'Save'}
+                            </button>
+                          </div>
+                          {err && (
+                            <span style={{ color: 'var(--red)', fontSize: '0.72rem' }}>{err}</span>
+                          )}
+                          {msg && !err && (
+                            <span style={{ color: 'var(--green-mid)', fontSize: '0.72rem' }}>
+                              ✓ {msg}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '0.85rem', color: 'var(--slate-mid)' }}>
+                          ${effective.toFixed(2)}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           );

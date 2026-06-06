@@ -26,6 +26,7 @@ import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
 import {
   getCompletedTournamentsInRange,
+  getEffectiveBetsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney } from '@/lib/money';
@@ -121,11 +122,16 @@ export async function POST(req: NextRequest) {
       user_id:   m.user_id,
       joined_at: m.joined_at,
     }));
+    // Per-tournament bet overrides (migration 010); fall back to the
+    // league default for any tournament without an explicit override.
+    const effectiveBets = await getEffectiveBetsForTournaments(
+      auth.league.id, withResults.map(t => t.tournament.id), betAmount,
+    );
     const moneySummary = computeLeagueMoney({
       members: moneyMembers,
       tournaments: withResults.map(({ tournament: t, results }) => ({
         lockedAt:  effectivePickDeadline(t) ?? t.start_date,
-        betAmount,
+        betAmount: effectiveBets.get(t.id) ?? betAmount,
         results:   results.map(r => ({ user_id: r.user_id, rank: r.rank })),
       })),
     });

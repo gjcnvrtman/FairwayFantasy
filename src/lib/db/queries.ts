@@ -168,6 +168,35 @@ export async function getFantasyResultsForTournaments(
     .execute();
 }
 
+// ── per-tournament bet overrides (migration 010) ─────────────
+
+/**
+ * Return a `Map<tournament_id, effective_bet_amount>` for every
+ * tournament in `tournamentIds`. Tournaments without an explicit
+ * override resolve to the league's `weekly_bet_amount`. Returns an
+ * empty map when `tournamentIds` is empty so the caller doesn't
+ * have to gate. Money-math callers should consult this map to fill
+ * the per-tournament `betAmount` field on `computeLeagueMoney`'s
+ * tournaments input.
+ */
+export async function getEffectiveBetsForTournaments(
+  leagueId: string,
+  tournamentIds: string[],
+  leagueDefaultBet: number,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  // Seed with the league default so the caller can read freely.
+  for (const tid of tournamentIds) out.set(tid, leagueDefaultBet);
+  if (tournamentIds.length === 0) return out;
+  const rows = await db.selectFrom('league_tournament_bets')
+    .select(['tournament_id', 'bet_amount'])
+    .where('league_id', '=', leagueId)
+    .where('tournament_id', 'in', tournamentIds)
+    .execute();
+  for (const r of rows) out.set(r.tournament_id, Number(r.bet_amount));
+  return out;
+}
+
 // ── picks (with embedded golfer rows for all 4 slots) ────────
 
 export async function getPicksForTournament(leagueId: string, tournamentId: string) {
