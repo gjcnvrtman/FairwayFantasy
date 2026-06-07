@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { Metadata } from 'next';
+import { formatScore } from '@/lib/scoring';
 
 export const metadata: Metadata = {
   title: 'How It Works · Demo League — Fairway Fantasy',
@@ -8,13 +9,18 @@ export const metadata: Metadata = {
 
 // ─────────────────────────────────────────────────────────────
 // DEMO DATA — completely static. No DB calls. No writes possible.
-// Designed to demonstrate ALL 5 rules in one view:
+// Designed to demonstrate ALL rules in one view:
 //   1. Pick 4 golfers (2 top tier, 2 dark horse)
 //   2. Top 3 of 4 count toward total
-//   3. Missed cut → cut score + 1 stroke penalty
+//   3. Missed cut → score capped at cut line + 1 stroke team penalty
 //   4. Made cut → score capped at cut score
-//   5. Withdrawal → replacement allowed (not teed off)
+//   5. Withdrawal → replacement allowed if untaken AND not teed off
 //   6. No copycats: no two players in a league have the identical 4
+//
+// Visual layout below mirrors the REAL leaderboard component used on
+// /league/[slug] — same row structure, sort order, and post-cut
+// summary — so the rules page reads like the thing visitors will
+// actually use, not a separate explainer.
 // ─────────────────────────────────────────────────────────────
 
 type GolferStatus = 'active' | 'made_cut' | 'missed_cut' | 'withdrawn';
@@ -24,16 +30,14 @@ interface DemoGolfer {
   rank: number | null;        // OWGR rank
   score: number | null;       // strokes to par; null = no score yet
   status: GolferStatus;
-  replacedBy?: string;        // golfer name if WD + replaced
-  replacementScore?: number;
-  notes?: string;             // explainer text shown in the card
+  notes?: string;             // optional rule-explainer caption shown under the row
 }
 
 interface DemoUser {
   name: string;
   rank: number;
   picks: DemoGolfer[];        // exactly 4: [top, top, dark, dark]
-  countingIdx: number[];      // 0-indexed slots that contributed to total
+  countingIdx: number[];      // 0-indexed slots that contribute to the total
   total: number | null;
   flavor?: string;            // optional caption explaining what this row demonstrates
 }
@@ -49,9 +53,11 @@ const DEMO_LEAGUE = {
 };
 
 // ── User-by-user lineups ──
-// Built so each illustrates a different rule case. All scores are
-// strokes-to-par (negative = under par, positive = over). "Counting"
-// arrays mark which 3 of the 4 picks contributed to the total.
+// Each user illustrates a different rule case. Scores are
+// strokes-to-par (negative = under par). `countingIdx` lists which
+// 3 of the 4 picks contributed to the total under the top-3-of-4
+// rule (golfers with status='missed_cut' are excluded from counting
+// regardless of their numeric score).
 const DEMO_USERS: DemoUser[] = [
   {
     name: 'Tyler M.', rank: 1, total: -13, countingIdx: [0, 1, 2],
@@ -61,12 +67,12 @@ const DEMO_USERS: DemoUser[] = [
       { name: 'Xander Schauffele', rank:  3, score:  -4, status: 'active' },
       { name: 'J.J. Spaun',        rank: 35, score:  -3, status: 'active' },
       { name: 'Austin Eckroat',    rank: 58, score:   3, status: 'missed_cut',
-        notes: 'Missed cut → his player score is the cut line (+3). The +1 stroke penalty for the MC goes on Tyler’s TEAM total, not on Eckroat’s player score. Penalty applies even though Eckroat is the dropped (4th-lowest) slot.' },
+        notes: 'Missed cut → player score capped at the cut line (+3). The +1 stroke team penalty applies even though Eckroat is Tyler’s dropped 4th slot.' },
     ],
   },
   {
     name: 'Greg C.', rank: 2, total: -11, countingIdx: [0, 1, 2],
-    flavor: 'Solid lineup, no penalties. McCarthy chipped in the 4th-counting slot but Henley\'s round 3 was the difference.',
+    flavor: 'Solid lineup, no penalties. McCarthy chipped in the 4th-counting slot but Henley’s round 3 was the difference.',
     picks: [
       { name: 'Rory McIlroy',  rank:  2, score: -5, status: 'active' },
       { name: 'Viktor Hovland', rank: 13, score: -3, status: 'active' },
@@ -76,33 +82,33 @@ const DEMO_USERS: DemoUser[] = [
   },
   {
     name: 'Jon P.', rank: 3, total: -9, countingIdx: [0, 1, 2],
-    flavor: 'Replaced his withdrawn pick mid-tournament — replacement Bhatia hadn\'t teed off, so the swap was legal.',
+    flavor: 'Replaced his withdrawn pick mid-tournament — Bhatia hadn’t teed off when Tom Kim WD’d, so the swap was legal.',
     picks: [
       { name: 'Ludvig Aberg',     rank:  6, score: -5, status: 'active' },
       { name: 'Collin Morikawa',  rank:  9, score: -2, status: 'active' },
       { name: 'Akshay Bhatia',    rank: 28, score: -2, status: 'active',
-        notes: 'Replacement: Jon\'s original DH#1 (Tom Kim) withdrew Friday morning — Bhatia hadn\'t teed off, so the swap was eligible.' },
+        notes: 'Replacement: Jon’s original DH#1 (Tom Kim) withdrew Friday morning. Bhatia hadn’t teed off yet — swap allowed.' },
       { name: 'Si Woo Kim',       rank: 71, score:  3, status: 'made_cut',
-        notes: 'Made cut at exactly +3 → score capped at cut (+3). Even if he plays poorly the rest of the way, he can\'t hurt the team further.' },
+        notes: 'Made cut at exactly +3 → score capped at the cut line. He can’t hurt the team further this weekend.' },
     ],
   },
   {
     name: 'Marge K.', rank: 4, total: -7, countingIdx: [0, 1, 3],
-    flavor: 'Pat Cantlay had a bad Friday — but Theegala\'s strong third round leapfrogs the slot 3 underperformer.',
+    flavor: 'Cantlay had a bad Friday — Theegala’s strong third round leapfrogs the slot-3 underperformer.',
     picks: [
       { name: 'Patrick Cantlay',     rank:  8, score: -4, status: 'active' },
       { name: 'Sam Burns',           rank: 18, score: -1, status: 'active' },
       { name: 'Luke List',           rank: 47, score:  3, status: 'made_cut',
-        notes: 'Made cut, capped at +3. Doesn\'t count today — Theegala beat him.' },
+        notes: 'Made cut, capped at +3. Doesn’t count today — Theegala beat him.' },
       { name: 'Sahith Theegala',     rank: 39, score: -2, status: 'active' },
     ],
   },
   {
     name: 'Osm L.', rank: 5, total: -2, countingIdx: [1, 2, 3],
-    flavor: 'Justin Thomas missed cut — his slot is dropped, but the +1 team penalty still applies (sum of top 3 = −3, plus 1 for the MC = −2). Other three all in the red.',
+    flavor: 'JT missed cut — his slot is dropped from the counting trio, but the +1 team penalty still applies (sum of top 3 = −3, plus 1 for the MC = −2).',
     picks: [
       { name: 'Justin Thomas',  rank: 11, score:  3, status: 'missed_cut',
-        notes: 'Missed cut → player score is the cut line (+3). Slot is dropped from the top-3 count, but the +1 team penalty still applies — that’s the “MC costs you a stroke even if your MC is your 4th-lowest slot” case.' },
+        notes: 'Missed cut → score capped at +3. Slot is dropped from top-3, but the +1 team penalty still hits.' },
       { name: 'Tommy Fleetwood', rank: 14, score: -2, status: 'active' },
       { name: 'Taylor Pendrith', rank: 26, score: -1, status: 'active' },
       { name: 'Greyson Sigg',    rank: 89, score:  0, status: 'active' },
@@ -110,67 +116,50 @@ const DEMO_USERS: DemoUser[] = [
   },
   {
     name: 'MJ T.', rank: 6, total: 3, countingIdx: [0, 1, 3],
-    flavor: 'Both top-tier picks playing okay; Harman’s missed cut drops out of the counting trio AND adds +1 to the team total. Davis squeaks in as the third counted score.',
+    flavor: 'Both top-tier picks playing okay; Harman’s missed cut drops from the counting trio AND adds +1 to the team total. Davis squeaks in as the third counted score.',
     picks: [
       { name: 'Tony Finau',     rank: 15, score:  0, status: 'active' },
       { name: 'Corey Conners',  rank: 20, score: -1, status: 'active' },
       { name: 'Brian Harman',   rank: 31, score:  3, status: 'missed_cut',
-        notes: 'Missed cut → player score is the cut line (+3). Slot is dropped from top-3 (Cam Davis bumps in), but the +1 team penalty still applies.' },
+        notes: 'Missed cut → player score capped at +3. Slot dropped, but the +1 team penalty still applies.' },
       { name: 'Cam Davis',      rank: 60, score:  3, status: 'made_cut' },
     ],
   },
   {
-    name: 'Cnvrtman', rank: 7, total: null, countingIdx: [],
-    flavor: 'Pending: original WD has been replaced but the new golfer hasn\'t finished round 1 yet — total holds until scores fill in.',
+    name: 'Sam W.', rank: 7, total: null, countingIdx: [],
+    flavor: 'Total pending. Tom Kim WD’d Friday morning and Sam tried to swap to Bhatia — already taken AND already teed off, so the swap was refused. Sungjae’s round 1 is still in progress at sync time.',
     picks: [
       { name: 'Wyndham Clark',  rank:  7, score: -2, status: 'active' },
       { name: 'Joaquin Niemann', rank: 16, score:  1, status: 'active' },
       { name: 'Tom Kim',         rank: 22, score: null, status: 'withdrawn',
-        replacedBy: 'Akshay Bhatia (already taken — see Jon P.)',
-        notes: 'WD Friday morning. Tried to replace with Bhatia, but Bhatia was already in another team\'s lineup AND had teed off. Replacement window closed; this slot is locked at WD with no points.' },
+        notes: 'WD Friday morning. Replacement (Bhatia) was already in Jon P.’s lineup AND had teed off — swap refused. Slot stays at WD with no score.' },
       { name: 'Sungjae Im',      rank: 24, score: null, status: 'active',
-        notes: 'Round 1 still in progress at sync time — no score yet.' },
+        notes: 'Round 1 still in progress at sync time — no score posted yet.' },
     ],
   },
   {
-    name: 'Hambone L.', rank: 8, total: 8, countingIdx: [0, 1, 3],
-    flavor: 'Bottom of the standings — two missed cuts. Each MC golfer’s player score is capped at the cut line (+3), but each one ALSO adds +1 to the team total — so the two MCs stack a +2 team penalty on top of an already thin counting trio.',
+    name: 'Hambone L.', rank: 8, total: 5, countingIdx: [0, 1],
+    flavor: 'Bottom of the standings — two missed cuts. MC golfers are excluded from the top-3 counting pool entirely, so Hambone’s “top 3” only has 2 contributors (Hideki +3 and Will E = +3). Stack +1 for each MC and the team total lands at +5.',
     picks: [
-      { name: 'Hideki Matsuyama', rank:  4, score:  3, status: 'made_cut' },
+      { name: 'Hideki Matsuyama', rank:  4, score:  3, status: 'made_cut',
+        notes: 'Made cut at exactly +3 — score capped at the cut line.' },
       { name: 'Will Zalatoris',   rank: 19, score:  0, status: 'active' },
       { name: 'Davis Thompson',   rank: 33, score:  3, status: 'missed_cut',
-        notes: 'Missed cut → player score is the cut line (+3). +1 team penalty applies.' },
+        notes: 'Missed cut → excluded from top-3 entirely. +1 team penalty applies.' },
       { name: 'Eric Cole',        rank: 56, score:  3, status: 'missed_cut',
-        notes: 'Also missed cut → player score is the cut line (+3). A second MC means another +1 to the team total — Hambone carries a stacked +2 penalty.' },
+        notes: 'Also missed cut — also excluded from top-3. Second MC adds another +1 team penalty for a stacked +2.' },
     ],
   },
 ];
 
-// ── Display helpers ──
-function fmt(n: number | null): string {
-  if (n === null) return '—';
-  if (n === 0) return 'E';
-  return n > 0 ? `+${n}` : `−${Math.abs(n)}`;
-}
-
-function statusBadge(s: GolferStatus): { label: string; className: string } {
-  switch (s) {
-    case 'missed_cut': return { label: 'Missed Cut', className: 'badge-red' };
-    case 'made_cut':   return { label: 'Made Cut',   className: 'badge-blue' };
-    case 'withdrawn':  return { label: 'WD',         className: 'badge-gray' };
-    case 'active':
-    default:           return { label: 'Active',     className: 'badge-green' };
-  }
-}
-
 // ─────────────────────────────────────────────────────────────
 // `/demo` is also used as the in-app rules reference (linked from
-// the league hero's "📖 Rules" button). When a logged-in user lands
+// the league hero’s “📖 Rules” button). When a logged-in user lands
 // here from inside a league, we need a way back to their league —
-// the marketing "← Home" link sends them to `/`, which is no help.
+// the marketing “← Home” link sends them to `/`, which is no help.
 //
-// Pass `?back=/league/<slug>` to get a "← Back to <label>" link in
-// the top nav and a "Back to your league" CTA at the bottom. Only
+// Pass `?back=/league/<slug>` to get a “← Back to <label>” link in
+// the top nav and a “Back to your league” CTA at the bottom. Only
 // same-origin `/league/...` paths are accepted; anything else is
 // ignored and the page falls back to the marketing chrome. `label`
 // is a display string only — escaped for XSS.
@@ -224,7 +213,7 @@ export default function DemoPage({
         </div>
       </nav>
 
-      {/* ── Hero ───────────────────────────────────────────── */}
+      {/* ── Hero ─────────────────────── */}
       <div className="t-hero" style={{ padding: 'clamp(2rem,6vw,3rem) 1.25rem' }}>
         <div className="container">
           <div style={{
@@ -259,7 +248,7 @@ export default function DemoPage({
       <div className="page-content">
         <div className="container" style={{ maxWidth: 1080 }}>
 
-          {/* ── Tournament card ───────────────────────────── */}
+          {/* ── Tournament card ────────────── */}
           <div className="card" style={{ marginBottom: '1.5rem',
                                           borderLeft: '4px solid var(--brass)' }}>
             <div style={{
@@ -290,132 +279,27 @@ export default function DemoPage({
             </div>
           </div>
 
-          {/* ── Leaderboard with expandable picks per user ── */}
-          {/* Native <details>/<summary> — no JS needed, mobile-friendly,
-              and the first-place row is open by default so visitors see
-              what a winning lineup looks like immediately. */}
-          <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: '1.5rem' }}>
-            <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--cream-dark)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          {/* ── Leaderboard — mirrors the real /league/[slug] layout:
+                always-expanded cards, vertical golfer rows with ticks for
+                counting picks, MC/WD/DQ pills, post-cut penalty summary.
+                Tutorial copy (flavor + per-row notes) stays as small
+                italic captions so the rules-walkthrough purpose
+                survives the visual mirror. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
               <h2 style={{ fontFamily: "'Playfair Display', serif",
                            fontSize: '1.2rem', fontWeight: 700 }}>
                 Leaderboard
               </h2>
-              <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
-                Tap any row to see picks
-              </span>
+              <span className="badge badge-live">🔴 Live</span>
             </div>
 
             {DEMO_USERS.map((u, i) => (
-              <details key={u.name}
-                       open={u.rank <= 3}
-                       style={{ borderBottom: i === DEMO_USERS.length - 1
-                                ? 'none'
-                                : '1px solid var(--cream-dark)' }}>
-                <summary style={{
-                  listStyle: 'none', cursor: 'pointer',
-                  padding: '1rem 1.25rem',
-                  display: 'flex', alignItems: 'center', gap: '0.75rem',
-                  transition: 'background 0.12s',
-                }}>
-                  <span className="rank-num" style={{ width: 36, flexShrink: 0 }}>{u.rank}</span>
-                  <strong style={{ flex: 1, fontSize: '0.98rem' }}>{u.name}</strong>
-                  <span style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }} className="hide-mobile">
-                    {u.countingIdx.length} of 4 counting
-                  </span>
-                  <strong className={
-                    u.total === null ? 'score-even'
-                      : u.total < 0 ? 'score-under'
-                      : u.total > 0 ? 'score-over'
-                      : 'score-even'
-                  } style={{ fontSize: '1.05rem', minWidth: 64, textAlign: 'right' }}>
-                    {fmt(u.total)}
-                  </strong>
-                </summary>
-
-                <div style={{ padding: '0 1.25rem 1.25rem',
-                              background: 'var(--cream)',
-                              borderTop: '1px solid var(--cream-dark)' }}>
-                  {u.flavor && (
-                    <p style={{ fontSize: '0.85rem', color: 'var(--slate)',
-                                fontStyle: 'italic', padding: '0.85rem 0 0.5rem',
-                                lineHeight: 1.55 }}>
-                      {u.flavor}
-                    </p>
-                  )}
-
-                  <div style={{ display: 'grid',
-                                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                                gap: '0.75rem', paddingTop: '0.5rem' }}>
-                    {u.picks.map((g, idx) => {
-                      const isCounting = u.countingIdx.includes(idx);
-                      const tier = idx < 2 ? 'top' : 'dark';
-                      const sb = statusBadge(g.status);
-                      return (
-                        <div key={idx} style={{
-                          background: 'white',
-                          border: isCounting ? '2px solid var(--green-mid)'
-                                              : '1px solid var(--cream-dark)',
-                          borderRadius: 'var(--radius)',
-                          padding: '0.85rem 1rem', position: 'relative',
-                        }}>
-                          {isCounting && (
-                            <span className="badge badge-green"
-                                  style={{ position: 'absolute', top: '0.5rem', right: '0.5rem',
-                                           fontSize: '0.6rem' }}>
-                              ✓ Counting
-                            </span>
-                          )}
-                          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap',
-                                        marginBottom: '0.4rem' }}>
-                            <span className={tier === 'top' ? 'badge badge-green'
-                                                            : 'badge badge-brass'}
-                                  style={{ fontSize: '0.6rem' }}>
-                              {tier === 'top' ? '⭐ Top Tier' : '🐴 Dark Horse'}
-                            </span>
-                            <span className={`badge ${sb.className}`}
-                                  style={{ fontSize: '0.6rem' }}>
-                              {sb.label}
-                            </span>
-                          </div>
-                          <div style={{ fontWeight: 700, fontSize: '0.92rem',
-                                        marginBottom: '0.15rem' }}>
-                            {g.name}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center',
-                                        justifyContent: 'space-between',
-                                        fontSize: '0.78rem', color: 'var(--slate-mid)' }}>
-                            <span>{g.rank ? `#${g.rank}` : 'Unranked'}</span>
-                            <strong className={
-                              g.score === null ? 'score-even'
-                                : g.score < 0 ? 'score-under'
-                                : g.score > 0 ? 'score-over'
-                                : 'score-even'
-                            } style={{ fontSize: '0.95rem' }}>
-                              {fmt(g.score)}
-                            </strong>
-                          </div>
-                          {g.notes && (
-                            <p style={{ marginTop: '0.5rem',
-                                        padding: '0.45rem 0.6rem',
-                                        background: 'var(--cream)',
-                                        borderRadius: 'var(--radius-sm)',
-                                        fontSize: '0.75rem',
-                                        color: 'var(--slate)',
-                                        lineHeight: 1.5 }}>
-                              {g.notes}
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </details>
+              <DemoLeaderboardRow key={u.name} user={u} index={i} />
             ))}
           </div>
 
-          {/* ── Scoring rules — quick reference ───────────── */}
+          {/* ── Scoring rules — quick reference ───────── */}
           <div style={{ display: 'grid',
                         gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
                         gap: '1rem', marginBottom: '1.5rem' }}>
@@ -442,7 +326,7 @@ export default function DemoPage({
               </h3>
               <ul style={{ fontSize: '0.875rem', color: 'var(--slate)',
                            lineHeight: 1.75, paddingLeft: '1.1rem' }}>
-                <li><strong>Missed cut</strong> → that golfer&rsquo;s player score is the cut line, and <strong>+1 stroke is added to your team total</strong>. The team penalty applies whether the MC golfer is in your counting top-3 or your dropped 4th slot. (Eckroat above: his player score is +3, and Tyler&rsquo;s team total picks up +1 even though Eckroat is the dropped slot.)</li>
+                <li><strong>Missed cut</strong> → MC golfers are <strong>excluded from your top-3 counting pool entirely</strong> AND <strong>+1 stroke is added to your team total</strong> per MC. The player score is shown capped at the cut line, but only the +1 team penalty actually moves your total. (Hambone above: two MCs → top-3 has only 2 contributors and the team total picks up +2.)</li>
                 <li><strong>Made cut, played badly</strong> → score is capped at the cut line. No team penalty. (Si Woo Kim above: capped at +3 even if he plays poorly.)</li>
                 <li><strong>Withdrawal before teeing off</strong> → swap in any golfer who hasn&rsquo;t teed off yet. (Jon P. above swapped Tom Kim for Bhatia.)</li>
                 <li><strong>Withdrawal mid-round</strong> → no replacement, that slot stays at WD with no score.</li>
@@ -483,7 +367,7 @@ export default function DemoPage({
             </div>
           </div>
 
-          {/* ── CTA ───────────────────────────────────────── */}
+          {/* ── CTA ────────────────────── */}
           <div className="card card-green" style={{ textAlign: 'center', padding: '2rem 1.5rem' }}>
             <h3 style={{ fontFamily: "'Playfair Display', serif",
                          fontSize: '1.4rem', marginBottom: '0.5rem' }}>
@@ -521,15 +405,191 @@ export default function DemoPage({
       }}>
         <p>Demo league. Sample data only — no real golfers were affected.</p>
       </footer>
+    </div>
+  );
+}
 
-      {/* Native <details> styling reset (default markers can clash with summary layout) */}
-      <style>{`
-        details > summary::-webkit-details-marker { display: none; }
-        details > summary::marker { content: ''; }
-        details > summary { -webkit-tap-highlight-color: transparent; }
-        details > summary:hover { background: var(--green-pale); }
-        details[open] > summary { background: var(--cream); }
-      `}</style>
+// ────────────────────────────────────────────────────────────
+// DemoLeaderboardRow — mirrors the LeaderboardRow component on
+// the real /league/[slug] page: rank | name | total in the header;
+// vertical foursome list sorted with cut survivors first and
+// missed-cut golfers last; post-cut summary lines. Tutorial copy
+// (the optional `flavor` blurb under the header and per-row `notes`)
+// lives in small italic captions so visitors get the
+// rules-walkthrough value WHILE seeing the same layout they’ll meet
+// in their own league.
+// ────────────────────────────────────────────────────────────
+function DemoLeaderboardRow({
+  user, index,
+}: {
+  user: DemoUser;
+  index: number;
+}) {
+  const totalClass =
+    user.total == null ? 'score-even'
+    : user.total < 0 ? 'score-under'
+    : user.total > 0 ? 'score-over' : 'score-even';
+
+  const counting = new Set<number>(user.countingIdx.map(i => i + 1));   // 1-indexed slot ids
+
+  // Mirror the real leaderboard’s sort: cut survivors first, missed-cut
+  // golfers last; within each group, lower fantasy score wins. Nulls last.
+  const sortedPicks = user.picks
+    .map((g, idx) => ({ ...g, slot: idx + 1, idx }))
+    .sort((a, b) => {
+      const aMc = a.status === 'missed_cut' ? 1 : 0;
+      const bMc = b.status === 'missed_cut' ? 1 : 0;
+      if (aMc !== bMc) return aMc - bMc;
+      return (a.score ?? Infinity) - (b.score ?? Infinity);
+    });
+
+  const mcPicks = user.picks.filter(g => g.status === 'missed_cut');
+
+  return (
+    <div className={`card lb-card rank-${index + 1}`} style={{ padding: '0.9rem 1rem' }}>
+      {/* Header: rank | name | total */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '0.75rem', flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+          <span className="rank-num" style={{ flexShrink: 0 }}>{user.rank}</span>
+          <strong style={{ fontSize: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {user.name}
+          </strong>
+        </div>
+        <strong className={totalClass} style={{ fontSize: '1.15rem', flexShrink: 0 }}>
+          {formatScore(user.total)}
+        </strong>
+      </div>
+
+      {/* Flavor caption */}
+      {user.flavor && (
+        <p style={{
+          marginTop: '0.4rem',
+          fontSize: '0.78rem', color: 'var(--slate-mid)',
+          fontStyle: 'italic', lineHeight: 1.5,
+        }}>
+          {user.flavor}
+        </p>
+      )}
+
+      {/* Foursome list */}
+      <div style={{
+        marginTop: '0.6rem',
+        paddingTop: '0.6rem',
+        borderTop: '1px solid var(--cream-dark)',
+        display: 'flex', flexDirection: 'column', gap: '0.3rem',
+      }}>
+        {sortedPicks.map(g => {
+          const isCounting = counting.has(g.slot);
+          const isMC = g.status === 'missed_cut';
+          const isWD = g.status === 'withdrawn';
+          const tier = g.slot <= 2 ? 'Top' : 'DH';
+          const fClass =
+            g.score == null ? 'score-even'
+            : g.score < 0 ? 'score-under'
+            : g.score > 0 ? 'score-over' : 'score-even';
+          return (
+            <div key={g.slot}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                fontSize: '0.85rem',
+                opacity: isCounting ? 1 : 0.5,
+              }}>
+                <span style={{
+                  width: 14, flexShrink: 0, fontSize: '0.85rem',
+                  color: isCounting ? 'var(--green-mid)' : 'var(--slate-light)',
+                }} aria-label={isCounting ? 'counting' : 'dropped'}>
+                  {isCounting ? '✓' : '·'}
+                </span>
+                <span className={`badge ${g.slot <= 2 ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.58rem', flexShrink: 0 }}>
+                  {tier}
+                </span>
+                <span style={{
+                  fontWeight: 600, color: 'var(--slate)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  flex: '1 1 auto', minWidth: 0,
+                }}>
+                  {g.name}
+                </span>
+                <span style={{ color: 'var(--slate-mid)', fontSize: '0.72rem', flexShrink: 0 }}>
+                  {g.rank ? `#${g.rank}` : 'Unranked'}
+                </span>
+                {(isMC || isWD) && (
+                  <span
+                    className="badge"
+                    style={{
+                      fontSize: '0.58rem',
+                      flexShrink: 0,
+                      background: '#fef3c7',
+                      color: '#92400e',
+                      border: '1px solid #fcd34d',
+                    }}
+                    title={isMC ? 'Missed cut' : 'Withdrew'}
+                  >
+                    {isMC ? 'MC' : 'WD'}
+                  </span>
+                )}
+                <strong className={fClass} style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                  {formatScore(g.score)}
+                </strong>
+              </div>
+              {g.notes && (
+                <p style={{
+                  margin: '0.25rem 0 0.25rem 1.6rem',
+                  fontSize: '0.72rem', color: 'var(--slate-mid)',
+                  fontStyle: 'italic', lineHeight: 1.5,
+                }}>
+                  {g.notes}
+                </p>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Post-cut missed-cut summary — one row per MC golfer
+            contributing +1 to the team total, or a friendly summary
+            line when nobody missed. Mirrors the real leaderboard’s
+            post-cut behavior. */}
+        <div style={{
+          marginTop: '0.5rem',
+          paddingTop: '0.5rem',
+          borderTop: '1px dashed var(--cream-dark)',
+          display: 'flex', flexDirection: 'column', gap: '0.25rem',
+        }}>
+          {mcPicks.length === 0 ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              fontSize: '0.82rem', color: 'var(--slate-mid)',
+              fontStyle: 'italic',
+            }}>
+              <span style={{ flex: '1 1 auto' }}>No players missed cut</span>
+              <strong className="score-even" style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                0
+              </strong>
+            </div>
+          ) : (
+            mcPicks.map(g => (
+              <div key={`mc-${g.name}`} style={{
+                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                fontSize: '0.82rem', color: 'var(--slate)',
+              }}>
+                <span style={{
+                  flex: '1 1 auto',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  Missed cut · {g.name}
+                </span>
+                <strong className="score-over" style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
+                  +1
+                </strong>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
     </div>
   );
 }
