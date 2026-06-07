@@ -1,21 +1,23 @@
 'use client';
 
 // ─────────────────────────────────────────────────────────────
-// Account form — three independently-submittable cards on one
+// Account form — four independently-submittable cards on one
 // page so a user can change one thing without having to re-enter
 // the others:
 //
-//   1. Change Password      → POST /api/me/change-password
-//   2. Email Recaps         → PUT  /api/me/notification-prefs
-//   3. Pick Reminders       → PUT  /api/me/notification-prefs
+//   1. Display Name         → PUT  /api/me/profile
+//   2. Change Password      → POST /api/me/change-password
+//   3. Email Recaps         → PUT  /api/me/notification-prefs
+//   4. Pick Reminders       → PUT  /api/me/notification-prefs
 //
-// Cards 2 + 3 both write to the same row in reminder_preferences,
+// Cards 3 + 4 both write to the same row in reminder_preferences,
 // so each card sends the FULL prefs payload (its toggles + the
 // other card's current state held in local React state) to avoid
 // clobbering the other card's settings.
 // ─────────────────────────────────────────────────────────────
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
 interface Prefs {
@@ -32,9 +34,10 @@ interface Prefs {
 interface Props {
   initialPrefs: Prefs;
   profileEmail: string;
+  profileDisplayName: string;
 }
 
-export default function AccountForm({ initialPrefs, profileEmail }: Props) {
+export default function AccountForm({ initialPrefs, profileEmail, profileDisplayName }: Props) {
   // Single source of truth for the prefs row — both Recaps and
   // Reminders cards read + mutate this, and both send a full
   // payload on save so they don't clobber each other.
@@ -42,6 +45,7 @@ export default function AccountForm({ initialPrefs, profileEmail }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <DisplayNameCard initialName={profileDisplayName} />
       <ChangePasswordCard />
       <RecapsCard
         prefs={prefs}
@@ -56,6 +60,98 @@ export default function AccountForm({ initialPrefs, profileEmail }: Props) {
         <Link href="/dashboard" className="btn btn-ghost">Back to dashboard</Link>
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Display Name — shown on the leaderboard, history, stats,
+// schedule, and nav. Writing here propagates to every surface.
+// ─────────────────────────────────────────────────────────────
+
+function DisplayNameCard({ initialName }: { initialName: string }) {
+  const router = useRouter();
+  const [name,    setName]    = useState(initialName);
+  const [saving,  setSaving]  = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [errors,  setErrors]  = useState<Record<string, string>>({});
+  const [topErr,  setTopErr]  = useState('');
+
+  const trimmed = name.trim();
+  const unchanged = trimmed === initialName.trim();
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true); setSavedAt(null); setErrors({}); setTopErr('');
+
+    try {
+      const res = await fetch('/api/me/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: trimmed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.fieldErrors) setErrors(data.fieldErrors);
+        else setTopErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setSavedAt(new Date());
+      // The Nav reads display_name from a server component, and every
+      // league surface (leaderboard, history, stats) snapshots it at
+      // request time. Refresh so all of them pick up the new name
+      // without a manual reload.
+      router.refresh();
+    } catch (err) {
+      setTopErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <h2 style={{
+        fontFamily: "'Playfair Display', serif",
+        fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.2rem',
+      }}>
+        Display Name
+      </h2>
+      <p style={{ color: 'var(--slate-mid)', fontSize: '0.9rem', lineHeight: 1.5 }}>
+        This is what shows next to your picks on the leaderboard, history,
+        and stats. Change it any time — your account and league memberships
+        stay the same.
+      </p>
+
+      {topErr && (
+        <div className="alert alert-error" role="alert">{topErr}</div>
+      )}
+      {savedAt && (
+        <div className="alert alert-success" role="status">
+          ✓ Display name updated at {savedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.
+        </div>
+      )}
+
+      <div>
+        <label className="label" htmlFor="display_name">Display name</label>
+        <input
+          id="display_name"
+          className="input"
+          type="text"
+          autoComplete="nickname"
+          maxLength={40}
+          value={name}
+          onChange={e => setName(e.target.value)}
+          aria-invalid={!!errors.display_name}
+        />
+        {errors.display_name && <p className="hint" style={{ color: 'var(--red)' }}>{errors.display_name}</p>}
+      </div>
+
+      <div>
+        <button type="submit" className="btn btn-primary" disabled={saving || unchanged} aria-busy={saving}>
+          {saving ? 'Saving…' : 'Save display name'}
+        </button>
+      </div>
+    </form>
   );
 }
 

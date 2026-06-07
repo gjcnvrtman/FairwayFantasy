@@ -72,6 +72,7 @@ export default async function AccountPage() {
           <AccountForm
             initialPrefs={initialPrefs}
             profileEmail={profile?.email ?? ''}
+            profileDisplayName={profile?.display_name ?? ''}
           />
         </div>
       </div>

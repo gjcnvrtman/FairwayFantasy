@@ -54,6 +54,24 @@ export function validatePassword(password: string): string | null {
   return null;
 }
 
+/**
+ * Validate a display name (length only). Returns an error string when
+ * invalid, ``null`` when OK. Shared by registration AND the in-session
+ * profile-edit flow so the rules can't drift.
+ */
+export function validateDisplayName(name: string): string | null {
+  if (!name) {
+    return 'Display name is required.';
+  }
+  if (name.length < AUTH_LIMITS.DISPLAY_NAME_MIN) {
+    return `Display name must be at least ${AUTH_LIMITS.DISPLAY_NAME_MIN} characters.`;
+  }
+  if (name.length > AUTH_LIMITS.DISPLAY_NAME_MAX) {
+    return `Display name must be ${AUTH_LIMITS.DISPLAY_NAME_MAX} characters or fewer.`;
+  }
+  return null;
+}
+
 export function validateRegistration(input: {
   email:        string;
   display_name: string;
@@ -69,13 +87,8 @@ export function validateRegistration(input: {
     errors.email = 'Email is too long.';
   }
 
-  if (!input.display_name) {
-    errors.display_name = 'Display name is required.';
-  } else if (input.display_name.length < AUTH_LIMITS.DISPLAY_NAME_MIN) {
-    errors.display_name = `Display name must be at least ${AUTH_LIMITS.DISPLAY_NAME_MIN} characters.`;
-  } else if (input.display_name.length > AUTH_LIMITS.DISPLAY_NAME_MAX) {
-    errors.display_name = `Display name must be ${AUTH_LIMITS.DISPLAY_NAME_MAX} characters or fewer.`;
-  }
+  const nameError = validateDisplayName(input.display_name);
+  if (nameError) errors.display_name = nameError;
 
   const pwError = validatePassword(input.password);
   if (pwError) errors.password = pwError;
