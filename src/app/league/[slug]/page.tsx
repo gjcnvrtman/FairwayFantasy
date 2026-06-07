@@ -27,6 +27,7 @@ import {
 } from '@/lib/league-dashboard';
 import Nav from '@/components/layout/Nav';
 import InviteCard from '@/components/league/InviteCard';
+import SmackBoard from '@/components/league/SmackBoard';
 import type { Metadata } from 'next';
 
 interface Props { params: { slug: string } }
@@ -257,6 +258,18 @@ export default async function LeaguePage({ params }: Props) {
               {/* Solo-commissioner empty state — only when relevant */}
               {empty === 'solo-commissioner' && activeTournament && (
                 <SoloCommissionerCard isCommissioner={isCommissioner} />
+              )}
+
+              {/* Smack board — per-tournament chat thread. Only shown
+                  when there's an active tournament so the "thread"
+                  always has something concrete to be about. */}
+              {activeTournament && (
+                <SmackBoard
+                  slug={params.slug}
+                  tournamentId={activeTournament.id}
+                  tournamentName={activeTournament.name}
+                  currentUserId={user.id}
+                />
               )}
             </div>
 

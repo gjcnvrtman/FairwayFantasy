@@ -359,6 +359,18 @@ CREATE TABLE rate_limits (
 CREATE INDEX idx_rate_limits_window_start ON rate_limits (window_start);
 
 -- ============================================================
+-- LEAGUE_MESSAGES (Migration 011 — per-tournament smack board)
+-- ============================================================
+CREATE TABLE league_messages (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  league_id      UUID NOT NULL REFERENCES leagues(id)     ON DELETE CASCADE,
+  tournament_id  UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id        UUID NOT NULL REFERENCES profiles(id)    ON DELETE CASCADE,
+  body           TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 500),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX idx_league_members_league          ON league_members(league_id);
@@ -371,6 +383,7 @@ CREATE INDEX idx_golfers_owgr                   ON golfers(owgr_rank);
 CREATE INDEX idx_tournaments_status             ON tournaments(status);
 CREATE INDEX idx_reminder_log_tournament        ON reminder_log(tournament_id);
 CREATE INDEX idx_reminder_log_user              ON reminder_log(user_id);
+CREATE INDEX league_messages_thread_idx         ON league_messages(league_id, tournament_id, created_at DESC);
 
 -- ============================================================
 -- NOTES

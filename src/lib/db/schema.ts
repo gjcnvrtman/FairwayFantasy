@@ -297,6 +297,22 @@ export interface Database {
   daily_scorecard_log:   DailyScorecardLogTable;
   tournament_recap_log:  TournamentRecapLogTable;
   league_tournament_bets:LeagueTournamentBetsTable;
+  league_messages:       LeagueMessagesTable;
+}
+
+// ── league_messages (migration 011) ──────────────────────────
+// Per-tournament smack board. Each row is one message authored by
+// a league member, scoped to (league_id, tournament_id). Hard
+// delete by author / commissioner / co_commissioner. No edits —
+// posted = posted. Body 1..500 chars (CHECK constraint enforced at
+// the DB layer; validator mirrored in src/lib/messages.ts).
+export interface LeagueMessagesTable {
+  id:             Generated<string>;       // UUID
+  league_id:      string;
+  tournament_id:  string;
+  user_id:        string;
+  body:           string;
+  created_at:     Generated<Timestamp>;
 }
 
 // ── league_tournament_bets (migration 010) ───────────────────
