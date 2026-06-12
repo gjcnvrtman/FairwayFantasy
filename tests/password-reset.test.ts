@@ -67,6 +67,8 @@ describe('validateRegistration / validatePassword DRY contract', () => {
         email:        'foo@example.com',
         display_name: 'Foo Bar',
         password:     pw,
+        first_name:   'Foo',
+        last_name:    'Bar',
       });
       // If validatePassword says OK, the registration validator's
       // .password field must be absent. If it says NOT-OK, the

@@ -21,9 +21,15 @@ interface Member {
   role:      'commissioner' | 'co_commissioner' | 'member';
   joined_at: string;
   // The query helper returns the full profile row OR null when the
-  // join misses. We only read two fields here, but accepting the full
-  // shape keeps the prop type compatible with what kysely emits.
-  profile?:  { display_name?: string; email?: string } | null;
+  // join misses. We only read a handful of fields here, but accepting
+  // the broader shape keeps the prop type compatible with what kysely
+  // emits.
+  profile?:  {
+    display_name?: string;
+    email?:        string;
+    first_name?:   string | null;
+    last_name?:    string | null;
+  } | null;
 }
 
 interface Tournament {
@@ -266,6 +272,62 @@ export default function AdminPanel({
       setRemoveErr(err instanceof Error ? err.message : String(err));
     } finally {
       setRemoving(null);
+    }
+  }
+
+  // ── Member name editing (commissioner + co-commissioner) ───
+  // Per-row inline edit of first/last name. Backed by
+  // /api/admin/member-name which gates on requireCoCommissionerOrAbove.
+  // Map is keyed by user_id so multiple rows can be in flight at once
+  // without state collisions.
+  const [nameInputs, setNameInputs] = useState<Record<string, { first: string; last: string }>>(() => {
+    const out: Record<string, { first: string; last: string }> = {};
+    for (const m of members) {
+      out[m.user_id] = {
+        first: m.profile?.first_name ?? '',
+        last:  m.profile?.last_name  ?? '',
+      };
+    }
+    return out;
+  });
+  const [nameBusy, setNameBusy] = useState<string | null>(null);
+  const [nameMsg,  setNameMsg]  = useState<Record<string, string>>({});
+  const [nameErr,  setNameErr]  = useState<Record<string, string>>({});
+
+  async function saveMemberName(userId: string) {
+    const cur = nameInputs[userId] ?? { first: '', last: '' };
+    setNameBusy(userId);
+    setNameMsg(prev => ({ ...prev, [userId]: '' }));
+    setNameErr(prev => ({ ...prev, [userId]: '' }));
+    try {
+      const res = await fetch('/api/admin/member-name', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          slug:       league.slug,
+          userId,
+          first_name: cur.first.trim(),
+          last_name:  cur.last.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const fe = data.fieldErrors as Record<string, string> | undefined;
+        const msg = fe
+          ? Object.values(fe).join(' ')
+          : (data.error ?? `Failed (HTTP ${res.status})`);
+        setNameErr(prev => ({ ...prev, [userId]: msg }));
+        return;
+      }
+      setNameMsg(prev => ({ ...prev, [userId]: 'Saved' }));
+      router.refresh();
+    } catch (err) {
+      setNameErr(prev => ({
+        ...prev,
+        [userId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setNameBusy(null);
     }
   }
 
@@ -811,7 +873,17 @@ export default function AdminPanel({
             </tr>
           </thead>
           <tbody>
-            {members.map(m => (
+            {members.map(m => {
+              const inputs    = nameInputs[m.user_id] ?? { first: '', last: '' };
+              const initFirst = m.profile?.first_name ?? '';
+              const initLast  = m.profile?.last_name  ?? '';
+              const nameDirty =
+                inputs.first.trim() !== initFirst.trim() ||
+                inputs.last.trim()  !== initLast.trim();
+              const nameBusyHere = nameBusy === m.user_id;
+              const nameMsgHere  = nameMsg[m.user_id] ?? '';
+              const nameErrHere  = nameErr[m.user_id] ?? '';
+              return (
               <tr key={m.user_id}>
                 <td>
                   <strong>{m.profile?.display_name ?? 'Unnamed Player'}</strong>
@@ -821,6 +893,58 @@ export default function AdminPanel({
                       {m.profile.email}
                     </div>
                   )}
+                  {/* Real-name editor — commissioner + co-commissioner. Always
+                      visible so an admin scanning the member list can see
+                      which rows are still missing a name. */}
+                  <div style={{
+                    display: 'flex', gap: '0.35rem', alignItems: 'center', flexWrap: 'wrap',
+                    marginTop: '0.35rem',
+                  }}>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="First"
+                      aria-label={`First name for ${m.profile?.display_name ?? 'member'}`}
+                      value={inputs.first}
+                      onChange={e => setNameInputs(prev => ({
+                        ...prev,
+                        [m.user_id]: { ...inputs, first: e.target.value },
+                      }))}
+                      disabled={nameBusyHere}
+                      maxLength={60}
+                      style={{ width: '7rem', padding: '0.2rem 0.4rem', fontSize: '0.82rem', height: 'auto' }}
+                    />
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="Last"
+                      aria-label={`Last name for ${m.profile?.display_name ?? 'member'}`}
+                      value={inputs.last}
+                      onChange={e => setNameInputs(prev => ({
+                        ...prev,
+                        [m.user_id]: { ...inputs, last: e.target.value },
+                      }))}
+                      disabled={nameBusyHere}
+                      maxLength={60}
+                      style={{ width: '8rem', padding: '0.2rem 0.4rem', fontSize: '0.82rem', height: 'auto' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => saveMemberName(m.user_id)}
+                      disabled={nameBusyHere || !nameDirty}
+                      aria-busy={nameBusyHere}
+                      style={{ padding: '0.2rem 0.55rem', fontSize: '0.78rem' }}
+                    >
+                      {nameBusyHere ? '…' : 'Save'}
+                    </button>
+                    {nameMsgHere && !nameErrHere && (
+                      <span style={{ color: 'var(--green-mid)', fontSize: '0.72rem' }}>✓ {nameMsgHere}</span>
+                    )}
+                    {nameErrHere && (
+                      <span style={{ color: 'var(--red)', fontSize: '0.72rem' }}>{nameErrHere}</span>
+                    )}
+                  </div>
                 </td>
                 <td className="hide-mobile" style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>
                   {m.profile?.email ?? '—'}
@@ -878,7 +1002,8 @@ export default function AdminPanel({
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </section>

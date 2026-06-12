@@ -57,6 +57,11 @@ export interface ProfilesTable {
   id:                   Generated<string>;   // UUID, auto-gen on insert
   display_name:         string;
   email:                string;
+  // Real-world name. Required at signup (migration 012), nullable for
+  // legacy pre-2026-06-12 users until they fill them in via /account
+  // or an admin edits them via /api/admin/member-name.
+  first_name:           string | null;
+  last_name:            string | null;
   created_at:           Generated<Timestamp>;
 }
 

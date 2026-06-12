@@ -51,12 +51,14 @@ export async function POST(req: NextRequest) {
 
   const email        = typeof body.email        === 'string' ? body.email.trim().toLowerCase() : '';
   const display_name = typeof body.display_name === 'string' ? body.display_name.trim()         : '';
+  const first_name   = typeof body.first_name   === 'string' ? body.first_name.trim()           : '';
+  const last_name    = typeof body.last_name    === 'string' ? body.last_name.trim()            : '';
   const password     = typeof body.password     === 'string' ? body.password                    : '';
   const leagueSlug   = typeof body.leagueSlug   === 'string' ? body.leagueSlug.trim()           : '';
   const inviteCode   = typeof body.inviteCode   === 'string' ? body.inviteCode.trim()           : '';
 
   // Single source of truth for format validation — same fn the form uses.
-  const fieldErrors = validateRegistration({ email, display_name, password });
+  const fieldErrors = validateRegistration({ email, display_name, password, first_name, last_name });
 
   // Invite fields are required and must be non-empty strings (format
   // only — DB lookup happens below). Surface as field errors so the
@@ -136,7 +138,7 @@ export async function POST(req: NextRequest) {
   try {
     await db.transaction().execute(async tx => {
       const profile = await tx.insertInto('profiles')
-        .values({ email, display_name })
+        .values({ email, display_name, first_name, last_name })
         .returning('id')
         .executeTakeFirstOrThrow();
 

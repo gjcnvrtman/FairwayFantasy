@@ -541,8 +541,23 @@ function LeaderboardRow({
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
           <span className="rank-num" style={{ flexShrink: 0 }}>{result.rank ?? index + 1}</span>
-          <strong style={{ fontSize: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <strong style={{ fontSize: '1rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
             {result.profile?.display_name ?? 'Player'}
+            {(() => {
+              // Build the parenthetical: prefer the real name when set,
+              // include email when available, join with " · ". If neither
+              // is present (legacy user with no name on file), the
+              // parenthetical is omitted entirely.
+              const real = [result.profile?.first_name, result.profile?.last_name]
+                .filter(Boolean).join(' ').trim();
+              const parts = [real, result.profile?.email].filter(Boolean);
+              if (parts.length === 0) return null;
+              return (
+                <span style={{ color: 'var(--slate-mid)', fontWeight: 400, marginLeft: '0.35rem', fontSize: '0.82rem' }}>
+                  ({parts.join(' · ')})
+                </span>
+              );
+            })()}
           </strong>
           {isMe && <span style={{ fontSize: '0.72rem', color: 'var(--brass)', flexShrink: 0 }}>← you</span>}
         </div>

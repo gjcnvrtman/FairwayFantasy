@@ -73,6 +73,8 @@ export default async function AccountPage() {
             initialPrefs={initialPrefs}
             profileEmail={profile?.email ?? ''}
             profileDisplayName={profile?.display_name ?? ''}
+            profileFirstName={profile?.first_name ?? ''}
+            profileLastName={profile?.last_name ?? ''}
           />
         </div>
       </div>

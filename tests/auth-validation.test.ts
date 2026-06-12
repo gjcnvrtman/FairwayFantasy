@@ -11,6 +11,8 @@ const goodInput = {
   email:        'rory@example.com',
   display_name: 'Rory McLeague',
   password:     'Fairway-Strong-1',
+  first_name:   'Rory',
+  last_name:    'McIlroy',
 };
 
 describe('validateRegistration — happy path', () => {
@@ -167,7 +169,34 @@ describe('validateRegistration — multi-field', () => {
       email:        '',
       display_name: '',
       password:     '',
+      first_name:   '',
+      last_name:    '',
     });
-    expect(Object.keys(errs).sort()).toEqual(['display_name', 'email', 'password']);
+    expect(Object.keys(errs).sort()).toEqual([
+      'display_name', 'email', 'first_name', 'last_name', 'password',
+    ]);
+  });
+});
+
+describe('validateRegistration — first_name / last_name', () => {
+  it('rejects empty first_name', () => {
+    const errs = validateRegistration({ ...goodInput, first_name: '' });
+    expect(errs.first_name).toBeTruthy();
+  });
+
+  it('rejects empty last_name', () => {
+    const errs = validateRegistration({ ...goodInput, last_name: '' });
+    expect(errs.last_name).toBeTruthy();
+  });
+
+  it('rejects above the maximum length', () => {
+    const tooLong = 'A'.repeat(AUTH_LIMITS.NAME_MAX + 1);
+    const errs = validateRegistration({ ...goodInput, first_name: tooLong });
+    expect(errs.first_name).toContain(`${AUTH_LIMITS.NAME_MAX}`);
+  });
+
+  it('accepts both at max length', () => {
+    const max = 'A'.repeat(AUTH_LIMITS.NAME_MAX);
+    expect(validateRegistration({ ...goodInput, first_name: max, last_name: max })).toEqual({});
   });
 });

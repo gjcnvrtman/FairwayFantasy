@@ -35,9 +35,14 @@ interface Props {
   initialPrefs: Prefs;
   profileEmail: string;
   profileDisplayName: string;
+  profileFirstName: string;
+  profileLastName:  string;
 }
 
-export default function AccountForm({ initialPrefs, profileEmail, profileDisplayName }: Props) {
+export default function AccountForm({
+  initialPrefs, profileEmail, profileDisplayName,
+  profileFirstName, profileLastName,
+}: Props) {
   // Single source of truth for the prefs row — both Recaps and
   // Reminders cards read + mutate this, and both send a full
   // payload on save so they don't clobber each other.
@@ -46,6 +51,7 @@ export default function AccountForm({ initialPrefs, profileEmail, profileDisplay
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <DisplayNameCard initialName={profileDisplayName} />
+      <FullNameCard initialFirst={profileFirstName} initialLast={profileLastName} />
       <ChangePasswordCard />
       <RecapsCard
         prefs={prefs}
@@ -149,6 +155,121 @@ function DisplayNameCard({ initialName }: { initialName: string }) {
       <div>
         <button type="submit" className="btn btn-primary" disabled={saving || unchanged} aria-busy={saving}>
           {saving ? 'Saving…' : 'Save display name'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Full Name — first + last, optional. Added 2026-06-12 alongside
+// the leaderboard real-name label change. Saved values surface on
+// the leaderboard as "(First Last · email)" when both fields are
+// non-empty.
+// ─────────────────────────────────────────────────────────────
+
+function FullNameCard({
+  initialFirst, initialLast,
+}: {
+  initialFirst: string;
+  initialLast:  string;
+}) {
+  const router = useRouter();
+  const [first,   setFirst]   = useState(initialFirst);
+  const [last,    setLast]    = useState(initialLast);
+  const [saving,  setSaving]  = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [errors,  setErrors]  = useState<Record<string, string>>({});
+  const [topErr,  setTopErr]  = useState('');
+
+  const trimmedFirst = first.trim();
+  const trimmedLast  = last.trim();
+  const unchanged =
+    trimmedFirst === initialFirst.trim() &&
+    trimmedLast  === initialLast.trim();
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true); setSavedAt(null); setErrors({}); setTopErr('');
+
+    try {
+      const res = await fetch('/api/me/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ first_name: trimmedFirst, last_name: trimmedLast }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.fieldErrors) setErrors(data.fieldErrors);
+        else setTopErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setSavedAt(new Date());
+      router.refresh();
+    } catch (err) {
+      setTopErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <h2 style={{
+        fontFamily: "'Playfair Display', serif",
+        fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.2rem',
+      }}>
+        Full Name
+      </h2>
+      <p style={{ color: 'var(--slate-mid)', fontSize: '0.9rem', lineHeight: 1.5 }}>
+        Your real name. Shown in parentheses on the leaderboard after your
+        display name so league members know who&rsquo;s who. Leave blank if
+        you&rsquo;d rather only show your display name + email.
+      </p>
+
+      {topErr && (
+        <div className="alert alert-error" role="alert">{topErr}</div>
+      )}
+      {savedAt && (
+        <div className="alert alert-success" role="status">
+          ✓ Name updated at {savedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+        <div>
+          <label className="label" htmlFor="first_name">First name</label>
+          <input
+            id="first_name"
+            className="input"
+            type="text"
+            autoComplete="given-name"
+            maxLength={60}
+            value={first}
+            onChange={e => setFirst(e.target.value)}
+            aria-invalid={!!errors.first_name}
+          />
+          {errors.first_name && <p className="hint" style={{ color: 'var(--red)' }}>{errors.first_name}</p>}
+        </div>
+        <div>
+          <label className="label" htmlFor="last_name">Last name</label>
+          <input
+            id="last_name"
+            className="input"
+            type="text"
+            autoComplete="family-name"
+            maxLength={60}
+            value={last}
+            onChange={e => setLast(e.target.value)}
+            aria-invalid={!!errors.last_name}
+          />
+          {errors.last_name && <p className="hint" style={{ color: 'var(--red)' }}>{errors.last_name}</p>}
+        </div>
+      </div>
+
+      <div>
+        <button type="submit" className="btn btn-primary" disabled={saving || unchanged} aria-busy={saving}>
+          {saving ? 'Saving…' : 'Save name'}
         </button>
       </div>
     </form>

@@ -12,6 +12,11 @@ export const AUTH_LIMITS = {
   // Password must contain at least this many distinct character classes
   // out of: lowercase, uppercase, digit, symbol.
   PASSWORD_MIN_CLASSES: 3,
+  // First / last name limits (migration 012). 60 each leaves plenty of
+  // room for hyphenated / multi-word real names while keeping the
+  // leaderboard parenthetical from blowing out the row.
+  NAME_MIN: 1,
+  NAME_MAX: 60,
 } as const;
 
 // Permissive email regex — RFC 5322 is impractical to enforce
@@ -72,10 +77,31 @@ export function validateDisplayName(name: string): string | null {
   return null;
 }
 
+/**
+ * Validate a single first/last name field. Returns an error string when
+ * invalid, ``null`` when OK. `label` is interpolated into the message so
+ * callers can reuse the helper for either field without duplicating the
+ * length rules.
+ */
+export function validateName(value: string, label: 'First name' | 'Last name'): string | null {
+  if (!value) {
+    return `${label} is required.`;
+  }
+  if (value.length < AUTH_LIMITS.NAME_MIN) {
+    return `${label} must be at least ${AUTH_LIMITS.NAME_MIN} character.`;
+  }
+  if (value.length > AUTH_LIMITS.NAME_MAX) {
+    return `${label} must be ${AUTH_LIMITS.NAME_MAX} characters or fewer.`;
+  }
+  return null;
+}
+
 export function validateRegistration(input: {
   email:        string;
   display_name: string;
   password:     string;
+  first_name:   string;
+  last_name:    string;
 }): Record<string, string> {
   const errors: Record<string, string> = {};
 
@@ -89,6 +115,12 @@ export function validateRegistration(input: {
 
   const nameError = validateDisplayName(input.display_name);
   if (nameError) errors.display_name = nameError;
+
+  const firstErr = validateName(input.first_name, 'First name');
+  if (firstErr) errors.first_name = firstErr;
+
+  const lastErr = validateName(input.last_name, 'Last name');
+  if (lastErr) errors.last_name = lastErr;
 
   const pwError = validatePassword(input.password);
   if (pwError) errors.password = pwError;

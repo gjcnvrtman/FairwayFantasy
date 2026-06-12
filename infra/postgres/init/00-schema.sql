@@ -52,6 +52,8 @@ CREATE TABLE profiles (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   display_name  TEXT NOT NULL,
   email         TEXT NOT NULL UNIQUE,
+  first_name    TEXT,
+  last_name     TEXT,
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 

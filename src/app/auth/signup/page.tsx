@@ -36,6 +36,8 @@ function SignUpForm() {
   const emailPrefill = params.get('email') ?? '';
 
   const [displayName, setDisplayName] = useState('');
+  const [firstName,   setFirstName]   = useState('');
+  const [lastName,    setLastName]    = useState('');
   const [email, setEmail]             = useState(emailPrefill);
   const [password, setPassword]       = useState('');
   // Pre-fill from the redirect path when arriving via an invite link.
@@ -61,6 +63,8 @@ function SignUpForm() {
         body:    JSON.stringify({
           email,
           display_name: displayName,
+          first_name:   firstName,
+          last_name:    lastName,
           password,
           leagueSlug,
           inviteCode,
@@ -244,7 +248,7 @@ function SignUpForm() {
             )}
 
             <div className="field">
-              <label className="label" htmlFor="display_name">Your Name</label>
+              <label className="label" htmlFor="display_name">Display Name</label>
               <input
                 id="display_name"
                 className="input"
@@ -255,11 +259,50 @@ function SignUpForm() {
                 onChange={e => setDisplayName(e.target.value)}
                 maxLength={AUTH_LIMITS.DISPLAY_NAME_MAX}
                 aria-invalid={!!fieldErrors.display_name}
-                autoComplete="name"
+                autoComplete="nickname"
               />
               {fieldErrors.display_name
                 ? <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.display_name}</p>
                 : <p className="hint">This is how you&rsquo;ll appear on leaderboards.</p>}
+            </div>
+
+            <div className="field" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+              <div>
+                <label className="label" htmlFor="first_name">First Name</label>
+                <input
+                  id="first_name"
+                  className="input"
+                  type="text"
+                  required
+                  placeholder="Rory"
+                  value={firstName}
+                  onChange={e => setFirstName(e.target.value)}
+                  maxLength={AUTH_LIMITS.NAME_MAX}
+                  aria-invalid={!!fieldErrors.first_name}
+                  autoComplete="given-name"
+                />
+                {fieldErrors.first_name && (
+                  <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.first_name}</p>
+                )}
+              </div>
+              <div>
+                <label className="label" htmlFor="last_name">Last Name</label>
+                <input
+                  id="last_name"
+                  className="input"
+                  type="text"
+                  required
+                  placeholder="McIlroy"
+                  value={lastName}
+                  onChange={e => setLastName(e.target.value)}
+                  maxLength={AUTH_LIMITS.NAME_MAX}
+                  aria-invalid={!!fieldErrors.last_name}
+                  autoComplete="family-name"
+                />
+                {fieldErrors.last_name && (
+                  <p className="hint" style={{ color: 'var(--red)' }}>{fieldErrors.last_name}</p>
+                )}
+              </div>
             </div>
 
             <div className="field">
