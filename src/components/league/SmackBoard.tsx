@@ -40,9 +40,6 @@ interface Props {
 const POLL_MS = 20_000;
 const BODY_MAX = 500;
 
-function collapsedKey(slug: string, tournamentId: string) {
-  return `smackboard:collapsed:${slug}:${tournamentId}`;
-}
 function lastSeenKey(slug: string, tournamentId: string) {
   return `smackboard:lastSeen:${slug}:${tournamentId}`;
 }
@@ -56,11 +53,12 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
   const [sending,  setSending] = useState(false);
   const [sendErr,  setSendErr] = useState('');
 
-  // collapsed / lastSeen — both hydrated from localStorage after mount
-  // so the SSR-rendered HTML matches the first client paint (everyone
-  // starts expanded). Greg's call after the 2026-06-12 floating-panel
-  // bug: lean towards "visible by default" so the chat is never
-  // unreachable due to a hydration mismatch.
+  // collapsed — always starts expanded on page load. NOT persisted to
+  // localStorage (Greg's call 2026-06-12, second iteration: the chat
+  // should auto-open every visit; the collapse button is just for
+  // momentary hiding within a session). lastSeen still uses localStorage
+  // because the unread badge needs to remember the last reading point
+  // across visits — different concern from open/closed UI state.
   const [collapsed, setCollapsed] = useState(false);
   const [lastSeen,  setLastSeen]  = useState<number>(0);
 
@@ -70,21 +68,14 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
 
   const visibleRef = useRef(true);
 
-  // ── localStorage hydration ───────────────────────────────────
+  // ── localStorage hydration — lastSeen only (collapsed always
+  //    starts expanded; see comment on useState).
   useEffect(() => {
     try {
-      const c = window.localStorage.getItem(collapsedKey(slug, tournamentId));
-      if (c === '1') setCollapsed(true);
       const ls = window.localStorage.getItem(lastSeenKey(slug, tournamentId));
       if (ls) setLastSeen(Number(ls) || 0);
     } catch { /* private-mode / SSR — ignore */ }
   }, [slug, tournamentId]);
-
-  // Persist collapsed state.
-  useEffect(() => {
-    try { window.localStorage.setItem(collapsedKey(slug, tournamentId), collapsed ? '1' : '0'); }
-    catch { /* ignore */ }
-  }, [collapsed, slug, tournamentId]);
 
   // When the board expands, mark "now" as seen so the unread badge
   // clears. Expanding === reading.
