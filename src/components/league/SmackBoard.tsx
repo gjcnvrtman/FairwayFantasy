@@ -1,42 +1,25 @@
 'use client';
 
 // ─────────────────────────────────────────────────────────────
-// SMACK BOARD — per-tournament chat thread. Renders as a
-// floating panel anchored bottom-right with a launcher FAB,
-// close button, and per-tournament open/closed state persisted
-// in localStorage. On viewports < 640px the panel expands to
-// fill the screen so it isn't squashed against thumbs.
+// SMACK BOARD — per-tournament chat thread rendered below the
+// active-tournament leaderboard. Polls every 20s when expanded.
+// Newest message at the top so the latest takes don't get buried.
 //
 // Each row:
 //   • author display_name + relative time
 //   • body
 //   • optional ✕ delete button (own message OR commissioner/co)
 //
-// Compose box at the bottom: textarea (auto-grow to 4 rows),
-// Enter to send, Shift+Enter for newline, Send button.
+// Compose box at the bottom: textarea, Enter to send,
+// Shift+Enter for newline, Send button.
 //
-// Polls every 20s while open AND tab is visible. The launcher
-// also polls (slower, 60s) so the unread badge stays current
-// without the panel being open.
+// Collapse state — the title bar always renders so the user
+// knows the board exists; the messages + compose collapse to a
+// single line when toggled off. Persisted per league+tournament
+// in localStorage so the choice survives navigation.
 // ─────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
-// Match the panel's mobile breakpoint. Kept in sync with the inline
-// style overrides below so both branch on the same threshold.
-const MOBILE_MAX_PX = 640;
-
-function useIsMobile(): boolean {
-  const [mobile, setMobile] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${MOBILE_MAX_PX}px)`);
-    const apply = () => setMobile(mq.matches);
-    apply();
-    mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
-  }, []);
-  return mobile;
-}
 
 interface MessageView {
   id:           string;
@@ -54,15 +37,17 @@ interface Props {
   currentUserId:  string;
 }
 
-const POLL_MS_OPEN   = 20_000;
-const POLL_MS_CLOSED = 60_000;
-const BODY_MAX       = 500;
+const POLL_MS = 20_000;
+const BODY_MAX = 500;
 
-function openKey(slug: string, tournamentId: string)     { return `smackboard:open:${slug}:${tournamentId}`; }
-function lastSeenKey(slug: string, tournamentId: string) { return `smackboard:lastSeen:${slug}:${tournamentId}`; }
+function collapsedKey(slug: string, tournamentId: string) {
+  return `smackboard:collapsed:${slug}:${tournamentId}`;
+}
+function lastSeenKey(slug: string, tournamentId: string) {
+  return `smackboard:lastSeen:${slug}:${tournamentId}`;
+}
 
 export default function SmackBoard({ slug, tournamentId, tournamentName, currentUserId }: Props) {
-  const isMobile = useIsMobile();
   const [messages,  setMessages]  = useState<MessageView[]>([]);
   const [loaded,    setLoaded]    = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -71,11 +56,13 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
   const [sending,  setSending] = useState(false);
   const [sendErr,  setSendErr] = useState('');
 
-  // open / lastSeen — hydrated from localStorage on mount. SSR-safe:
-  // start closed, then snap to the persisted value in the effect so
-  // the server-rendered HTML matches the first client paint.
-  const [open,     setOpen]     = useState(false);
-  const [lastSeen, setLastSeen] = useState<number>(0);
+  // collapsed / lastSeen — both hydrated from localStorage after mount
+  // so the SSR-rendered HTML matches the first client paint (everyone
+  // starts expanded). Greg's call after the 2026-06-12 floating-panel
+  // bug: lean towards "visible by default" so the chat is never
+  // unreachable due to a hydration mismatch.
+  const [collapsed, setCollapsed] = useState(false);
+  const [lastSeen,  setLastSeen]  = useState<number>(0);
 
   // The "tick" state forces a re-render every minute so relative
   // timestamps ("3m ago") stay fresh without re-polling.
@@ -86,20 +73,29 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
   // ── localStorage hydration ───────────────────────────────────
   useEffect(() => {
     try {
-      const o = window.localStorage.getItem(openKey(slug, tournamentId));
-      if (o === '1') setOpen(true);
+      const c = window.localStorage.getItem(collapsedKey(slug, tournamentId));
+      if (c === '1') setCollapsed(true);
       const ls = window.localStorage.getItem(lastSeenKey(slug, tournamentId));
       if (ls) setLastSeen(Number(ls) || 0);
     } catch { /* private-mode / SSR — ignore */ }
   }, [slug, tournamentId]);
 
-  // Persist open state.
+  // Persist collapsed state.
   useEffect(() => {
-    try { window.localStorage.setItem(openKey(slug, tournamentId), open ? '1' : '0'); }
+    try { window.localStorage.setItem(collapsedKey(slug, tournamentId), collapsed ? '1' : '0'); }
     catch { /* ignore */ }
-  }, [open, slug, tournamentId]);
+  }, [collapsed, slug, tournamentId]);
 
-  // ── data fetch ───────────────────────────────────────────────
+  // When the board expands, mark "now" as seen so the unread badge
+  // clears. Expanding === reading.
+  useEffect(() => {
+    if (collapsed) return;
+    const now = Date.now();
+    setLastSeen(now);
+    try { window.localStorage.setItem(lastSeenKey(slug, tournamentId), String(now)); }
+    catch { /* ignore */ }
+  }, [collapsed, slug, tournamentId]);
+
   const reload = useCallback(async (signal?: AbortSignal) => {
     try {
       const res = await fetch(
@@ -123,17 +119,17 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
     }
   }, [slug, tournamentId]);
 
-  // Initial load + poll loop. Cadence depends on whether the panel
-  // is open (fast) or closed (slow — just keeps unread count fresh).
+  // Initial load + poll loop. Polls regardless of collapse state so
+  // the unread badge stays accurate; the only thing collapse changes
+  // is the rendered thread/compose section.
   useEffect(() => {
     const ctrl = new AbortController();
     reload(ctrl.signal);
 
-    const interval = open ? POLL_MS_OPEN : POLL_MS_CLOSED;
     const id = window.setInterval(() => {
       if (!visibleRef.current) return;
       reload();
-    }, interval);
+    }, POLL_MS);
 
     const onVis = () => { visibleRef.current = document.visibilityState === 'visible'; };
     document.addEventListener('visibilitychange', onVis);
@@ -143,38 +139,27 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [reload, open]);
+  }, [reload]);
 
-  // Tick the relative-time clock every 60s while open.
+  // Tick the relative-time clock every 60s while the body is shown.
   useEffect(() => {
-    if (!open) return;
+    if (collapsed) return;
     const id = window.setInterval(() => setTick(t => t + 1), 60_000);
     return () => window.clearInterval(id);
-  }, [open]);
-
-  // When the panel opens, mark "now" as seen so the badge clears.
-  useEffect(() => {
-    if (!open) return;
-    const now = Date.now();
-    setLastSeen(now);
-    try { window.localStorage.setItem(lastSeenKey(slug, tournamentId), String(now)); }
-    catch { /* ignore */ }
-  }, [open, slug, tournamentId]);
+  }, [collapsed]);
 
   // Unread = messages newer than lastSeen, excluding your own. Until
-  // hydration completes lastSeen is 0, which would mark every message
-  // unread on first paint; gate the badge on `loaded` so the count
-  // only appears once we actually know what to compare against.
+  // loaded is true the count would inflate every message; gate the
+  // badge so it only appears once the message list is known.
   const unread = useMemo(() => {
-    if (!loaded) return 0;
+    if (!loaded || !collapsed) return 0;
     return messages.filter(m => {
       if (m.user_id === currentUserId) return false;
       const t = Date.parse(m.created_at);
       return Number.isFinite(t) && t > lastSeen;
     }).length;
-  }, [messages, lastSeen, currentUserId, loaded]);
+  }, [messages, lastSeen, currentUserId, loaded, collapsed]);
 
-  // ── send / delete ────────────────────────────────────────────
   async function send() {
     const body = draft.trim();
     if (!body || sending) return;
@@ -231,231 +216,132 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
   const overLimit = draftLen > BODY_MAX;
   const canSend = !sending && draftLen >= 1 && !overLimit;
 
-  // ── Launcher (closed) ────────────────────────────────────────
-  if (!open) {
-    return (
+  return (
+    <div className="card">
+      {/* Header — always visible. Click anywhere to toggle. */}
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        aria-label={unread > 0 ? `Open Smack Board (${unread} new)` : 'Open Smack Board'}
-        title="Smack Board"
+        onClick={() => setCollapsed(c => !c)}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand Smack Board' : 'Collapse Smack Board'}
         style={{
-          position: 'fixed',
-          right: '1.25rem',
-          bottom: '1.25rem',
-          zIndex: 90,
-          width: 56,
-          height: 56,
-          borderRadius: '50%',
-          border: 'none',
-          background: 'var(--green-dark, #1a2f1e)',
-          color: '#fff',
-          fontSize: '1.5rem',
-          cursor: 'pointer',
-          boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+          flexWrap: 'wrap', gap: '0.5rem',
+          width: '100%', background: 'transparent', border: 'none', padding: 0,
+          cursor: 'pointer', textAlign: 'left', font: 'inherit', color: 'inherit',
         }}
       >
-        💬
-        {unread > 0 && (
+        <h2 style={{
+          fontFamily: "'Playfair Display', serif",
+          fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.2rem',
+        }}>
+          💬 Smack Board
+          {collapsed && unread > 0 && (
+            <span
+              style={{
+                marginLeft: '0.5rem',
+                padding: '0.05rem 0.45rem',
+                borderRadius: 11,
+                background: 'var(--red)',
+                color: '#fff',
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                verticalAlign: 'middle',
+              }}
+            >
+              {unread > 99 ? '99+' : unread} new
+            </span>
+          )}
+        </h2>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <span style={{ color: 'var(--slate-mid)', fontSize: '0.8rem' }}>
+            {tournamentName} · resets each tournament
+          </span>
           <span
             aria-hidden
             style={{
-              position: 'absolute',
-              top: -4,
-              right: -4,
-              minWidth: 22,
-              height: 22,
-              padding: '0 6px',
-              borderRadius: 11,
-              background: 'var(--red, #b3271a)',
-              color: '#fff',
-              fontSize: '0.72rem',
-              fontWeight: 700,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 28, height: 28, borderRadius: 6,
+              background: 'var(--cream-dark)', color: 'var(--slate-mid)',
+              fontSize: '1.1rem', lineHeight: 1,
             }}
           >
-            {unread > 99 ? '99+' : unread}
+            {collapsed ? '+' : '−'}
           </span>
-        )}
+        </span>
       </button>
-    );
-  }
 
-  // ── Floating panel (open) ────────────────────────────────────
-  const panelStyle: React.CSSProperties = isMobile
-    ? {
-        position: 'fixed',
-        inset: 0,
-        zIndex: 100,
-        width: '100vw',
-        maxHeight: '100vh',
-        background: 'var(--cream, #fafaf5)',
-        borderRadius: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }
-    : {
-        position: 'fixed',
-        right: '1.25rem',
-        bottom: '1.25rem',
-        zIndex: 100,
-        width: 'min(380px, calc(100vw - 2.5rem))',
-        maxHeight: 'min(620px, calc(100vh - 2.5rem))',
-        background: 'var(--cream, #fafaf5)',
-        borderRadius: 10,
-        boxShadow: '0 12px 32px rgba(0,0,0,0.28)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        border: '1px solid var(--cream-dark, #e5e1d4)',
-      };
-
-  return (
-    <>
-      {/* Mobile-only backdrop — fills the screen behind the full-screen
-          panel and closes it on tap. Desktop skips it entirely. */}
-      {isMobile && (
-        <div
-          onClick={() => setOpen(false)}
-          aria-hidden
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0, 0, 0, 0.35)',
-            zIndex: 99,
-          }}
-        />
-      )}
-
-      <div
-        role="dialog"
-        aria-label={`Smack Board — ${tournamentName}`}
-        style={panelStyle}
-      >
-        {/* Header */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.5rem',
-          padding: '0.75rem 0.9rem',
-          background: 'var(--green-dark, #1a2f1e)',
-          color: '#fff',
-        }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{
-              fontFamily: "'Playfair Display', serif",
-              fontSize: '1.05rem', fontWeight: 700, lineHeight: 1.2,
-            }}>
-              💬 Smack Board
-            </div>
-            <div style={{
-              fontSize: '0.72rem',
-              color: 'rgba(255,255,255,0.65)',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              {tournamentName} · resets each tournament
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            aria-label="Close Smack Board"
-            title="Close"
-            style={{
-              flexShrink: 0,
-              width: 32, height: 32,
-              border: 'none', background: 'transparent',
-              color: '#fff', fontSize: '1.25rem',
-              cursor: 'pointer', borderRadius: 6,
-              lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Thread — flex:1 so it grows and scrolls while compose stays pinned. */}
-        <div style={{
-          flex: '1 1 auto',
-          minHeight: 0,
-          overflowY: 'auto',
-          padding: '0.75rem 0.9rem',
-          display: 'flex', flexDirection: 'column', gap: '0.55rem',
-        }}>
-          {!loaded && (
-            <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>Loading…</p>
-          )}
-          {loaded && loadError && (
-            <div className="alert alert-error" role="alert">{loadError}</div>
-          )}
-          {loaded && !loadError && messages.length === 0 && (
-            <p style={{ color: 'var(--slate-mid)', fontSize: '0.88rem', lineHeight: 1.5 }}>
-              Crickets. Be the first to weigh in — the board resets when
-              the next tournament starts.
-            </p>
-          )}
-          {messages.map(m => (
-            <MessageRow
-              key={m.id}
-              msg={m}
-              isOwn={m.user_id === currentUserId}
-              onDelete={m.canDelete ? () => deleteMessage(m.id) : undefined}
+      {!collapsed && (
+        <>
+          {/* ── Compose ─────────────────────────────────────────── */}
+          <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            <textarea
+              className="input"
+              placeholder="Say something the group will regret reading…"
+              rows={2}
+              maxLength={BODY_MAX + 50 /* let them paste over, we still validate */}
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              disabled={sending}
+              style={{ resize: 'vertical', minHeight: '4.5rem', fontFamily: 'inherit' }}
+              aria-label="Write a smack-board message"
             />
-          ))}
-        </div>
-
-        {/* Compose — pinned to the bottom of the panel. */}
-        <div style={{
-          padding: '0.65rem 0.9rem 0.8rem',
-          borderTop: '1px solid var(--cream-dark, #e5e1d4)',
-          display: 'flex', flexDirection: 'column', gap: '0.4rem',
-          background: 'var(--cream, #fafaf5)',
-        }}>
-          <textarea
-            className="input"
-            placeholder="Say something the group will regret reading…"
-            rows={2}
-            maxLength={BODY_MAX + 50}
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={sending}
-            style={{ resize: 'none', minHeight: '3.2rem', fontFamily: 'inherit' }}
-            aria-label="Write a smack-board message"
-          />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-            <span style={{
-              fontSize: '0.75rem',
-              color: overLimit ? 'var(--red)' : 'var(--slate-mid)',
-            }}>
-              {draftLen} / {BODY_MAX}
-              {overLimit && ' — too long'}
-            </span>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={!canSend}
-              aria-busy={sending}
-              onClick={send}
-            >
-              {sending ? 'Sending…' : 'Send'}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <span style={{
+                fontSize: '0.78rem',
+                color: overLimit ? 'var(--red)' : 'var(--slate-mid)',
+              }}>
+                {draftLen} / {BODY_MAX}
+                {overLimit && ' — too long'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!canSend}
+                aria-busy={sending}
+                onClick={send}
+              >
+                {sending ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+            {sendErr && (
+              <div className="alert alert-error" role="alert">{sendErr}</div>
+            )}
           </div>
-          {sendErr && (
-            <div className="alert alert-error" role="alert">{sendErr}</div>
-          )}
-        </div>
-      </div>
 
-    </>
+          {/* ── Thread ──────────────────────────────────────────── */}
+          <div style={{
+            marginTop: '1rem',
+            maxHeight: 420,
+            overflowY: 'auto',
+            display: 'flex', flexDirection: 'column', gap: '0.6rem',
+            paddingRight: '0.25rem',
+          }}>
+            {!loaded && (
+              <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem' }}>Loading…</p>
+            )}
+            {loaded && loadError && (
+              <div className="alert alert-error" role="alert">{loadError}</div>
+            )}
+            {loaded && !loadError && messages.length === 0 && (
+              <p style={{ color: 'var(--slate-mid)', fontSize: '0.88rem', lineHeight: 1.5 }}>
+                Crickets. Be the first to weigh in — the board resets when
+                the next tournament starts.
+              </p>
+            )}
+            {messages.map(m => (
+              <MessageRow
+                key={m.id}
+                msg={m}
+                isOwn={m.user_id === currentUserId}
+                onDelete={m.canDelete ? () => deleteMessage(m.id) : undefined}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
