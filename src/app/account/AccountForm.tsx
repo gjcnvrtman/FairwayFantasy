@@ -37,11 +37,12 @@ interface Props {
   profileDisplayName: string;
   profileFirstName: string;
   profileLastName:  string;
+  isPlatformAdmin:  boolean;
 }
 
 export default function AccountForm({
   initialPrefs, profileEmail, profileDisplayName,
-  profileFirstName, profileLastName,
+  profileFirstName, profileLastName, isPlatformAdmin,
 }: Props) {
   // Single source of truth for the prefs row — both Recaps and
   // Reminders cards read + mutate this, and both send a full
@@ -61,6 +62,7 @@ export default function AccountForm({
         prefs={prefs}
         onPrefsChange={setPrefs}
         profileEmail={profileEmail}
+        isPlatformAdmin={isPlatformAdmin}
       />
       <div>
         <Link href="/dashboard" className="btn btn-ghost">Back to dashboard</Link>
@@ -486,11 +488,12 @@ function RecapsCard({
 // ─────────────────────────────────────────────────────────────
 
 function RemindersCard({
-  prefs, onPrefsChange, profileEmail,
+  prefs, onPrefsChange, profileEmail, isPlatformAdmin,
 }: {
   prefs: Prefs;
   onPrefsChange: (p: Prefs) => void;
   profileEmail: string;
+  isPlatformAdmin: boolean;
 }) {
   const [emailAddr,  setEmailAddr]   = useState(prefs.email_addr ?? '');
   const [hoursBefore, setHoursBefore] = useState(prefs.hours_before);
@@ -564,7 +567,7 @@ function RemindersCard({
 
       <ToggleRow
         label="Email pick reminders"
-        helper={emailAddr.trim() || profileEmail || 'No email on file'}
+        helper={(isPlatformAdmin && emailAddr.trim()) || profileEmail || 'No email on file'}
         checked={prefs.email_enabled}
         disabled={saving}
         onChange={v => save({ email_enabled: v })}
@@ -572,22 +575,24 @@ function RemindersCard({
 
       {prefs.email_enabled && (
         <>
-          <div>
-            <label className="label" htmlFor="email_addr">Override email (optional)</label>
-            <input
-              id="email_addr"
-              className="input"
-              type="email"
-              inputMode="email"
-              autoComplete="email"
-              placeholder={profileEmail ? `Defaults to ${profileEmail}` : 'you@example.com'}
-              value={emailAddr}
-              onChange={e => setEmailAddr(e.target.value)}
-            />
-            <p className="hint">
-              Leave blank to use your account email.
-            </p>
-          </div>
+          {isPlatformAdmin && (
+            <div>
+              <label className="label" htmlFor="email_addr">Override email (optional)</label>
+              <input
+                id="email_addr"
+                className="input"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder={profileEmail ? `Defaults to ${profileEmail}` : 'you@example.com'}
+                value={emailAddr}
+                onChange={e => setEmailAddr(e.target.value)}
+              />
+              <p className="hint">
+                Leave blank to use your account email.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="label" htmlFor="hours_before">

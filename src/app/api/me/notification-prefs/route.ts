@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { requireSameOrigin } from '@/lib/same-origin';
+import { isPlatformAdmin } from '@/lib/platform-admin';
 
 // Auth-gated; reads/writes per-user data. Never prerender.
 export const dynamic = 'force-dynamic';
@@ -82,9 +83,20 @@ export async function PUT(req: NextRequest) {
   }
 
   // Optional per-channel destinations. Empty string → null so the
-  // default-to-profile-email path kicks in.
-  const emailAddr = typeof body.email_addr === 'string' && body.email_addr.trim() !== ''
-    ? body.email_addr.trim() : null;
+  // default-to-profile-email path kicks in. The email override is
+  // gated to platform admins — non-admins are silently coerced to
+  // null since the UI doesn't expose the field for them. We resolve
+  // the admin check against profiles.email (the DB source of truth)
+  // rather than session.email — the JWT is minted at signin and can
+  // be stale if the user's email was changed since.
+  const profile = await db.selectFrom('profiles')
+    .select('email')
+    .where('id', '=', user.id)
+    .executeTakeFirst();
+  const emailAddr = isPlatformAdmin(profile?.email)
+    && typeof body.email_addr === 'string'
+    && body.email_addr.trim() !== ''
+      ? body.email_addr.trim() : null;
   const phoneE164 = typeof body.phone_e164 === 'string' && body.phone_e164.trim() !== ''
     ? body.phone_e164.trim() : null;
   const pushToken = typeof body.push_token === 'string' && body.push_token.trim() !== ''

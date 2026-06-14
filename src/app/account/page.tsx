@@ -6,6 +6,7 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
+import { isPlatformAdmin } from '@/lib/platform-admin';
 import Nav from '@/components/layout/Nav';
 import AccountForm from './AccountForm';
 import type { Metadata } from 'next';
@@ -75,6 +76,7 @@ export default async function AccountPage() {
             profileDisplayName={profile?.display_name ?? ''}
             profileFirstName={profile?.first_name ?? ''}
             profileLastName={profile?.last_name ?? ''}
+            isPlatformAdmin={isPlatformAdmin(profile?.email)}
           />
         </div>
       </div>
