@@ -99,11 +99,11 @@ export async function runScoreSync(): Promise<SyncSummary> {
     // Sweep AFTER syncTournament finishes so any newly-flipped
     // status / cut_score is in place when we check eligibility.
     await sweepMissedPicks();
-    // Daily-scorecard email — once every cut-survivor reports
-    // thru=18 for the current round, fire one email per (user,
-    // league) with the leaderboard + PDF scorecard. Idempotent
-    // via daily_scorecard_log.
-    await detectAndSendDailyScorecards();
+    // Daily-scorecard email runs on its own 7pm CT Thu-Sun timer
+    // (fairway-daily-scorecard.timer → /api/scheduled/daily-scorecard).
+    // It used to fire from here every sync, but the per-hole "round
+    // complete" gate (now relaxed) never tripped post-2026-05-14, and
+    // a daily 7pm cadence is what the recap is for anyway.
     // Tournament-recap email — fires once per (league, tournament)
     // when a tournament's status flips to 'complete'. One email per
     // user with final standings + their best round + a season-
@@ -1389,7 +1389,7 @@ async function sweepMissedPicksForTournament(
  * Best-effort throughout: per-tournament, per-round, and per-user
  * failures are logged and skipped without aborting the loop.
  */
-async function detectAndSendDailyScorecards(): Promise<void> {
+export async function detectAndSendDailyScorecards(): Promise<void> {
   try {
     const candidateTournaments = await db.selectFrom('tournaments')
       .select(['id', 'name', 'start_date', 'end_date', 'status'])
@@ -1414,8 +1414,18 @@ async function detectAndSendDailyScorecards(): Promise<void> {
 }
 
 /**
- * Per-tournament arm: check rounds 1..4 for completion, send what's
- * complete-but-not-yet-sent.
+ * Per-tournament arm: for each round 1..4 with ANY scored data,
+ * send the daily scorecard (idempotent via daily_scorecard_log).
+ *
+ * Gate (relaxed 2026-06-13): we no longer require every cut survivor
+ * to have an 18-element `round_N_holes` array. ESPN's `/pga/scoreboard`
+ * fallback (the only endpoint we get since `/pga/leaderboard` started
+ * 404ing 2026-05-14) doesn't reliably populate inner per-hole linescores
+ * for completed rounds — especially R4 — so the old gate never tripped
+ * and R3/R4 scorecards never went out for any tournament after that.
+ * Now we fire on the integer round total (`scores.round_N`), which IS
+ * populated by both endpoints. The daily-scorecard timer (7pm CT Thu-Sun)
+ * is the schedule; this function just picks which rounds have data.
  */
 async function sendScorecardsForCompletedRounds(t: {
   id: string;
@@ -1424,19 +1434,13 @@ async function sendScorecardsForCompletedRounds(t: {
   end_date:   string;
   status:     string;
 }): Promise<void> {
-  // Find every golfer in the field eligible for the round-complete
-  // check. Cut survivors only — golfers with status missed_cut /
-  // withdrawn / disqualified would never reach 18 on R3+.
   const fieldRows = await db.selectFrom('scores')
     .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
     .select([
       'golfers.id as golfer_id',
       'golfers.name as golfer_name',
       'scores.status',
-      'scores.round_1_holes',
-      'scores.round_2_holes',
-      'scores.round_3_holes',
-      'scores.round_4_holes',
+      'scores.round_1', 'scores.round_2', 'scores.round_3', 'scores.round_4',
     ])
     .where('scores.tournament_id', '=', t.id)
     .execute();
@@ -1458,7 +1462,7 @@ async function sendScorecardsForCompletedRounds(t: {
   if (leagues.length === 0) return;
 
   for (let roundNum = 1; roundNum <= 4; roundNum++) {
-    const col = `round_${roundNum}_holes` as const;
+    const totalCol = `round_${roundNum}` as const;
     // Filter to golfers expected to play this round: status active
     // or complete. (Pre-cut: all are active. Post-cut: MC/WD/DQ
     // are excluded.)
@@ -1466,17 +1470,17 @@ async function sendScorecardsForCompletedRounds(t: {
       r => r.status === 'active' || r.status === 'complete',
     );
     if (expectedPlayers.length === 0) continue;
-    const completedCount = expectedPlayers.filter(r => {
-      const arr = (r as Record<string, unknown>)[col] as number[] | null;
-      return Array.isArray(arr) && arr.length === 18;
-    }).length;
-    if (completedCount < expectedPlayers.length) {
-      // Round not complete yet. Stop iterating — later rounds
-      // can't be complete either.
-      break;
-    }
+    // Fire as soon as ANY expected player has finished the round.
+    // The 7pm timer is a daily snapshot — if a late group hasn't
+    // finished yet, their slot just shows null in the email.
+    const anyFinished = expectedPlayers.some(r => {
+      const total = (r as Record<string, unknown>)[totalCol];
+      return total != null;
+    });
+    if (!anyFinished) continue;
 
-    // Round is complete. For each league, check dedup + send.
+    // Idempotent per (league, tournament, round) — re-runs of the
+    // same day's sweep are cheap no-ops.
     for (const lg of leagues) {
       try {
         await sendDailyScorecardForLeague({

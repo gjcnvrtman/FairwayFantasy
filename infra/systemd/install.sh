@@ -45,9 +45,10 @@ echo "▸ Unit source:   $HERE"
 echo "▸ Install to:    /etc/systemd/system/"
 
 # ── Copy unit files ─────────────────────────────────────────
-for unit in fairway-rankings.service fairway-rankings.timer \
-            fairway-scores.service   fairway-scores.timer   \
-            fairway-field.service    fairway-field.timer; do
+for unit in fairway-rankings.service        fairway-rankings.timer        \
+            fairway-scores.service          fairway-scores.timer          \
+            fairway-field.service           fairway-field.timer           \
+            fairway-daily-scorecard.service fairway-daily-scorecard.timer; do
   src="$HERE/$unit"
   dst="/etc/systemd/system/$unit"
   cp "$src" "$dst"
@@ -59,6 +60,7 @@ systemctl daemon-reload
 systemctl enable --now fairway-rankings.timer
 systemctl enable --now fairway-scores.timer
 systemctl enable --now fairway-field.timer
+systemctl enable --now fairway-daily-scorecard.timer
 
 echo
 echo "▸ Timer status:"
@@ -81,6 +83,8 @@ echo "    systemctl list-timers fairway-*"
 echo "    journalctl -fu fairway-rankings"
 echo "    journalctl -fu fairway-scores"
 echo "    journalctl -fu fairway-field"
-echo "    systemctl start fairway-rankings.service   # fire manually"
-echo "    systemctl start fairway-scores.service     # fire manually"
-echo "    systemctl start fairway-field.service      # fire manually"
+echo "    journalctl -fu fairway-daily-scorecard"
+echo "    systemctl start fairway-rankings.service          # fire manually"
+echo "    systemctl start fairway-scores.service            # fire manually"
+echo "    systemctl start fairway-field.service             # fire manually"
+echo "    systemctl start fairway-daily-scorecard.service   # fire manually"

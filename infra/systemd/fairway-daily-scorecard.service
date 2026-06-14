@@ -1,0 +1,29 @@
+# /etc/systemd/system/fairway-daily-scorecard.service
+#
+# Fires the daily-scorecard sweep — one email per (user, league, round)
+# with the leaderboard + foursome PDF — for every tournament currently
+# in play. Idempotent via daily_scorecard_log; safe to re-run.
+#
+# Schedule: 7:00pm CT Thu-Sun via fairway-daily-scorecard.timer.
+# That's after the final groups typically finish their round (R1-R3
+# wrap ~5-7pm CT; R4 Sunday wraps ~5-6pm CT), so the snapshot captures
+# the day's play. Late groups still on course just show null in their
+# slot — the dedup log ensures the email isn't re-sent next sweep.
+
+[Unit]
+Description=Fairway Fantasy — daily scorecard recap (7pm CT Thu-Sun)
+After=fairway-fantasy.service network-online.target
+Wants=network-online.target
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+ExecStart=/usr/bin/curl -fsS --max-time 120 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/scheduled/daily-scorecard
+
+SuccessExitStatus=0

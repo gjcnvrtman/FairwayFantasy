@@ -1,0 +1,21 @@
+# /etc/systemd/system/fairway-daily-scorecard.timer
+#
+# Fires fairway-daily-scorecard.service at 7:00pm CT, Thursday through
+# Sunday. Server timezone is America/Chicago, so a bare 19:00:00 hits
+# the right wall-clock hour. PGA tournaments run Thu (R1), Fri (R2),
+# Sat (R3), Sun (R4); 7pm is comfortably after the final group on a
+# typical day.
+#
+# Persistent=true so a missed fire (server down at 7pm) catches up
+# on next boot rather than skipping that day's recap entirely.
+
+[Unit]
+Description=Daily 7pm CT Thu-Sun: send Fairway daily scorecard recap
+
+[Timer]
+OnCalendar=Thu,Fri,Sat,Sun *-*-* 19:00:00
+Persistent=true
+Unit=fairway-daily-scorecard.service
+
+[Install]
+WantedBy=timers.target
