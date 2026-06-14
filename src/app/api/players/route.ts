@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { computeTopTierIds } from '@/lib/field-tiers';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 
 // Public endpoint (no auth) — used by the picks page to populate the
@@ -10,7 +11,13 @@ import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 const RL_PLAYERS_LIMIT  = 60;
 const RL_PLAYERS_WINDOW = 600;
 
-// GET /api/players?tier=top|dark|all&search=name
+// GET /api/players?tier=top|dark|all&search=name&tournament_id=<uuid>
+//
+// `tier=top|dark` requires `tournament_id` — tier is per-tournament-
+// field as of 2026-06-13, computed via computeTopTierIds against the
+// field (golfers joined through `scores` for that tournament).
+// `tier=all` (or omitted) returns the global golfer list — no
+// tournament context needed.
 export async function GET(req: NextRequest) {
   const ip = clientIpFromHeaders(req.headers);
   const rl = await checkRateLimit({
@@ -25,20 +32,43 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const tier   = req.nextUrl.searchParams.get('tier') ?? 'all';
-  const search = req.nextUrl.searchParams.get('search') ?? '';
+  const tier         = req.nextUrl.searchParams.get('tier') ?? 'all';
+  const search       = req.nextUrl.searchParams.get('search') ?? '';
+  const tournamentId = req.nextUrl.searchParams.get('tournament_id');
 
-  let q = db.selectFrom('golfers')
-    .select(['id', 'espn_id', 'name', 'owgr_rank', 'is_dark_horse', 'headshot_url', 'country'])
-    // nulls last on `owgr_rank` so unranked golfers don't crowd the top.
-    .orderBy('owgr_rank', sb => sb.asc().nullsLast())
-    .limit(100);
-
-  if (tier === 'top')  q = q.where('is_dark_horse', '=', false);
-  if (tier === 'dark') q = q.where('is_dark_horse', '=', true);
-  if (search)          q = q.where('name', 'ilike', `%${search}%`);
+  if ((tier === 'top' || tier === 'dark') && !tournamentId) {
+    return NextResponse.json(
+      { error: `tier=${tier} requires tournament_id (tier is per-tournament-field).` },
+      { status: 400 },
+    );
+  }
 
   try {
+    // tier=top|dark → restrict to the tournament field + classify.
+    if (tier === 'top' || tier === 'dark') {
+      const field = await db.selectFrom('golfers')
+        .innerJoin('scores', 'scores.golfer_id', 'golfers.id')
+        .select(['golfers.id', 'golfers.espn_id', 'golfers.name',
+                 'golfers.owgr_rank', 'golfers.is_dark_horse',
+                 'golfers.headshot_url', 'golfers.country'])
+        .where('scores.tournament_id', '=', tournamentId as string)
+        .$if(!!search, qb => qb.where('golfers.name', 'ilike', `%${search}%`))
+        .orderBy('golfers.owgr_rank', sb => sb.asc().nullsLast())
+        .limit(200)
+        .execute();
+      const topTierIds = computeTopTierIds(field);
+      const filtered = tier === 'top'
+        ? field.filter(g => topTierIds.has(g.id))
+        : field.filter(g => !topTierIds.has(g.id));
+      return NextResponse.json({ golfers: filtered });
+    }
+
+    // tier=all → global golfer list.
+    let q = db.selectFrom('golfers')
+      .select(['id', 'espn_id', 'name', 'owgr_rank', 'is_dark_horse', 'headshot_url', 'country'])
+      .orderBy('owgr_rank', sb => sb.asc().nullsLast())
+      .limit(100);
+    if (search) q = q.where('name', 'ilike', `%${search}%`);
     const golfers = await q.execute();
     return NextResponse.json({ golfers });
   } catch (err) {

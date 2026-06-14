@@ -44,7 +44,12 @@ interface ScoreRow {
 
 type Slot = 0 | 1 | 2 | 3;
 const SLOT_LABELS = ['Top Tier #1', 'Top Tier #2', 'Dark Horse #1', 'Dark Horse #2'];
-const SLOT_HELP   = ['OWGR ranked 1–24', 'OWGR ranked 1–24', 'OWGR ranked 25+ or unranked', 'OWGR ranked 25+ or unranked'];
+const SLOT_HELP   = [
+  'Top 24 OWGR-ranked golfers in this tournament',
+  'Top 24 OWGR-ranked golfers in this tournament',
+  'Everyone else in the field',
+  'Everyone else in the field',
+];
 
 // ─────────────────────────────────────────────────────────────
 // Render
@@ -60,6 +65,10 @@ export default function PicksPage() {
   // from last week's roster would be a footgun.
   const [fieldPublished, setFieldPublished] = useState(true);
   const [golfers, setGolfers]       = useState<Golfer[]>([]);
+  // Set of golfer IDs that are top-tier IN THIS tournament (top 24
+  // ranked in the field, computed server-side; see src/lib/field-tiers.ts).
+  // Empty until /api/picks/setup responds.
+  const [topTierIds, setTopTierIds] = useState<Set<string>>(new Set());
   const [selected, setSelected]     = useState<(Golfer | null)[]>([null, null, null, null]);
   const [activeSlot, setActiveSlot] = useState<Slot | null>(null);
   const [search, setSearch]         = useState('');
@@ -100,6 +109,7 @@ export default function PicksPage() {
         setTournament(data.tournament);
         setFieldPublished(data.fieldPublished !== false);
         setGolfers(data.golfers ?? []);
+        setTopTierIds(new Set<string>(data.topTierIds ?? []));
         setLeagueId(data.leagueId);
         setAlreadyPicked(data.alreadyPickedIds ?? []);
         setScores(data.scores ?? []);
@@ -127,19 +137,21 @@ export default function PicksPage() {
   }, [slug]);
 
   // ── Filter golfers shown in the search panel ──────────────
+  // Tier check uses topTierIds (per-tournament classification from
+  // /api/picks/setup), NOT the global golfers.is_dark_horse column.
   const filteredGolfers = useCallback((): Golfer[] => {
     const q = search.toLowerCase().trim();
     return golfers.filter(g => {
       if (q && !g.name.toLowerCase().includes(q)) return false;
       if (activeSlot !== null) {
-        // Top-tier slots (0,1) accept only is_dark_horse === false
-        if (activeSlot < 2 && g.is_dark_horse !== false) return false;
-        // Dark-horse slots (2,3) accept is_dark_horse === true OR null (unranked)
-        if (activeSlot >= 2 && g.is_dark_horse === false) return false;
+        const isTop = topTierIds.has(g.id);
+        // Slots 0,1 = top tier; slots 2,3 = dark horse.
+        if (activeSlot < 2  && !isTop) return false;
+        if (activeSlot >= 2 &&  isTop) return false;
       }
       return true;
     });
-  }, [golfers, search, activeSlot]);
+  }, [golfers, search, activeSlot, topTierIds]);
 
   // ── Derived state ─────────────────────────────────────────
   const selectedCount = selected.filter(Boolean).length;
@@ -222,21 +234,24 @@ export default function PicksPage() {
 
   // Eligible replacements: golfers in the field who haven't teed
   // off yet (round_1 still null) AND aren't already in this user's
-  // foursome. The PUT /api/picks endpoint re-validates this on
-  // submit, so this is purely UX filtering.
+  // foursome AND match the WD'd golfer's tier (top-tier replaces
+  // top-tier; dark horse replaces dark horse). PUT /api/picks
+  // re-validates all of this server-side, so this is purely UX.
   const eligibleReplacements: Golfer[] = useMemo(() => {
     if (!replaceTarget) return [];
     const inFieldNotTeedOff = new Set(
       scores.filter(s => s.round_1 === null).map(s => s.golfer_id),
     );
     const pickedIds = new Set(selected.map(g => g?.id).filter(Boolean) as string[]);
+    const targetIsTopTier = topTierIds.has(replaceTarget.id);
     const q = replaceSearch.toLowerCase().trim();
     return golfers.filter(g =>
       inFieldNotTeedOff.has(g.id) &&
       !pickedIds.has(g.id) &&
+      topTierIds.has(g.id) === targetIsTopTier &&
       (q === '' || g.name.toLowerCase().includes(q)),
     );
-  }, [replaceTarget, scores, selected, golfers, replaceSearch]);
+  }, [replaceTarget, scores, selected, golfers, replaceSearch, topTierIds]);
 
   async function handleReplace(replacementGolferId: string) {
     if (!replaceTarget || !existingPickId) return;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { validatePick, isReplacementEligible, DUPLICATE_FOURSOME_MESSAGE } from '@/lib/scoring';
+import { computeTopTierIds } from '@/lib/field-tiers';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { isPickDeadlinePassed } from '@/lib/pick-deadline';
@@ -67,14 +68,19 @@ export async function POST(req: NextRequest) {
   if (isPickDeadlinePassed(tournament))
     return NextResponse.json({ error: 'The pick deadline has passed.' }, { status: 403 });
 
-  // Validate golfer tiers
+  // Pull the FULL tournament field so we can compute per-tournament
+  // tiers (top 24 ranked in the field). The picked-golfer subset is
+  // a fast in-memory filter once we have the field.
+  const fieldRows = await db.selectFrom('golfers')
+    .innerJoin('scores', 'scores.golfer_id', 'golfers.id')
+    .select(['golfers.id', 'golfers.name', 'golfers.owgr_rank'])
+    .where('scores.tournament_id', '=', tournamentId)
+    .execute();
+  const topTierIds = computeTopTierIds(fieldRows);
+
   const nonNull = (golferIds as Array<string | null>).filter(Boolean) as string[];
-  const golfers = nonNull.length > 0
-    ? await db.selectFrom('golfers')
-        .select(['id', 'name', 'owgr_rank', 'is_dark_horse'])
-        .where('id', 'in', nonNull)
-        .execute()
-    : [];
+  const pickedSet = new Set(nonNull);
+  const golfers = fieldRows.filter(g => pickedSet.has(g.id));
 
   // Get other picks for duplicate check
   const existingPicks = await db.selectFrom('picks')
@@ -89,7 +95,7 @@ export async function POST(req: NextRequest) {
     p.golfer_1_id && p.golfer_2_id && p.golfer_3_id && p.golfer_4_id,
   ) as Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
 
-  const errors = validatePick({ golferIds, golfers, existingPicks: eligible });
+  const errors = validatePick({ golferIds, golfers, topTierIds, existingPicks: eligible });
   if (errors.length > 0) return NextResponse.json({ errors }, { status: 400 });
 
   try {
@@ -174,6 +180,26 @@ export async function PUT(req: NextRequest) {
       { error: 'That golfer is not eligible — either already teed off or no longer active in the field.' },
       { status: 400 },
     );
+
+  // Tier-match enforcement: a top-tier slot can only be replaced by
+  // another top-tier golfer in this tournament's field; same for dark
+  // horse. Without this, a user could swap their WD'd top-tier pick
+  // for an unranked grinder and silently game the rules.
+  const fieldRows = await db.selectFrom('golfers')
+    .innerJoin('scores', 'scores.golfer_id', 'golfers.id')
+    .select(['golfers.id', 'golfers.owgr_rank'])
+    .where('scores.tournament_id', '=', pick.tournament_id)
+    .execute();
+  const topTierIds = computeTopTierIds(fieldRows);
+  const withdrawnIsTopTier   = topTierIds.has(withdrawnGolferId);
+  const replacementIsTopTier = topTierIds.has(replacementGolferId);
+  if (withdrawnIsTopTier !== replacementIsTopTier) {
+    const need = withdrawnIsTopTier ? 'top-tier' : 'dark-horse';
+    return NextResponse.json(
+      { error: `Replacement must be a ${need} golfer in this tournament's field.` },
+      { status: 400 },
+    );
+  }
 
   await db.updateTable('scores')
     .set({ was_replaced: true, replaced_by_golfer_id: replacementGolferId })

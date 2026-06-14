@@ -54,12 +54,9 @@ export const PICK_GOLFER_COUNT = 4;
 /** "Best of N" — only the top 3 of 4 count toward the total. */
 export const COUNTING_GOLFER_COUNT = 3;
 
-/**
- * Top-tier ceiling. Golfers with OWGR rank 1..24 are top-tier;
- * 25+ (or unranked) are dark-horse. Mirrors the schema's
- * GENERATED column `is_dark_horse = (owgr_rank > 24)`.
- */
-export const TOP_TIER_MAX_OWGR_RANK = 24;
+// TOP_TIER_MAX_OWGR_RANK removed 2026-06-13 — tier is per-tournament-
+// field now, not global OWGR rank. The size of the top tier lives in
+// src/lib/field-tiers.ts as TOP_TIER_SIZE.
 
 // ── Rule Application ─────────────────────────────────────────
 /**
@@ -292,34 +289,16 @@ export function computeLeagueResults(
 }
 
 // ── Pick Validation ──────────────────────────────────────────
-/**
- * Helper: is this golfer eligible for a top-tier slot?
- *
- * Top tier means OWGR rank 1..TOP_TIER_MAX_OWGR_RANK (24). The schema
- * computes ``is_dark_horse`` as ``GENERATED ALWAYS AS (owgr_rank > 24)
- * STORED``, which evaluates to NULL when ``owgr_rank`` is NULL — and
- * JS treats that null as falsy, so the previous ``if
- * (golfer.is_dark_horse)`` incorrectly let UNRANKED golfers slide into
- * top-tier slots.
- *
- * Source-of-truth alignment with ``src/lib/rankings.ts:isDarkHorse``
- * which says "Unranked counts as dark horse" → unranked is NOT
- * top-tier eligible.
- */
-function isTopTierEligible(golfer: { is_dark_horse: boolean | null; owgr_rank: number | null }): boolean {
-  // Only golfers with is_dark_horse === false (i.e., explicitly top tier
-  // per the schema's owgr_rank > 24 generated column) qualify.
-  return golfer.is_dark_horse === false;
-}
-
-/**
- * Helper: is this golfer eligible for a dark-horse slot?
- * Unranked (is_dark_horse === null) is accepted as dark horse —
- * matches ``src/lib/rankings.ts:isDarkHorse(null) === true``.
- */
-function isDarkHorseEligible(golfer: { is_dark_horse: boolean | null }): boolean {
-  return golfer.is_dark_horse === true || golfer.is_dark_horse === null;
-}
+//
+// Tier eligibility is per-tournament-field, not global. The caller
+// passes the Set of top-tier golfer IDs computed from the field via
+// `computeTopTierIds` in src/lib/field-tiers.ts. Membership in that
+// Set = top-tier; everyone else in the field = dark horse.
+//
+// (Replaced the prior is_dark_horse-column-based check 2026-06-13 so
+// "top tier" actually means "top 24 in THIS tournament" rather than
+// "global OWGR 1..24". Weak-field events used to have only ~5 top-
+// tier-eligible golfers; now the strongest 24 in any field qualify.)
 
 /**
  * User-facing message when another player in the same league +
@@ -349,10 +328,11 @@ export const DUPLICATE_FOURSOME_MESSAGE =
  */
 export function validatePick(params: {
   golferIds: (string | null)[];
-  golfers: Array<{ id: string; owgr_rank: number | null; is_dark_horse: boolean | null; name: string }>;
+  golfers: Array<{ id: string; owgr_rank: number | null; name: string }>;
+  topTierIds: Set<string>;
   existingPicks: Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
 }): string[] {
-  const { golferIds, golfers, existingPicks } = params;
+  const { golferIds, golfers, topTierIds, existingPicks } = params;
   const errors: string[] = [];
 
   const [g1, g2, g3, g4] = golferIds;
@@ -369,29 +349,29 @@ export function validatePick(params: {
     errors.push('You cannot pick the same golfer more than once.');
   }
 
-  // ── Slots 1-2 must be top tier (OWGR rank 1..TOP_TIER_MAX_OWGR_RANK) ──
+  // ── Slots 1-2 must be top tier (top 24 in this tournament's field) ──
   const topTierSlots = [g1, g2];
   topTierSlots.forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
     if (!golfer) return;
-    if (!isTopTierEligible(golfer)) {
+    if (!topTierIds.has(golfer.id)) {
       const rankNote = golfer.owgr_rank
         ? `ranked ${golfer.owgr_rank}`
         : 'unranked';
       errors.push(
-        `Slot ${i + 1} must be a top-tier golfer (ranked 1–${TOP_TIER_MAX_OWGR_RANK}). ${golfer.name} is ${rankNote}.`
+        `Slot ${i + 1} must be a top-tier golfer (top ${topTierIds.size} in this tournament's field). ${golfer.name} is ${rankNote}.`
       );
     }
   });
 
-  // ── Slots 3-4 must be dark horses (OWGR rank 25+ or unranked) ──
+  // ── Slots 3-4 must be dark horses (everyone else in the field) ──
   const darkHorseSlots = [g3, g4];
   darkHorseSlots.forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
     if (!golfer) return;
-    if (!isDarkHorseEligible(golfer)) {
+    if (topTierIds.has(golfer.id)) {
       errors.push(
-        `Slot ${i + 3} must be a dark horse (ranked ${TOP_TIER_MAX_OWGR_RANK + 1}+ or unranked). ${golfer.name} is ranked ${golfer.owgr_rank}.`
+        `Slot ${i + 3} must be a dark horse (any golfer in the field outside the top ${topTierIds.size}). ${golfer.name} is ranked ${golfer.owgr_rank}.`
       );
     }
   });
@@ -547,8 +527,8 @@ export type AutoLineupResult =
  * pick deadline.
  *
  * Rules enforced (matches validatePick semantics):
- *   - 2 top-tier golfers in slots 1+2 (is_dark_horse === false)
- *   - 2 dark-horse golfers in slots 3+4 (is_dark_horse !== false)
+ *   - 2 top-tier golfers in slots 1+2 (id ∈ topTierIds)
+ *   - 2 dark-horse golfers in slots 3+4 (id ∉ topTierIds)
  *   - All 4 distinct
  *   - Top-N (default 4) of each tier by owgr_rank are EXCLUDED from
  *     the pool. Ties are broken stably so the exclusion is
@@ -574,8 +554,8 @@ export function buildAutoLineup(args: {
     id:            string;
     name:          string;
     owgr_rank:     number | null;
-    is_dark_horse: boolean | null;
   }>;
+  topTierIds:     Set<string>;
   takenHashes:    Set<string>;
   excludeTopN?:   number;
   attempts?:      number;
@@ -585,10 +565,10 @@ export function buildAutoLineup(args: {
   const attempts    = args.attempts    ?? 50;
   const rng         = args.rng         ?? Math.random;
 
-  // Split by tier — same predicates as isTopTierEligible /
-  // isDarkHorseEligible above for one source of truth.
-  const topTierAll  = args.fieldGolfers.filter(g => g.is_dark_horse === false);
-  const darkHorseAll = args.fieldGolfers.filter(g => g.is_dark_horse !== false);
+  // Split by per-tournament tier (see src/lib/field-tiers.ts).
+  // Anything in topTierIds → top pool; everyone else in the field → dark.
+  const topTierAll   = args.fieldGolfers.filter(g => args.topTierIds.has(g.id));
+  const darkHorseAll = args.fieldGolfers.filter(g => !args.topTierIds.has(g.id));
 
   // Sort each tier by owgr_rank ascending, NULL ranks LAST so they're
   // never accidentally treated as "best". Drop the first N → pool.
@@ -628,9 +608,9 @@ export function buildAutoLineup(args: {
     const [t1, t2] = pick2(topPool);
     const [d1, d2] = pick2(darkPool);
     const ids: [string, string, string, string] = [t1.id, t2.id, d1.id, d2.id];
-    // Distinctness across tiers — defensive, shouldn't actually happen
-    // since topPool / darkPool are disjoint by definition, but the
-    // schema allows null is_dark_horse which we lump into dark-horse.
+    // Distinctness across tiers — defensive. topPool and darkPool are
+    // disjoint by construction (partition of the field on topTierIds
+    // membership), so duplicates here would mean a caller bug.
     if (new Set(ids).size !== 4) continue;
     const hash = computeFoursomeHash(ids);
     if (!args.takenHashes.has(hash)) {

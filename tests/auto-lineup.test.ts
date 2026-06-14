@@ -18,21 +18,25 @@ import {
 // Names + ids are deterministic ("top-1".."top-N", "dark-1".."dark-M")
 // and owgr_rank tracks position within tier so assertions about which
 // names got excluded are easy to write.
-function makeField(opts: { tops: number; darks: number }) {
-  const golfers: Array<{
-    id: string; name: string; owgr_rank: number | null; is_dark_horse: boolean | null;
-  }> = [];
+//
+// Returns the golfer list AND the topTierIds Set buildAutoLineup
+// expects — the set is simply {top-1..top-N}, mirroring what
+// computeTopTierIds would return on this synthetic field.
+function makeField(opts: { tops: number; darks: number }): {
+  golfers: Array<{ id: string; name: string; owgr_rank: number | null }>;
+  topTierIds: Set<string>;
+} {
+  const golfers: Array<{ id: string; name: string; owgr_rank: number | null }> = [];
+  const topTierIds = new Set<string>();
   for (let i = 1; i <= opts.tops; i++) {
-    golfers.push({ id: `top-${i}`, name: `Top ${i}`, owgr_rank: i, is_dark_horse: false });
+    golfers.push({ id: `top-${i}`, name: `Top ${i}`, owgr_rank: i });
+    topTierIds.add(`top-${i}`);
   }
   for (let i = 1; i <= opts.darks; i++) {
-    // dark horses start at OWGR 25 (per TOP_TIER_MAX_OWGR_RANK).
-    golfers.push({
-      id: `dark-${i}`, name: `Dark ${i}`,
-      owgr_rank: 24 + i, is_dark_horse: true,
-    });
+    // dark horses start at OWGR 25.
+    golfers.push({ id: `dark-${i}`, name: `Dark ${i}`, owgr_rank: 24 + i });
   }
-  return golfers;
+  return { golfers, topTierIds };
 }
 
 // Seeded deterministic RNG so test results don't drift.
@@ -65,8 +69,8 @@ describe('buildAutoLineup — pool sizing', () => {
     // 5 tops, exclude top 4 → pool of 1 → insufficient.
     const field = makeField({ tops: 5, darks: 30 });
     const r = buildAutoLineup({
-      fieldGolfers: field, takenHashes: new Set(),
-      rng: seededRng(1),
+      fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+      takenHashes: new Set(), rng: seededRng(1),
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/top-tier pool too small/);
@@ -75,8 +79,8 @@ describe('buildAutoLineup — pool sizing', () => {
   it('fails gracefully when dark-horse pool has < 2 after exclusion', () => {
     const field = makeField({ tops: 30, darks: 5 });
     const r = buildAutoLineup({
-      fieldGolfers: field, takenHashes: new Set(),
-      rng: seededRng(1),
+      fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+      takenHashes: new Set(), rng: seededRng(1),
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/dark-horse pool too small/);
@@ -86,8 +90,8 @@ describe('buildAutoLineup — pool sizing', () => {
     // exclude top 4 of each → pool of 2 each → exactly one combo possible.
     const field = makeField({ tops: 6, darks: 6 });
     const r = buildAutoLineup({
-      fieldGolfers: field, takenHashes: new Set(),
-      rng: seededRng(1),
+      fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+      takenHashes: new Set(), rng: seededRng(1),
     });
     expect(r.ok).toBe(true);
   });
@@ -101,8 +105,8 @@ describe('buildAutoLineup — exclusion of top-N by OWGR', () => {
     // Run many iterations with different RNG seeds.
     for (let seed = 1; seed <= 50; seed++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: new Set(),
-        rng: seededRng(seed),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: new Set(), rng: seededRng(seed),
       });
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -119,8 +123,8 @@ describe('buildAutoLineup — exclusion of top-N by OWGR', () => {
 
     for (let seed = 1; seed <= 50; seed++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: new Set(),
-        rng: seededRng(seed),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: new Set(), rng: seededRng(seed),
       });
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -134,7 +138,8 @@ describe('buildAutoLineup — exclusion of top-N by OWGR', () => {
   it('honors a custom excludeTopN', () => {
     const field = makeField({ tops: 20, darks: 30 });
     const r = buildAutoLineup({
-      fieldGolfers: field, takenHashes: new Set(),
+      fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+      takenHashes: new Set(),
       excludeTopN: 8,
       rng: seededRng(1),
     });
@@ -162,8 +167,8 @@ describe('buildAutoLineup — uniqueness vs takenHashes', () => {
     const taken = new Set<string>();
     for (let i = 0; i < 100; i++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: taken,
-        rng: seededRng(i * 31 + 7),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: taken, rng: seededRng(i * 31 + 7),
       });
       if (r.ok) taken.add(r.hash);
     }
@@ -171,8 +176,8 @@ describe('buildAutoLineup — uniqueness vs takenHashes', () => {
 
     for (let i = 0; i < 50; i++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: taken,
-        rng: seededRng(1000 + i),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: taken, rng: seededRng(1000 + i),
       });
       if (r.ok) {
         // Don't add to taken here — just verify each generation is
@@ -190,8 +195,8 @@ describe('buildAutoLineup — uniqueness vs takenHashes', () => {
     const onlyValid: [string, string, string, string] = ['top-5', 'top-6', 'dark-5', 'dark-6'];
     const taken = new Set([computeFoursomeHash(onlyValid)]);
     const r = buildAutoLineup({
-      fieldGolfers: field, takenHashes: taken,
-      rng: seededRng(1),
+      fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+      takenHashes: taken, rng: seededRng(1),
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/no unique foursome possible/);
@@ -203,8 +208,8 @@ describe('buildAutoLineup — tier assignment', () => {
     const field = makeField({ tops: 20, darks: 30 });
     for (let seed = 1; seed <= 20; seed++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: new Set(),
-        rng: seededRng(seed),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: new Set(), rng: seededRng(seed),
       });
       expect(r.ok).toBe(true);
       if (r.ok) {
@@ -222,8 +227,8 @@ describe('buildAutoLineup — tier assignment', () => {
     const field = makeField({ tops: 20, darks: 30 });
     for (let seed = 1; seed <= 20; seed++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: new Set(),
-        rng: seededRng(seed),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: new Set(), rng: seededRng(seed),
       });
       expect(r.ok).toBe(true);
       if (r.ok) expect(new Set(r.golferIds).size).toBe(4);
@@ -238,12 +243,14 @@ describe('buildAutoLineup — tier assignment', () => {
     // sort, NOT in the top-4 excluded).
     const field = makeField({ tops: 6, darks: 6 });
     for (let i = 1; i <= 5; i++) {
-      field.push({ id: `null-${i}`, name: `Null ${i}`, owgr_rank: null, is_dark_horse: true });
+      // Null-rank golfers join the field; computeTopTierIds excludes
+      // them by definition so they land in the dark pool.
+      field.golfers.push({ id: `null-${i}`, name: `Null ${i}`, owgr_rank: null });
     }
     for (let seed = 1; seed <= 30; seed++) {
       const r = buildAutoLineup({
-        fieldGolfers: field, takenHashes: new Set(),
-        rng: seededRng(seed),
+        fieldGolfers: field.golfers, topTierIds: field.topTierIds,
+        takenHashes: new Set(), rng: seededRng(seed),
       });
       expect(r.ok).toBe(true);
       if (r.ok) {

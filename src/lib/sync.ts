@@ -18,6 +18,7 @@ import {
   buildAutoLineup, computeFoursomeHash,
   MISSED_DEADLINE_PENALTY_STROKES,
 } from './scoring';
+import { computeTopTierIds } from './field-tiers';
 import { dispatchReminder, fieldPublishedMessage } from './notifier';
 import { effectivePickDeadline } from './pick-deadline';
 import {
@@ -1231,14 +1232,14 @@ async function sweepMissedPicksForTournament(
   if (missing.length === 0) return;
 
   // ── 5. Field for the tournament. Same query the picks page uses.
-  // We need id, name, owgr_rank, is_dark_horse on every golfer in the
-  // field (joined via scores). One query for the whole tournament —
-  // doesn't matter how many users we auto-assign.
+  // Per-tournament tier (top 24 ranked in THIS field) drives the
+  // split inside buildAutoLineup — computed once here, reused for
+  // every missing-pick user we assign in this sweep.
   const fieldRows = await db.selectFrom('scores')
     .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
     .select([
       'golfers.id as id', 'golfers.name as name',
-      'golfers.owgr_rank as owgr_rank', 'golfers.is_dark_horse as is_dark_horse',
+      'golfers.owgr_rank as owgr_rank',
     ])
     .where('scores.tournament_id', '=', t.id)
     .execute();
@@ -1248,6 +1249,7 @@ async function sweepMissedPicksForTournament(
     // technically didn't have anything to pick. Skip silently.
     return;
   }
+  const topTierIds = computeTopTierIds(fieldRows);
 
   // ── 6. Profile lookup for emails.
   const userIds = Array.from(new Set(missing.map(m => m.user_id)));
@@ -1267,11 +1269,11 @@ async function sweepMissedPicksForTournament(
     const taken = takenHashByLeague.get(m.league_id)!;
     const lineup = buildAutoLineup({
       fieldGolfers: fieldRows.map(r => ({
-        id:            r.id,
-        name:          r.name,
-        owgr_rank:     r.owgr_rank,
-        is_dark_horse: r.is_dark_horse,
+        id:        r.id,
+        name:      r.name,
+        owgr_rank: r.owgr_rank,
       })),
+      topTierIds,
       takenHashes: taken,
     });
 

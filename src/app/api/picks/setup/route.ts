@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { getLeagueBySlug } from '@/lib/db/queries';
+import { computeTopTierIds } from '@/lib/field-tiers';
 
 // Auth-gated, per-user — opt out of static analysis during build.
 export const dynamic = 'force-dynamic';
@@ -92,11 +93,17 @@ export async function GET(req: NextRequest) {
       .execute();
   }
 
+  // Per-tournament tier classification (see src/lib/field-tiers.ts).
+  // Returned as an array so the JSON payload is plain; the UI builds
+  // a Set from it. Empty array when field isn't published yet.
+  const topTierIds = Array.from(computeTopTierIds(golfers));
+
   return NextResponse.json({
     leagueId:    league.id,
     tournament,
     fieldPublished,
     golfers,
+    topTierIds,
     existingPick,
     alreadyPickedIds,
     scores,

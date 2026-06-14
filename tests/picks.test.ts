@@ -8,8 +8,8 @@ import {
   MISSED_CUT_PENALTY_STROKES,
   PICK_GOLFER_COUNT,
   COUNTING_GOLFER_COUNT,
-  TOP_TIER_MAX_OWGR_RANK,
 } from '@/lib/scoring';
+import { TOP_TIER_SIZE } from '@/lib/field-tiers';
 import type { Pick, Score } from '@/types';
 
 // ─────────────────────────────────────────────────────────────
@@ -23,17 +23,23 @@ import type { Pick, Score } from '@/types';
 //              GENERATED ALWAYS AS (owgr_rank > 24) — null cmp null
 //              produces null)
 const G = {
-  scheffler: { id: 'scheffler', name: 'Scottie Scheffler', owgr_rank:  1, is_dark_horse: false },
-  mcilroy:   { id: 'mcilroy',   name: 'Rory McIlroy',      owgr_rank:  2, is_dark_horse: false },
-  morikawa:  { id: 'morikawa',  name: 'Collin Morikawa',   owgr_rank:  9, is_dark_horse: false },
-  bhatia:    { id: 'bhatia',    name: 'Akshay Bhatia',     owgr_rank: 28, is_dark_horse: true  },
-  pendrith:  { id: 'pendrith',  name: 'Taylor Pendrith',   owgr_rank: 26, is_dark_horse: true  },
-  sigg:      { id: 'sigg',      name: 'Greyson Sigg',      owgr_rank: 89, is_dark_horse: true  },
-  // Unranked: schema generates null when owgr_rank is null.
-  ghostA:    { id: 'ghostA',    name: 'Unranked Pro A',    owgr_rank: null, is_dark_horse: null },
-  ghostB:    { id: 'ghostB',    name: 'Unranked Pro B',    owgr_rank: null, is_dark_horse: null },
+  scheffler: { id: 'scheffler', name: 'Scottie Scheffler', owgr_rank:  1 },
+  mcilroy:   { id: 'mcilroy',   name: 'Rory McIlroy',      owgr_rank:  2 },
+  morikawa:  { id: 'morikawa',  name: 'Collin Morikawa',   owgr_rank:  9 },
+  bhatia:    { id: 'bhatia',    name: 'Akshay Bhatia',     owgr_rank: 28 },
+  pendrith:  { id: 'pendrith',  name: 'Taylor Pendrith',   owgr_rank: 26 },
+  sigg:      { id: 'sigg',      name: 'Greyson Sigg',      owgr_rank: 89 },
+  // Unranked golfers — eligible for dark-horse slot only.
+  ghostA:    { id: 'ghostA',    name: 'Unranked Pro A',    owgr_rank: null },
+  ghostB:    { id: 'ghostB',    name: 'Unranked Pro B',    owgr_rank: null },
 };
 const ALL = Object.values(G);
+
+// Per-tournament top tier for these tests: the three OWGR<25 golfers.
+// validatePick takes this Set rather than reading is_dark_horse off
+// each golfer — mirrors the production path through
+// src/lib/field-tiers.ts:computeTopTierIds against the field.
+const TOP_TIER_IDS = new Set([G.scheffler.id, G.mcilroy.id, G.morikawa.id]);
 
 // Helper: a valid 4-pick layout we can mutate per test
 function basePick(): (string | null)[] {
@@ -45,6 +51,7 @@ describe('validatePick — happy path', () => {
     const errors = validatePick({
       golferIds:     basePick(),
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toEqual([]);
@@ -54,6 +61,7 @@ describe('validatePick — happy path', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.mcilroy.id, G.ghostA.id, G.ghostB.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toEqual([]);
@@ -67,6 +75,7 @@ describe('validatePick — happy path', () => {
     const errors = validatePick({
       golferIds:     basePick(),
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [otherFoursome],
     });
     expect(errors).toEqual([]);
@@ -78,6 +87,7 @@ describe('validatePick — completeness', () => {
     const errors = validatePick({
       golferIds:     [null, G.mcilroy.id, G.bhatia.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toContain('You must select all 4 golfers.');
@@ -87,7 +97,7 @@ describe('validatePick — completeness', () => {
     for (let i = 0; i < 4; i++) {
       const ids = basePick();
       ids[i] = null;
-      const errors = validatePick({ golferIds: ids, golfers: ALL, existingPicks: [] });
+      const errors = validatePick({ golferIds: ids, golfers: ALL, topTierIds: TOP_TIER_IDS, existingPicks: [] });
       expect(errors).toContain('You must select all 4 golfers.');
     }
   });
@@ -96,6 +106,7 @@ describe('validatePick — completeness', () => {
     const errors = validatePick({
       golferIds:     [null, null, null, null],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toContain('You must select all 4 golfers.');
@@ -108,6 +119,7 @@ describe('validatePick — completeness', () => {
     const errors = validatePick({
       golferIds:     [G.bhatia.id, G.mcilroy.id, null, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toEqual(['You must select all 4 golfers.']);
@@ -119,6 +131,7 @@ describe('validatePick — duplicates', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.scheffler.id, G.bhatia.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors.some(e => e.includes('same golfer more than once'))).toBe(true);
@@ -128,6 +141,7 @@ describe('validatePick — duplicates', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.mcilroy.id, G.scheffler.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors.some(e => e.includes('same golfer more than once'))).toBe(true);
@@ -137,6 +151,7 @@ describe('validatePick — duplicates', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.scheffler.id, G.scheffler.id, G.scheffler.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors.some(e => e.includes('same golfer more than once'))).toBe(true);
@@ -148,6 +163,7 @@ describe('validatePick — tier rules', () => {
     const errors = validatePick({
       golferIds:     [G.bhatia.id, G.mcilroy.id, G.pendrith.id, G.sigg.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     const slotErr = errors.find(e => e.includes('Slot 1') && e.includes('top-tier'));
@@ -159,6 +175,7 @@ describe('validatePick — tier rules', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.mcilroy.id, G.morikawa.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     const slotErr = errors.find(e => e.includes('Slot 3') && e.includes('dark horse'));
@@ -173,6 +190,7 @@ describe('validatePick — tier rules', () => {
     const errors = validatePick({
       golferIds:     [G.ghostA.id, G.mcilroy.id, G.bhatia.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     const slotErr = errors.find(e => e.includes('Slot 1') && e.includes('top-tier'));
@@ -184,6 +202,7 @@ describe('validatePick — tier rules', () => {
     const errors = validatePick({
       golferIds:     [G.ghostA.id, G.ghostB.id, G.bhatia.id, G.pendrith.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors.some(e => e.includes('Slot 1') && e.includes('unranked'))).toBe(true);
@@ -195,6 +214,7 @@ describe('validatePick — tier rules', () => {
     const errors = validatePick({
       golferIds:     [G.scheffler.id, G.mcilroy.id, G.ghostA.id, G.bhatia.id],
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toEqual([]);
@@ -205,6 +225,7 @@ describe('validatePick — tier rules', () => {
       golferIds:     [G.scheffler.id, G.mcilroy.id, G.morikawa.id, G.scheffler.id],
       // morikawa is top tier (ineligible DH), scheffler dup
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors.some(e => e.includes('Slot 3'))).toBe(true);
@@ -223,6 +244,7 @@ describe('validatePick — no-copycats rule', () => {
     const errors = validatePick({
       golferIds:     basePick(),
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [asExisting(basePick() as string[])],
     });
     expect(errors.some(e => e.includes('exact combination'))).toBe(true);
@@ -234,6 +256,7 @@ describe('validatePick — no-copycats rule', () => {
     const errors = validatePick({
       golferIds:     basePick(), // [scheffler, mcilroy, bhatia, pendrith]
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [asExisting([
         G.mcilroy.id, G.scheffler.id, // tops swapped
         G.pendrith.id, G.bhatia.id,   // dh swapped
@@ -246,6 +269,7 @@ describe('validatePick — no-copycats rule', () => {
     const errors = validatePick({
       golferIds:     basePick(), // [scheffler, mcilroy, bhatia, pendrith]
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [asExisting([
         G.scheffler.id, G.mcilroy.id, G.bhatia.id, G.sigg.id, // pendrith → sigg
       ])],
@@ -257,6 +281,7 @@ describe('validatePick — no-copycats rule', () => {
     const errors = validatePick({
       golferIds:     basePick(),
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [
         asExisting([G.morikawa.id, G.scheffler.id, G.sigg.id, G.pendrith.id]),
         asExisting([G.scheffler.id, G.mcilroy.id, G.bhatia.id, G.pendrith.id]), // copycat
@@ -270,6 +295,7 @@ describe('validatePick — no-copycats rule', () => {
     const errors = validatePick({
       golferIds:     basePick(),
       golfers:       ALL,
+      topTierIds:    TOP_TIER_IDS,
       existingPicks: [],
     });
     expect(errors).toEqual([]);
@@ -450,8 +476,8 @@ describe('exported constants', () => {
     expect(COUNTING_GOLFER_COUNT).toBe(3);
   });
 
-  it('TOP_TIER_MAX_OWGR_RANK = 24', () => {
-    expect(TOP_TIER_MAX_OWGR_RANK).toBe(24);
+  it('TOP_TIER_SIZE = 24 (per-tournament tier ceiling)', () => {
+    expect(TOP_TIER_SIZE).toBe(24);
   });
 
   it('MISSED_CUT_PENALTY_STROKES = 1', () => {
