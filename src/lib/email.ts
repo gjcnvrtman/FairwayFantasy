@@ -965,6 +965,89 @@ ${leagueUrl}
   return { subject, text, html };
 }
 
+// ============================================================
+// LEAGUE BROADCAST — commissioner-authored email to every league member
+// ============================================================
+
+export function leagueBroadcastEmail(params: {
+  /** Display name of the recipient (per-recipient personalization). */
+  recipientName:  string;
+  leagueName:     string;
+  leagueSlug:     string;
+  /** Display name of the commissioner / co-commissioner who sent it. */
+  fromName:       string;
+  subject:        string;
+  /** Plain-text message body authored by the commissioner. Rendered
+   *  as paragraphs split on blank lines; line breaks inside a paragraph
+   *  are preserved with <br>. No HTML / markdown supported — we
+   *  escape and present what they typed. */
+  body:           string;
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const {
+    recipientName, leagueName, leagueSlug, fromName, subject, body, siteUrl,
+  } = params;
+
+  const leagueUrl = `${siteUrl}/league/${leagueSlug}`;
+  const fullSubject = `[${leagueName}] ${subject}`;
+
+  // Plain-text version: untouched body, prefixed greeting + signed off.
+  const text = `
+Hi ${recipientName},
+
+${body}
+
+— ${fromName}, commissioner of ${leagueName}
+
+(View the league: ${leagueUrl})
+`.trim();
+
+  // HTML body: escape user input, split on \n\n into <p>, single
+  // newlines into <br>. Keeps it readable without trusting any
+  // HTML the commissioner might paste in.
+  const bodyHtml = body
+    .split(/\n{2,}/)
+    .map(para => `<p style="margin:0 0 1em; font-size:15px; line-height:1.55;">${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
+    .join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">⛳</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">${escapeHtml(leagueName)}</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">A note from your commissioner</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5; margin:0 0 1.2em;">
+    Hi ${escapeHtml(recipientName)},
+  </p>
+
+  ${bodyHtml}
+
+  <p style="font-size:14px; line-height:1.5; margin-top:1.6em; color:#555;">
+    — <strong>${escapeHtml(fromName)}</strong><br>
+    <span style="color:#888;">Commissioner, ${escapeHtml(leagueName)}</span>
+  </p>
+
+  <div style="text-align:center; margin:28px 0 8px;">
+    <a href="${escapeHtml(leagueUrl)}" style="display:inline-block; padding:12px 22px; background:#2d6a4f; color:#fff; text-decoration:none; border-radius:6px; font-weight:700; font-size:14px;">
+      View the league
+    </a>
+  </div>
+
+  <p style="font-size:11px; color:#aaa; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6; text-align:center;">
+    You're getting this because you're a member of ${escapeHtml(leagueName)}.
+    Replies to this email go to ${escapeHtml(fromName)}'s personal address — not Fairway Fantasy.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject: fullSubject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

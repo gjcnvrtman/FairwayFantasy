@@ -303,6 +303,7 @@ export interface Database {
   tournament_recap_log:  TournamentRecapLogTable;
   league_tournament_bets:LeagueTournamentBetsTable;
   league_messages:       LeagueMessagesTable;
+  league_broadcasts:     LeagueBroadcastsTable;
 }
 
 // ── league_messages (migration 011) ──────────────────────────
@@ -318,6 +319,20 @@ export interface LeagueMessagesTable {
   user_id:        string;
   body:           string;
   created_at:     Generated<Timestamp>;
+}
+
+// ── league_broadcasts (migration 013) ─────────────────────────
+// Audit log of commissioner / co-commissioner emails sent to every
+// member of a league. One row per broadcast, NOT per recipient —
+// recipient_count is the snapshot taken at send time.
+export interface LeagueBroadcastsTable {
+  id:               Generated<string>;
+  league_id:        string;
+  sender_user_id:   string;
+  subject:          string;
+  body:             string;
+  recipient_count:  number;
+  sent_at:          Generated<Timestamp>;
 }
 
 // ── league_tournament_bets (migration 010) ───────────────────

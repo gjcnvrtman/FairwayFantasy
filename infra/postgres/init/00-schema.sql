@@ -373,6 +373,19 @@ CREATE TABLE league_messages (
 );
 
 -- ============================================================
+-- LEAGUE_BROADCASTS (Migration 013 — commissioner-to-all-members email)
+-- ============================================================
+CREATE TABLE league_broadcasts (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  league_id       UUID NOT NULL REFERENCES leagues(id)  ON DELETE CASCADE,
+  sender_user_id  UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  subject         TEXT NOT NULL,
+  body            TEXT NOT NULL,
+  recipient_count INT  NOT NULL DEFAULT 0,
+  sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX idx_league_members_league          ON league_members(league_id);
@@ -386,6 +399,8 @@ CREATE INDEX idx_tournaments_status             ON tournaments(status);
 CREATE INDEX idx_reminder_log_tournament        ON reminder_log(tournament_id);
 CREATE INDEX idx_reminder_log_user              ON reminder_log(user_id);
 CREATE INDEX league_messages_thread_idx         ON league_messages(league_id, tournament_id, created_at DESC);
+CREATE INDEX idx_league_broadcasts_league_sent  ON league_broadcasts(league_id, sent_at DESC);
+CREATE INDEX idx_league_broadcasts_sender       ON league_broadcasts(sender_user_id, sent_at DESC);
 
 -- ============================================================
 -- NOTES

@@ -203,6 +203,50 @@ export default function AdminPanel({
   // settings) above the fold.
   const [deadlinesOpen, setDeadlinesOpen] = useState(false);
 
+  // ── Broadcast email (commissioner + co-commissioner) ───────────
+  // Sends a one-shot email to every member of the league via
+  // /api/admin/broadcast. Subject + body composed inline; confirmation
+  // step before send so a stray Enter doesn't blast 25 inboxes.
+  const [bcSubject, setBcSubject] = useState('');
+  const [bcBody,    setBcBody]    = useState('');
+  const [bcConfirm, setBcConfirm] = useState(false);    // confirmation step toggle
+  const [bcSending, setBcSending] = useState(false);
+  const [bcMsg,     setBcMsg]     = useState('');
+  const [bcOk,      setBcOk]      = useState<boolean | null>(null);
+
+  async function sendBroadcast() {
+    setBcSending(true); setBcMsg(''); setBcOk(null);
+    try {
+      const res = await fetch('/api/admin/broadcast', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ slug: league.slug, subject: bcSubject, body: bcBody }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const errText = data.fieldErrors
+          ? Object.values(data.fieldErrors).join(' ')
+          : (data.error ?? `Failed (HTTP ${res.status})`);
+        setBcMsg(errText);
+        setBcOk(false);
+        return;
+      }
+      setBcMsg(
+        data.failed > 0
+          ? `Sent to ${data.sent} member${data.sent === 1 ? '' : 's'} — ${data.failed} failed.`
+          : `Sent to ${data.sent} member${data.sent === 1 ? '' : 's'}.`,
+      );
+      setBcOk(data.failed === 0);
+      // Clear the form so a second message starts blank.
+      setBcSubject(''); setBcBody(''); setBcConfirm(false);
+    } catch (err) {
+      setBcMsg(err instanceof Error ? err.message : String(err));
+      setBcOk(false);
+    } finally {
+      setBcSending(false);
+    }
+  }
+
   // ── Delete league (Danger Zone) ────────────────────────────────
   // Destructive enough that we gate behind two affordances: (1) the
   // section collapses by default; expand reveals (2) the "type the
@@ -793,6 +837,98 @@ export default function AdminPanel({
             color: syncOk === false ? 'var(--red)' : 'var(--green-mid)',
           }} role="status">
             {syncOk === false ? '❌ ' : '✅ '}{syncMsg}
+          </p>
+        )}
+      </section>
+
+      {/* ── Broadcast email — commissioner + co-commissioner ──── */}
+      <section aria-labelledby="broadcast-h" className="card">
+        <h2 id="broadcast-h" style={{
+          fontFamily: "'Playfair Display', serif",
+          fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.6rem',
+        }}>
+          Message the League
+        </h2>
+        <p style={{ color: 'var(--slate-mid)', fontSize: '0.9rem', lineHeight: 1.5, marginBottom: '1rem' }}>
+          Send an email to every member of <strong>{league.name}</strong>. Plain text only — blank lines split paragraphs.
+          Limited to 5 broadcasts per league per 24 hours.
+        </p>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label" htmlFor="bc-subject">Subject</label>
+          <input
+            id="bc-subject"
+            className="input"
+            type="text"
+            maxLength={120}
+            placeholder="e.g. Merch deadline this Friday"
+            value={bcSubject}
+            onChange={e => { setBcSubject(e.target.value); setBcConfirm(false); }}
+            disabled={bcSending}
+          />
+          <p className="hint">
+            Recipients see <code>[{league.name}] {bcSubject || 'your subject'}</code>.
+          </p>
+        </div>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label" htmlFor="bc-body">Message</label>
+          <textarea
+            id="bc-body"
+            className="input"
+            rows={8}
+            maxLength={5000}
+            placeholder="Hey everyone — quick note about…"
+            value={bcBody}
+            onChange={e => { setBcBody(e.target.value); setBcConfirm(false); }}
+            disabled={bcSending}
+            style={{ resize: 'vertical', fontFamily: 'inherit' }}
+          />
+          <p className="hint">
+            {bcBody.length} / 5000 characters
+          </p>
+        </div>
+
+        {!bcConfirm ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setBcConfirm(true)}
+            disabled={bcSending || bcSubject.trim().length === 0 || bcBody.trim().length === 0}
+          >
+            ✉️ Review & send
+          </button>
+        ) : (
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.875rem', color: 'var(--slate-mid)' }}>
+              Send to <strong>{members.length}</strong> member{members.length === 1 ? '' : 's'}?
+            </span>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={sendBroadcast}
+              disabled={bcSending}
+              aria-busy={bcSending}
+            >
+              {bcSending ? 'Sending…' : 'Yes, send now'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setBcConfirm(false)}
+              disabled={bcSending}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {bcMsg && (
+          <p style={{
+            marginTop: '0.75rem', fontSize: '0.85rem',
+            color: bcOk === false ? 'var(--red)' : 'var(--green-mid)',
+          }} role="status">
+            {bcOk === false ? '❌ ' : '✅ '}{bcMsg}
           </p>
         )}
       </section>
