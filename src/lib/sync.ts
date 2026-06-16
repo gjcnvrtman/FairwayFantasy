@@ -184,6 +184,44 @@ export function applyCutRule(rule: CutRule, totalsSortedAsc: number[]): number {
   return Math.max(cutByPosition, cutByStrokes);
 }
 
+/**
+ * Decide the new tournaments.status value from the ESPN event-level
+ * status string + our cut-detection inference.
+ *
+ * Rewritten 2026-06-16. The previous version also flipped on a derived
+ * "every cut survivor has linescores.length === 4 AND end_date < now"
+ * signal, which misfired on 2026-06-14 during the rain-delayed RBC
+ * Canadian Open R3/R4 overlap: ESPN populated the R4 linescore entry as
+ * soon as R4 was on its schedule (early Sunday morning, before the field
+ * had actually played), every cut survivor hit length 4, end_date had
+ * already passed (stored as 02:00 CDT on the final day), and we flipped
+ * to `complete` with R4=0 for everyone. Wrong winner declared via the
+ * auto-firing recap email.
+ *
+ * We added that signal originally (2026-05-20) because ESPN's scoreboard
+ * endpoint was reportedly stuck at STATUS_IN_PROGRESS for completed
+ * events. Re-tested 2026-06-16: scoreboard DOES return STATUS_FINAL
+ * once an event is truly final. Heuristic dropped.
+ *
+ * Backstop for the (rare) case where ESPN never reaches STATUS_FINAL —
+ * e.g., a weather-shortened 54-hole event that their API keeps marked
+ * in-progress: the weekly rankings-timer maintenance sweep at Mon 06:00
+ * CT (in /api/sync-scores/rankings) flips any tournament with
+ * `end_date < now - 24h` and status != complete. Worst-case lag ~24h.
+ * Acceptable tradeoff vs the wrong-winner blast radius of the prior bug.
+ *
+ * Exported for tests/sync-status.test.ts.
+ */
+export function decideTournamentStatus(
+  espnStatus: string,
+  cutHasBeenMade: boolean,
+): 'complete' | 'cut_made' | 'active' {
+  // Substring match on "final" (lower-cased) so any X_FINAL variant
+  // ESPN might add still flips us to complete.
+  if (espnStatus.toLowerCase().includes('final')) return 'complete';
+  return cutHasBeenMade ? 'cut_made' : 'active';
+}
+
 async function syncTournament(tournament: {
   id:             string;
   espn_event_id:  string;
@@ -245,41 +283,7 @@ async function syncTournament(tournament: {
     }
   }
 
-  // Completion inference (added 2026-05-20).
-  //
-  // ESPN's `/pga/scoreboard` fallback never reports `status='final'`
-  // — it stays `STATUS_IN_PROGRESS` even days after the trophy
-  // ceremony. The weekly rankings-timer maintenance sweep eventually
-  // flips stuck rows to complete (Monday 06:00), but the gap leaves
-  // the money card blank for ~14 hours every Sunday night.
-  //
-  // Linescore signal: normalizeScoreboardCompetitor drops un-played
-  // future rounds from `linescores`, so a cut survivor (made it past
-  // R2) who has `linescores.length === 4` has finished all four
-  // rounds. When EVERY cut survivor is at length 4 AND the
-  // tournament's end_date is in the past, the tournament is over —
-  // regardless of what ESPN's text status says.
-  //
-  // Edge cases:
-  //   * Mid-Sunday (some R4s in progress): `every` fails, stays
-  //     in `cut_made`. Correct.
-  //   * No cut survivors yet (Round 1/2): the >=3 guard skips,
-  //     `every` returns true for an empty list but the
-  //     `survivors.length > 0` guard prevents the flip. Stays
-  //     in `active`/`cut_made`. Correct.
-  //   * Weather-shortened tournament (54 holes only): survivors
-  //     end at length 3, never 4 → linescore signal never fires.
-  //     The Monday maintenance sweep still handles it within a week.
-  const tournamentEnded = new Date(end_date).getTime() < Date.now();
-  let completionByLinescore = false;
-  if (tournamentEnded) {
-    const survivors = competitors.filter(c => (c.linescores?.length ?? 0) >= 3);
-    completionByLinescore = survivors.length > 0
-      && survivors.every(c => (c.linescores?.length ?? 0) === 4);
-  }
-
-  const newStatus = status.toLowerCase().includes('final') || completionByLinescore ? 'complete'
-    : cutHasBeenMade ? 'cut_made' : 'active';
+  const newStatus = decideTournamentStatus(status, cutHasBeenMade);
 
   await db.updateTable('tournaments')
     .set({ status: newStatus, cut_score: effectiveCut ?? cut_score })
@@ -1472,14 +1476,21 @@ async function sendScorecardsForCompletedRounds(t: {
       r => r.status === 'active' || r.status === 'complete',
     );
     if (expectedPlayers.length === 0) continue;
-    // Fire as soon as ANY expected player has finished the round.
-    // The 7pm timer is a daily snapshot — if a late group hasn't
-    // finished yet, their slot just shows null in the email.
-    const anyFinished = expectedPlayers.some(r => {
+    // Fire ONLY when every expected player has a round_N total
+    // (tightened 2026-06-16 from "any" to "all"). This handles rounds
+    // that bleed across days due to rain delays / darkness — the 7pm
+    // sweep on day-of will SKIP an incomplete round, and the next
+    // day's 7pm sweep will catch it once the stragglers post.
+    //
+    // Previous "any" gate sent emails based on the leading group's
+    // score even when most of the field was still on course, which
+    // mailed misleading day-snapshot leaderboards. The 7pm timer is
+    // a wall-clock fence, not a "is the round done yet" signal.
+    const allFinished = expectedPlayers.every(r => {
       const total = (r as Record<string, unknown>)[totalCol];
       return total != null;
     });
-    if (!anyFinished) continue;
+    if (!allFinished) continue;
 
     // Idempotent per (league, tournament, round) — re-runs of the
     // same day's sweep are cheap no-ops.
@@ -1500,6 +1511,28 @@ async function sendScorecardsForCompletedRounds(t: {
       }
     }
   }
+}
+
+/**
+ * Pure helper for the "should we fire round N's scorecard yet?" gate.
+ * Extracted from sendScorecardsForCompletedRounds so tests don't have
+ * to spin up the DB. See decideTournamentStatus for the parallel
+ * pattern.
+ *
+ * Tightened 2026-06-16: previously fired as soon as ANY expected
+ * player had a non-null round_N total. Now requires every expected
+ * player (status active/complete, i.e. cut survivors) to have a
+ * non-null total — accommodates rain/darkness rounds that finish the
+ * next morning without sending day-of half-baked leaderboards.
+ */
+export function isRoundReadyForScorecard(args: {
+  expectedPlayers: Array<{ status: string; roundTotal: number | null }>;
+}): boolean {
+  const cutSurvivors = args.expectedPlayers.filter(
+    p => p.status === 'active' || p.status === 'complete',
+  );
+  if (cutSurvivors.length === 0) return false;
+  return cutSurvivors.every(p => p.roundTotal != null);
 }
 
 /**
