@@ -793,41 +793,60 @@ export function tournamentRecapEmail(params: {
    *  tournament leagues; the section just won't render. */
   seasonStandings: TournamentRecapSeasonRow[] | null;
   siteUrl:         string;
+  /** When true, this email is a CORRECTION re-send. The subject gets a
+   *  "[Corrected]" prefix, the body opens with a banner explaining the
+   *  re-send, and every score / rank value is rendered in **bold** so
+   *  recipients can see at a glance what changed since the original. */
+  corrected?:      boolean;
 }): { subject: string; text: string; html: string } {
   const {
     displayName, leagueName, leagueSlug, tournamentName,
     leaderboard, bestRound, seasonStandings, siteUrl,
+    corrected = false,
   } = params;
 
   const leagueUrl = `${siteUrl}/league/${leagueSlug}`;
 
   const fmtNum = (n: number | null) => (n == null ? '—' : (n > 0 ? `+${n}` : String(n)));
+  // Plain-text bold marker — Markdown-style **x**. Renders fine in
+  // text-only clients (the asterisks stay literal); HTML clients use
+  // the <strong> wrapping below.
+  const tb = (s: string) => corrected ? `**${s}**` : s;
 
   // ── plain text ────────────────────────────────────────────
   const lbText = leaderboard
-    .map(r => `  ${String(r.rank).padStart(2)}.  ${r.displayName.padEnd(20)}  ${fmtNum(r.totalScore)}${r.isMe ? '  ← you' : ''}`)
+    .map(r => `  ${tb(String(r.rank).padStart(2))}.  ${r.displayName.padEnd(20)}  ${tb(fmtNum(r.totalScore))}${r.isMe ? '  ← you' : ''}`)
     .join('\n');
 
   const bestRoundText = bestRound
-    ? `Your best round: R${bestRound.roundNum} — ${bestRound.golfer} at ${fmtNum(bestRound.score)}.\n\n`
+    ? `Your best round: R${bestRound.roundNum} — ${bestRound.golfer} at ${tb(fmtNum(bestRound.score))}.\n\n`
     : '';
 
   const seasonText = (seasonStandings && seasonStandings.length > 0)
     ? `SEASON STANDINGS (${leagueName}):\n` +
       seasonStandings
-        .map(r => `  ${r.rank == null ? '—' : String(r.rank).padStart(2)}.  ` +
+        .map(r => `  ${tb(r.rank == null ? '—' : String(r.rank).padStart(2))}.  ` +
                   `${r.displayName.padEnd(20)}  ` +
-                  `${String(r.totalScore).padStart(5)}  ` +
+                  `${tb(String(r.totalScore).padStart(5))}  ` +
                   `(${r.tournamentsPlayed} played)${r.isMe ? '  ← you' : ''}`)
         .join('\n') + '\n\n'
     : '';
 
-  const subject = `[Fairway Fantasy] ${tournamentName} — tournament recap for ${leagueName}`;
+  const correctionBannerText = corrected
+    ? `*** CORRECTED ***\n` +
+      `Sunday's recap email contained inaccurate Round 4 scores due to a sync\n` +
+      `issue (the tournament was prematurely marked complete before R4 had\n` +
+      `actually been played). The corrected final standings are below. Figures\n` +
+      `that have been updated since the original email are shown in **bold**.\n\n`
+    : '';
+
+  const subject = (corrected ? '[Corrected] ' : '') +
+    `[Fairway Fantasy] ${tournamentName} — tournament recap for ${leagueName}`;
 
   const text = `
 Hi ${displayName},
 
-${tournamentName} is in the books. Here's how ${leagueName} finished.
+${correctionBannerText}${tournamentName} is in the books. Here's how ${leagueName} finished.
 
 FINAL STANDINGS:
 ${lbText}
@@ -839,11 +858,18 @@ ${leagueUrl}
 `.trim();
 
   // ── HTML ──────────────────────────────────────────────────
+  // HTML bold marker — wraps the value in <strong> with a subtle
+  // background tint when this is a correction re-send. Both visual
+  // cues so the change is obvious even at a glance.
+  const hb = (s: string) => corrected
+    ? `<strong style="background:#fff3cd; padding:1px 4px; border-radius:3px;">${s}</strong>`
+    : s;
+
   const lbHtml = leaderboard
     .map(r => `<tr style="${r.isMe ? 'background:#fff9e6;' : ''}">
-      <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.rank}</td>
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${hb(String(r.rank))}</td>
       <td style="padding:4px 8px;">${escapeHtml(r.displayName)}${r.isMe ? ' <span style="color:#a47148; font-size:11px;">← you</span>' : ''}</td>
-      <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${fmtNum(r.totalScore)}</td>
+      <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${hb(fmtNum(r.totalScore))}</td>
     </tr>`)
     .join('');
 
@@ -852,7 +878,7 @@ ${leagueUrl}
                 background:#e7f0ea; padding:10px 14px; border-radius:6px;">
          <strong>Your best round:</strong>
          R${bestRound.roundNum} — ${escapeHtml(bestRound.golfer)}
-         at <strong>${fmtNum(bestRound.score)}</strong>.
+         at ${hb(fmtNum(bestRound.score))}.
        </p>`
     : '';
 
@@ -871,9 +897,9 @@ ${leagueUrl}
          </thead>
          <tbody>
            ${seasonStandings.map(r => `<tr style="${r.isMe ? 'background:#fff9e6;' : ''}">
-             <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.rank ?? '—'}</td>
+             <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${hb(String(r.rank ?? '—'))}</td>
              <td style="padding:4px 8px;">${escapeHtml(r.displayName)}${r.isMe ? ' <span style="color:#a47148; font-size:11px;">← you</span>' : ''}</td>
-             <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${r.totalScore}</td>
+             <td style="padding:4px 8px; text-align:right; font-family:monospace; font-weight:600;">${hb(String(r.totalScore))}</td>
              <td style="padding:4px 8px; text-align:right; font-family:monospace; color:#555;">${r.tournamentsPlayed}</td>
            </tr>`).join('')}
          </tbody>
@@ -895,6 +921,15 @@ ${leagueUrl}
     <strong>${escapeHtml(tournamentName)}</strong> is in the books.
     Here's how <strong>${escapeHtml(leagueName)}</strong> finished.
   </p>
+
+  ${corrected ? `<div style="border:2px solid #d4a73a; background:#fffaeb; padding:14px 18px; border-radius:8px; margin:18px 0; font-size:14px; line-height:1.55; color:#5a4416;">
+    <div style="font-weight:700; font-size:13px; letter-spacing:0.08em; text-transform:uppercase; color:#a47148; margin-bottom:6px;">⚠ Corrected recap</div>
+    Sunday's recap email contained inaccurate Round 4 scores due to a sync
+    issue — the tournament was prematurely marked complete before R4 had
+    actually been played. The corrected final standings are below. Figures
+    that have been updated since the original email are highlighted in
+    <strong style="background:#fff3cd; padding:1px 4px; border-radius:3px;">bold</strong>.
+  </div>` : ''}
 
   <h3 style="font-family:Georgia, serif; font-size:15px; margin-top:24px; margin-bottom:8px; color:#1d3a2a;">
     Final standings
