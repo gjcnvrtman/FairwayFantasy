@@ -966,6 +966,94 @@ ${leagueUrl}
 }
 
 // ============================================================
+// FIELD-PUBLISHED — "ESPN set the lineup, go make your picks"
+// ============================================================
+//
+// Replaces the old dispatch-via-notifier path (which never actually
+// sent anything — it routed through the placeholder console driver
+// that's still the only registered ChannelDriver as of 2026-06-16).
+// Sends directly via sendEmail/msmtp like the other player-facing
+// emails.
+
+export function fieldPublishedEmail(params: {
+  recipientName:  string;
+  leagueName:     string;
+  leagueSlug:     string;
+  tournamentName: string;
+  /** Best available pick deadline (override > computed). May be null
+   *  if neither is set; the section just won't render. */
+  pickDeadline:   Date | null;
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const { recipientName, leagueName, leagueSlug, tournamentName, pickDeadline, siteUrl } = params;
+  const picksUrl = `${siteUrl}/league/${leagueSlug}/picks`;
+
+  const dlPretty = pickDeadline
+    ? pickDeadline.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago',
+        timeZoneName: 'short',
+      })
+    : null;
+
+  const subject = `[${leagueName}] Field set — make your picks for ${tournamentName}`;
+
+  const text = `
+Hi ${recipientName},
+
+The field is set for ${tournamentName}.
+
+ESPN just published the player list, so you can now build your foursome.${dlPretty ? `\n\nPick deadline: ${dlPretty}.` : ''}
+
+Make your picks:
+${picksUrl}
+
+— Fairway Fantasy
+
+(You're receiving this because the "Field set" alert is on in your account. Toggle it off at ${siteUrl}/account if you'd rather not get these.)
+`.trim();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">⛳</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">Fairway Fantasy</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">Field is set</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5;">
+    Hi ${escapeHtml(recipientName)},<br>
+    The field is set for <strong>${escapeHtml(tournamentName)}</strong>.
+    ESPN just published the player list, so you can now build your foursome in
+    <strong>${escapeHtml(leagueName)}</strong>.
+  </p>
+
+  ${dlPretty ? `<p style="font-size:15px; line-height:1.5; margin-top:16px;
+                          background:#e7f0ea; padding:10px 14px; border-radius:6px;">
+    <strong>Pick deadline:</strong> ${escapeHtml(dlPretty)}
+  </p>` : ''}
+
+  <div style="text-align:center; margin:28px 0 8px;">
+    <a href="${escapeHtml(picksUrl)}" style="display:inline-block; padding:12px 22px; background:#2d6a4f; color:#fff; text-decoration:none; border-radius:6px; font-weight:700; font-size:14px;">
+      Make your picks
+    </a>
+  </div>
+
+  <p style="font-size:11px; color:#aaa; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6; text-align:center;">
+    You're receiving this because the "Field set" alert is on in your account.
+    Toggle it off at <a href="${escapeHtml(siteUrl)}/account" style="color:#888;">your account</a>
+    if you'd rather not get these.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
+// ============================================================
 // LEAGUE BROADCAST — commissioner-authored email to every league member
 // ============================================================
 

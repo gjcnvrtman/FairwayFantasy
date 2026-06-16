@@ -19,12 +19,17 @@ import {
   MISSED_DEADLINE_PENALTY_STROKES,
 } from './scoring';
 import { computeTopTierIds } from './field-tiers';
-import { dispatchReminder, fieldPublishedMessage } from './notifier';
+// notifyFieldPublished used to route through dispatchReminder /
+// fieldPublishedMessage in src/lib/notifier.ts, but that pipeline has
+// no real email driver registered (only a consoleDriver fallback), so
+// the old path never sent anything. Refactored 2026-06-16 to use
+// sendEmail directly via the new fieldPublishedEmail template.
 import { effectivePickDeadline } from './pick-deadline';
 import {
   sendEmail, rosterSetAdminEmail, missedDeadlineEmail,
   dailyScorecardEmail,
   tournamentRecapEmail,
+  fieldPublishedEmail,
   type DailyScorecardLeaderboardRow,
   type DailyScorecardMyGolfer,
   type TournamentRecapLeaderboardRow,
@@ -32,7 +37,8 @@ import {
   type TournamentRecapSeasonRow,
 } from './email';
 import { generateDailyScorecardPdf, type ScorecardGolfer } from './scorecard-pdf';
-import type { Channel, ReminderTask } from './reminders';
+// (Channel / ReminderTask were used by the old notifier path —
+//  no longer needed after the 2026-06-16 notifyFieldPublished rewrite.)
 import type { Score, Pick, FantasyResult, ESPNCompetitor } from '@/types';
 
 export interface SyncResult {
@@ -874,11 +880,25 @@ async function checkAndPublishField(tournament: {
 }
 
 /**
- * Build + dispatch "field is set" notifications for every member of
- * every league whose date window includes this tournament. Honors
- * `reminder_preferences.*_enabled` per channel (default: email on,
- * sms/push off). Best-effort — errors per recipient are logged but
- * don't fail the parent sync run.
+ * Send the "field is set, make your picks" email to every member of
+ * every league whose date window includes this tournament.
+ *
+ * Rewritten 2026-06-16: the old version routed through the notifier
+ * `dispatchReminder` pipeline, which has had no registered email
+ * driver since the multi-channel reminder framework was scaffolded
+ * in P9 — every "send" was a `console.log` from the consoleDriver
+ * fallback. 0 reminder_log rows across 5 recent field-publish events
+ * confirmed the path was dead.
+ *
+ * Now sends directly via sendEmail() / msmtp, same path as the daily
+ * scorecard, tournament recap, and broadcast emails. Gated by the
+ * NEW `reminder_preferences.field_published_enabled` column (migration
+ * 014) — single dedicated toggle, default TRUE. Does NOT depend on
+ * `email_enabled` (the general pick-reminder toggle) — these are
+ * orthogonal preferences per the 2026-06-16 product decision.
+ *
+ * Best-effort throughout: per-recipient failures are logged but never
+ * abort the parent sync run.
  */
 async function notifyFieldPublished(args: {
   tournamentId:   string;
@@ -886,9 +906,6 @@ async function notifyFieldPublished(args: {
 }): Promise<void> {
   const { tournamentId, tournamentName } = args;
   try {
-    // Hydrate the tournament row for the message template AND for the
-    // league-window filter below. start_date / end_date anchor the
-    // overlap check against each league's [start_date, end_date].
     const t = await db.selectFrom('tournaments')
       .select(['id', 'start_date', 'end_date',
                'pick_deadline', 'pick_deadline_override'])
@@ -897,15 +914,8 @@ async function notifyFieldPublished(args: {
     if (!t) return;
     const pickDeadline = effectivePickDeadline(t);
 
-    // Filter leagues to those whose date window overlaps the
-    // tournament. Open-ended on either side (NULL start_date or
-    // end_date) means "no constraint on that side" — those leagues
-    // always receive. Migration 008 (2026-05-30) restored this
-    // filter; pre-migration the columns were referenced in code but
-    // not created by any committed SQL, so the safer move was to
-    // notify members of every league.
     const leagues = await db.selectFrom('leagues')
-      .select(['id', 'slug'])
+      .select(['id', 'name', 'slug'])
       .where(eb => eb.or([
         eb('start_date', 'is', null),
         eb('start_date', '<=', t.end_date),
@@ -917,83 +927,69 @@ async function notifyFieldPublished(args: {
       .execute();
     if (leagues.length === 0) return;
 
+    const leagueIds = leagues.map(l => l.id);
     const members = await db.selectFrom('league_members')
-      .select(['user_id', 'league_id'])
+      .innerJoin('profiles', 'profiles.id', 'league_members.user_id')
+      .leftJoin('reminder_preferences', 'reminder_preferences.user_id', 'league_members.user_id')
+      .select([
+        'league_members.user_id', 'league_members.league_id',
+        'profiles.email', 'profiles.display_name',
+        'reminder_preferences.field_published_enabled',
+      ])
+      .where('league_members.league_id', 'in', leagueIds)
       .execute();
     if (members.length === 0) return;
 
-    const userIds = Array.from(new Set(members.map(m => m.user_id)));
-    const [profiles, prefsRows] = await Promise.all([
-      db.selectFrom('profiles')
-        .select(['id', 'email', 'display_name'])
-        .where('id', 'in', userIds)
-        .execute(),
-      db.selectFrom('reminder_preferences')
-        .selectAll()
-        .where('user_id', 'in', userIds)
-        .execute(),
-    ]);
-    const profileById = new Map(profiles.map(p => [p.id, p]));
-    const prefsByUser = new Map(prefsRows.map(r => [r.user_id, r]));
-    const slugByLeague = new Map(leagues.map(l => [l.id, l.slug]));
-
+    const leagueById = new Map(leagues.map(l => [l.id, l]));
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
 
+    let sent = 0, skipped = 0, failed = 0;
+
     for (const m of members) {
-      const profile = profileById.get(m.user_id);
-      if (!profile) continue;
-      const prefs = prefsByUser.get(m.user_id);
-      // Default-on for email when no prefs row exists (migration 004
-      // back-filled prefs rows for existing users; safe fallback for
-      // any user created before that ran).
-      const emailOn = prefs ? prefs.email_enabled : true;
-      const smsOn   = prefs ? prefs.sms_enabled   : false;
-      const pushOn  = prefs ? prefs.push_enabled  : false;
+      if (!m.email) { skipped++; continue; }
+      // The new column defaults TRUE in the schema (migration 014).
+      // A LEFT JOIN miss (no prefs row) yields NULL — treat null/true
+      // as opted-in. Only explicit `false` skips the send.
+      if (m.field_published_enabled === false) { skipped++; continue; }
 
-      // Per-channel resolution: email uses prefs.email_addr override
-      // when set, else falls back to the profile email. Skip channels
-      // with no destination.
-      const channels: Array<{ ch: Channel; dest: string | null }> = [];
-      if (emailOn) channels.push({ ch: 'email', dest: prefs?.email_addr ?? profile.email ?? null });
-      if (smsOn)   channels.push({ ch: 'sms',   dest: prefs?.phone_e164 ?? null });
-      if (pushOn)  channels.push({ ch: 'push',  dest: prefs?.push_token ?? null });
+      const lg = leagueById.get(m.league_id);
+      if (!lg) { skipped++; continue; }
 
-      const picksUrl = `${siteUrl}/league/${slugByLeague.get(m.league_id) ?? ''}/picks`;
+      const { subject, text, html } = fieldPublishedEmail({
+        recipientName:  m.display_name?.trim() || 'Player',
+        leagueName:     lg.name,
+        leagueSlug:     lg.slug,
+        tournamentName,
+        pickDeadline,
+        siteUrl,
+      });
 
-      for (const { ch, dest } of channels) {
-        if (!dest) continue;
-        const task: ReminderTask = {
-          user_id:       m.user_id,
-          league_id:     m.league_id,
-          tournament_id: tournamentId,
-          channel:       ch,
-          destination:   dest,
-        };
-        try {
-          const result = await dispatchReminder(task, t2 =>
-            fieldPublishedMessage({
-              task:           t2,
-              tournamentName,
-              pickDeadline,
-              picksUrl,
-            }),
-          );
+      try {
+        const ok = await sendEmail({ to: m.email, subject, text, html });
+        if (ok) {
+          sent++;
           // eslint-disable-next-line no-console
-          console.log(
-            `[field-publish] ${tournamentName} → user=${m.user_id} ch=${ch} status=${result.status}` +
-              (result.error ? ` err=${result.error}` : ''),
-          );
-        } catch (err) {
+          console.log(`[field-publish] ${tournamentName} / ${lg.name} → ${m.email} sent=true`);
+        } else {
+          failed++;
           // eslint-disable-next-line no-console
-          console.error(
-            `[field-publish] dispatch failed for user=${m.user_id} ch=${ch}:`,
-            err instanceof Error ? err.message : err,
-          );
+          console.log(`[field-publish] ${tournamentName} / ${lg.name} → ${m.email} sent=false`);
         }
+      } catch (err) {
+        failed++;
+        // eslint-disable-next-line no-console
+        console.error(
+          `[field-publish] send failed for user=${m.user_id}:`,
+          err instanceof Error ? err.message : err,
+        );
       }
     }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[field-publish] ${tournamentName}: sent=${sent} skipped=${skipped} failed=${failed} across ${leagues.length} league(s)`,
+    );
   } catch (err) {
-    // Never fail the parent sync run because of a notification glitch.
     // eslint-disable-next-line no-console
     console.error('[field-publish] notify pass failed:', err);
   }

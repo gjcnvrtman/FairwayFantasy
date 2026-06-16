@@ -41,6 +41,7 @@ export default async function AccountPage() {
     push_enabled:              false,
     nightly_recap_enabled:     true,
     tournament_recap_enabled:  true,
+    field_published_enabled:   true,
     hours_before:              24,
     email_addr:                null,
     phone_e164:                null,

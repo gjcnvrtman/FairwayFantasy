@@ -27,6 +27,7 @@ interface Prefs {
   push_enabled?:              boolean;
   nightly_recap_enabled:      boolean;
   tournament_recap_enabled:   boolean;
+  field_published_enabled:    boolean;
   hours_before:               number;
   email_addr:                 string | null;
 }
@@ -423,6 +424,7 @@ function RecapsCard({
           email_enabled:             merged.email_enabled,
           nightly_recap_enabled:     merged.nightly_recap_enabled,
           tournament_recap_enabled:  merged.tournament_recap_enabled,
+          field_published_enabled:   merged.field_published_enabled,
           hours_before:              merged.hours_before,
           email_addr:                merged.email_addr,
         }),
@@ -478,6 +480,13 @@ function RecapsCard({
           disabled={saving}
           onChange={v => save({ tournament_recap_enabled: v })}
         />
+        <ToggleRow
+          label="Field set alert"
+          helper="One email when ESPN publishes the field for an upcoming tournament — so you know picks are unlocked."
+          checked={prefs.field_published_enabled}
+          disabled={saving}
+          onChange={v => save({ field_published_enabled: v })}
+        />
       </div>
     </div>
   );
@@ -521,6 +530,7 @@ function RemindersCard({
           email_enabled:             merged.email_enabled,
           nightly_recap_enabled:     merged.nightly_recap_enabled,
           tournament_recap_enabled:  merged.tournament_recap_enabled,
+          field_published_enabled:   merged.field_published_enabled,
           hours_before:              merged.hours_before,
           email_addr:                merged.email_addr,
         }),

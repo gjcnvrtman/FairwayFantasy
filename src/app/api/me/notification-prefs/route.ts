@@ -41,6 +41,7 @@ export async function GET() {
       push_enabled:              false,
       nightly_recap_enabled:     true,
       tournament_recap_enabled:  true,
+      field_published_enabled:   true,
       hours_before:              DEFAULT_HOURS_BEFORE,
       email_addr:                null,
       phone_e164:                null,
@@ -70,6 +71,7 @@ export async function PUT(req: NextRequest) {
   // upcoming partial-update path) doesn't silently opt the user out.
   const nightlyRecapEnabled    = typeof body.nightly_recap_enabled    === 'boolean' ? body.nightly_recap_enabled    : true;
   const tournamentRecapEnabled = typeof body.tournament_recap_enabled === 'boolean' ? body.tournament_recap_enabled : true;
+  const fieldPublishedEnabled  = typeof body.field_published_enabled  === 'boolean' ? body.field_published_enabled  : true;
 
   let hoursBefore = DEFAULT_HOURS_BEFORE;
   if (typeof body.hours_before === 'number') {
@@ -124,6 +126,7 @@ export async function PUT(req: NextRequest) {
         push_enabled:              pushEnabled,
         nightly_recap_enabled:     nightlyRecapEnabled,
         tournament_recap_enabled:  tournamentRecapEnabled,
+        field_published_enabled:   fieldPublishedEnabled,
         hours_before:              hoursBefore,
         email_addr:                emailAddr,
         phone_e164:                phoneE164,
@@ -136,6 +139,7 @@ export async function PUT(req: NextRequest) {
         push_enabled:              eb.ref('excluded.push_enabled'),
         nightly_recap_enabled:     eb.ref('excluded.nightly_recap_enabled'),
         tournament_recap_enabled:  eb.ref('excluded.tournament_recap_enabled'),
+        field_published_enabled:   eb.ref('excluded.field_published_enabled'),
         hours_before:              eb.ref('excluded.hours_before'),
         email_addr:                eb.ref('excluded.email_addr'),
         phone_e164:                eb.ref('excluded.phone_e164'),

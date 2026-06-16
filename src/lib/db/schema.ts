@@ -257,6 +257,10 @@ export interface ReminderPreferencesTable {
   push_enabled:              Generated<boolean>;
   nightly_recap_enabled:     Generated<boolean>;
   tournament_recap_enabled:  Generated<boolean>;
+  // Field-set email: "ESPN published the field, go make your picks."
+  // Default TRUE (migration 014). Independent of the other recap
+  // toggles AND of email_enabled — the new toggle is the SOLE gate.
+  field_published_enabled:   Generated<boolean>;
   hours_before:              Generated<number>;
   email_addr:                string | null;
   phone_e164:                string | null;
