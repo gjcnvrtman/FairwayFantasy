@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { redirect, notFound } from 'next/navigation';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
@@ -310,14 +311,16 @@ export default async function HistoryPage({ params }: Props) {
                           const moneyCls = delta > 0 ? 'score-under'
                                          : delta < 0 ? 'score-over'
                                          : 'score-even';
+                          const slotScores = [r.golfer_1_score, r.golfer_2_score, r.golfer_3_score, r.golfer_4_score];
                           return (
-                          <tr key={r.user_id} className={`rank-${i + 1}`}>
+                          <Fragment key={r.user_id}>
+                          <tr className={`rank-${i + 1}`}>
                             <td><span className="rank-num">{r.rank ?? i + 1}</span></td>
                             <td>
                               <strong>{r.profile?.display_name}</strong>
                               {r.user_id === user.id && <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: 'var(--brass)' }}>← you</span>}
                             </td>
-                            {[r.golfer_1_score, r.golfer_2_score, r.golfer_3_score, r.golfer_4_score].map((s: number | null, si: number) => (
+                            {slotScores.map((s: number | null, si: number) => (
                               <td key={si} className="hide-mobile">
                                 <span
                                   className={
@@ -340,6 +343,34 @@ export default async function HistoryPage({ params }: Props) {
                               <strong className={moneyCls}>{formatMoney(delta)}</strong>
                             </td>
                           </tr>
+                          {/* Mobile-only sub-row: foursome breakdown as
+                              compact chips. Hidden on desktop where the
+                              4 columns above carry this info. colSpan
+                              spans #, Player, Total, $ Net (the columns
+                              actually visible on mobile). */}
+                          <tr className={`show-mobile rank-${i + 1}`}>
+                            <td colSpan={4} style={{ paddingTop: 0, paddingBottom: '0.5rem' }}>
+                              <div className="history-foursome-chips">
+                                {slotScores.map((s: number | null, si: number) => {
+                                  const isCounting = r.counting_golfers?.includes(si + 1);
+                                  const cls = isCounting && s !== null
+                                    ? (s < 0 ? 'score-under' : s > 0 ? 'score-over' : 'score-even')
+                                    : '';
+                                  return (
+                                    <span
+                                      key={si}
+                                      className="history-chip"
+                                      style={{ opacity: isCounting ? 1 : 0.45 }}
+                                    >
+                                      <span className="history-chip-label">{si < 2 ? `T${si + 1}` : `DH${si - 1}`}</span>
+                                      <span className={cls}>{formatScore(s)}</span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </td>
+                          </tr>
+                          </Fragment>
                           );
                         })}
                       </tbody>

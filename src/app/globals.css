@@ -88,6 +88,70 @@ a { color: inherit; }
 .nav-links a:hover { color: white; background: rgba(255,255,255,0.08); }
 .nav-links a.active { color: var(--brass-light); }
 .nav-actions { display: flex; gap: 0.75rem; align-items: center; }
+.nav-username { color: rgba(255,255,255,0.55); font-size: 0.85rem; }
+
+/* Hamburger button — hidden on desktop, only shown when the
+   responsive media query below promotes it. */
+.nav-hamburger {
+  display: none;
+  background: transparent; border: 0; color: rgba(255,255,255,0.85);
+  font-size: 1.4rem; line-height: 1; padding: 0.4rem 0.6rem; cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.nav-hamburger:hover  { background: rgba(255,255,255,0.08); color: white; }
+.nav-hamburger:focus-visible { outline: 2px solid var(--brass-light); outline-offset: 2px; }
+
+/* Drawer overlay — fixed full-viewport. Backdrop dim + drawer panel
+   slides down from the top. Only rendered when menuOpen=true. */
+.nav-drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  z-index: 200;
+  display: flex; justify-content: center; align-items: flex-start;
+}
+.nav-drawer {
+  width: 100%; max-width: 480px; max-height: 80vh; overflow-y: auto;
+  background: var(--green-deep); color: white;
+  border-bottom: 2px solid var(--brass);
+  padding: 1.25rem 1.5rem 1.75rem;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.35);
+}
+.nav-drawer-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin: -0.25rem 0 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.nav-drawer-brand {
+  font-family: var(--font-display); font-size: 1.2rem; font-weight: 900;
+  color: var(--brass-light); letter-spacing: -0.02em;
+}
+.nav-drawer-close {
+  background: transparent; border: 0; color: rgba(255,255,255,0.7);
+  font-size: 1.4rem; line-height: 1; padding: 0.4rem 0.6rem; cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.nav-drawer-close:hover         { background: rgba(255,255,255,0.08); color: white; }
+.nav-drawer-close:focus-visible { outline: 2px solid var(--brass-light); outline-offset: 2px; }
+
+.nav-drawer-section-label {
+  text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.7rem;
+  color: rgba(255,255,255,0.45); margin: 0.6rem 0 0.4rem; font-weight: 600;
+}
+.nav-drawer-section-label:first-of-type { margin-top: 0; }
+.nav-drawer-links { list-style: none; padding: 0; margin: 0 0 0.5rem; }
+.nav-drawer-links li { display: block; }
+.nav-drawer-links a,
+.nav-drawer-signout {
+  display: block; width: 100%; text-align: left;
+  color: rgba(255,255,255,0.85); text-decoration: none;
+  font-size: 1rem; font-weight: 500; padding: 0.7rem 0.4rem;
+  border: 0; background: transparent; cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.nav-drawer-links a:hover,
+.nav-drawer-signout:hover  { background: rgba(255,255,255,0.08); color: white; }
+.nav-drawer-links a.active { color: var(--brass-light); }
+.nav-drawer-signout        { color: rgba(255,255,255,0.6); }
 
 /* ── Cards ───────────────────────────────────────────────── */
 .card {
@@ -303,10 +367,35 @@ a { color: inherit; }
    the dedicated Email column is hidden. */
 .show-mobile { display: none; }
 
+/* Mobile-only foursome chips for the history page. Hidden by default;
+   the responsive block below promotes .show-mobile to display:revert. */
+.history-foursome-chips {
+  display: flex; flex-wrap: wrap; gap: 0.4rem;
+  font-size: 0.78rem;
+}
+.history-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.15rem 0.5rem; border-radius: 999px;
+  background: var(--cream-dark); color: var(--slate-deep);
+}
+.history-chip-label {
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.05em;
+  color: var(--slate-mid); text-transform: uppercase;
+}
+
 @media (max-width: 768px) {
-  .nav-links { display: none; }
+  /* Top-bar league links collapse into the hamburger drawer. The
+     drawer (.nav-drawer-backdrop / .nav-drawer) is its own DOM
+     subtree — sits above .nav and is unaffected by these rules. */
+  .nav-links        { display: none; }
+  .nav-desktop-only { display: none; }
+  .nav-hamburger    { display: inline-flex; align-items: center; justify-content: center; }
+  .nav-username     { display: none; }   /* hide free-floating name on phone — Account link in drawer covers it */
   .hide-mobile { display: none !important; }
   .show-mobile { display: revert; }
+  /* Mobile sub-rows in tables: the show-mobile tr can't use display:revert
+     in some browsers; force display:table-row explicitly. */
+  tr.show-mobile { display: table-row; }
   /* NOTE: Previous CSS hid every `.lb-table` column past the 4th on
      mobile via `nth-child(n+5)`. That accidentally hid the admin
      members table's Remove button column. Removed — every table now

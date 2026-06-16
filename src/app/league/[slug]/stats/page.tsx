@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { redirect, notFound } from 'next/navigation';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
@@ -268,7 +269,8 @@ export default async function StatsPage({ params }: Props) {
                       const avg = p.played > 0 ? p.totalScore / p.played : 0;
                       const avgCls = avg < 0 ? 'score-under' : avg > 0 ? 'score-over' : 'score-even';
                       return (
-                        <tr key={p.user_id}>
+                        <Fragment key={p.user_id}>
+                        <tr>
                           <td>
                             <strong>{p.name}</strong>
                             {isMe && <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: 'var(--brass)' }}>← you</span>}
@@ -294,6 +296,33 @@ export default async function StatsPage({ params }: Props) {
                             <strong className={avgCls}>{p.played > 0 ? formatScore(Math.round(avg * 10) / 10) : '—'}</strong>
                           </td>
                         </tr>
+                        {/* Mobile-only sub-row: secondary stats (2nd /
+                            3rd / events / best / worst) collapsed into
+                            inline chips so phone users see ALL the info,
+                            not just W / Payout / Avg. colSpan spans the
+                            4 columns that DO show on mobile. */}
+                        <tr className="show-mobile">
+                          <td colSpan={4} style={{ paddingTop: 0, paddingBottom: '0.55rem' }}>
+                            <div className="history-foursome-chips">
+                              <span className="history-chip"><span className="history-chip-label">🥈 2nd</span>{p.seconds}</span>
+                              <span className="history-chip"><span className="history-chip-label">🥉 3rd</span>{p.thirds}</span>
+                              <span className="history-chip"><span className="history-chip-label">Events</span>{p.played}</span>
+                              <span className="history-chip" title={p.bestEvent ?? ''}>
+                                <span className="history-chip-label">Best</span>
+                                <span className={p.bestScore !== null && p.bestScore < 0 ? 'score-under' : ''}>
+                                  {p.bestScore !== null ? formatScore(p.bestScore) : '—'}
+                                </span>
+                              </span>
+                              <span className="history-chip" title={p.worstEvent ?? ''}>
+                                <span className="history-chip-label">Worst</span>
+                                <span className={p.worstScore !== null && p.worstScore > 0 ? 'score-over' : ''}>
+                                  {p.worstScore !== null ? formatScore(p.worstScore) : '—'}
+                                </span>
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        </Fragment>
                       );
                     })}
                   </tbody>
