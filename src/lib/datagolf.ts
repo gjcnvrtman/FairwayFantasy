@@ -122,10 +122,15 @@ export interface DGPreTournamentResponse {
 export async function getPreTournamentPredictions(
   tour: 'pga' | 'euro' | 'kft' = 'pga',
 ): Promise<DGPreTournamentResponse> {
+  // `add_position` is NOT sent — Datagolf rejects the string "no"
+  // with a 400 ("please only enter valid finish positions") on the
+  // General tier; the param expects a numeric finish-position cutoff
+  // (1..50) to opt INTO an extra top-N column. Omitting it gives us
+  // the default win / top-5 / top-10 / top-20 / make_cut shape which
+  // is exactly what DGPreTournamentRow already types.
   const json = await fetchJson<unknown>('/preds/pre-tournament', {
     tour,
     odds_format: 'percent',
-    add_position: 'no',
   });
   if (!json || typeof json !== 'object') {
     throw new Error('Datagolf preds/pre-tournament: malformed response');
