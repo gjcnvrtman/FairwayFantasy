@@ -4,12 +4,72 @@ This is the operator-facing guide for loading golfer stat snapshots into
 the **course-fit prediction system** (added 2026-06-29). Restricted to
 platform admins (Greg + MJ).
 
-The predictor needs a per-golfer, per-date snapshot of season stats to
-score course fit, recent form, cut probability, and upside. Until the
-admin UI lands later in Phase 3, the only ingestion path is the
-**`scripts/import-stats.ts` CLI**. The CSV format and matching rules
-documented here will be re-used by the future upload UI without
-behavioral change, so the snapshots you upload now keep working.
+## TL;DR — two data paths
+
+| Path | Trigger | What it covers | Setup |
+|---|---|---|---|
+| **Datagolf cron** (preferred) | `fairway-datagolf.timer` every Mon 06:30 + on-demand from admin UI | Per-tournament win / top-N / cut probabilities. Back-fills `golfers.datagolf_id`. | `DATAGOLF_API_KEY` in `/opt/fairway-fantasy/.env.local` + install the new systemd unit |
+| **CSV CLI** (manual override) | `npx tsx scripts/import-stats.ts` | SG breakdown + driving + scoring stats — anything Datagolf's General-tier doesn't supply | Documented below |
+
+The two paths write to **different tables** and don't conflict:
+* Datagolf cron writes `datagolf_tournament_predictions`.
+* CSV CLI writes `golfer_stat_snapshots`.
+
+The predictor consumes both — Datagolf preds for cut probability and
+recent-form proxy, CSV stats for SG-driven course fit. Either is
+optional; if both are missing for a golfer the predictor falls back to
+OWGR-only and flags the row in its "missing inputs" warning.
+
+---
+
+## The Datagolf cron path
+
+### What it does
+1. **Player list back-fill** — populates `golfers.datagolf_id` where it's
+   currently NULL using exact-name matching. Rows that already have a
+   `datagolf_id` are untouched (the matcher never silently re-links).
+2. **Pre-tournament predictions** — for the next upcoming PGA event,
+   pulls Datagolf's `baseline_history_fit` (or `baseline` fallback)
+   model output and upserts a row per golfer into
+   `datagolf_tournament_predictions`.
+
+### Setup
+
+```bash
+# 1. Drop your DATAGOLF_API_KEY into the env file:
+sudo bash -c 'echo "DATAGOLF_API_KEY=<your-key>" >> /opt/fairway-fantasy/.env.local'
+
+# 2. Install the systemd timer (idempotent — also reinstalls existing timers):
+sudo /opt/fairway-fantasy/infra/systemd/install.sh
+
+# 3. Manually fire it once to confirm:
+sudo systemctl start fairway-datagolf.service
+journalctl -u fairway-datagolf.service -n 30 --no-pager
+```
+
+The endpoint returns JSON with counts; check it via:
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  http://127.0.0.1:3000/api/sync-scores/datagolf | jq
+```
+
+### Failure modes
+* `DATAGOLF_API_KEY not set` → the env var didn't make it into the
+  Next.js process. Restart the service (`systemctl restart
+  fairway-fantasy`) after editing `.env.local`.
+* `Datagolf .../preds/pre-tournament → HTTP 403` → your General-tier
+  key doesn't unlock that endpoint. Confirm tier on
+  <https://datagolf.com/api-access>.
+* Partial-success response (`status: 207`) → one of the two steps
+  failed; the JSON body explains which.
+
+---
+
+## The CSV CLI path (manual override)
+
+Use this when you need stats Datagolf's General tier doesn't supply
+(per-player SG breakdown, driving distance, etc.) or to backfill
+historical snapshots for backtest events.
 
 ---
 
