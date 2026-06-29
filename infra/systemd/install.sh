@@ -48,7 +48,8 @@ echo "▸ Install to:    /etc/systemd/system/"
 for unit in fairway-rankings.service        fairway-rankings.timer        \
             fairway-scores.service          fairway-scores.timer          \
             fairway-field.service           fairway-field.timer           \
-            fairway-daily-scorecard.service fairway-daily-scorecard.timer; do
+            fairway-daily-scorecard.service fairway-daily-scorecard.timer \
+            fairway-datagolf.service        fairway-datagolf.timer; do
   src="$HERE/$unit"
   dst="/etc/systemd/system/$unit"
   cp "$src" "$dst"
@@ -61,6 +62,7 @@ systemctl enable --now fairway-rankings.timer
 systemctl enable --now fairway-scores.timer
 systemctl enable --now fairway-field.timer
 systemctl enable --now fairway-daily-scorecard.timer
+systemctl enable --now fairway-datagolf.timer
 
 echo
 echo "▸ Timer status:"
@@ -88,3 +90,5 @@ echo "    systemctl start fairway-rankings.service          # fire manually"
 echo "    systemctl start fairway-scores.service            # fire manually"
 echo "    systemctl start fairway-field.service             # fire manually"
 echo "    systemctl start fairway-daily-scorecard.service   # fire manually"
+echo "    systemctl start fairway-datagolf.service          # fire manually"
+echo "                                                       # (requires DATAGOLF_API_KEY in .env.local)"

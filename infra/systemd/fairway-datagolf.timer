@@ -1,0 +1,24 @@
+# /etc/systemd/system/fairway-datagolf.timer
+#
+# Fires fairway-datagolf.service weekly. Mondays at 06:30 local time
+# — 30 min after fairway-rankings.timer, so any new golfers ESPN's
+# rankings sync just added are present locally before the Datagolf
+# matcher tries to link them by name.
+#
+# Datagolf publishes the upcoming-PGA-tournament pre-tournament
+# predictions some time Tuesday morning, so this Monday run is mostly
+# the player-list back-fill + a refresh of the prior week's pre-tour
+# predictions if they haven't aged out yet. The Wednesday morning
+# admin "Run predictions" UI button (Phase 3 follow-up) will
+# trigger this same endpoint on demand to get the freshest data.
+
+[Unit]
+Description=Weekly: pull Datagolf player list + pre-tournament preds (Mondays 06:30)
+
+[Timer]
+OnCalendar=Mon *-*-* 06:30:00
+Persistent=true
+Unit=fairway-datagolf.service
+
+[Install]
+WantedBy=timers.target

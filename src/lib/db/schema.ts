@@ -308,6 +308,29 @@ export interface Database {
   league_tournament_bets:LeagueTournamentBetsTable;
   league_messages:       LeagueMessagesTable;
   league_broadcasts:     LeagueBroadcastsTable;
+  // ── predictions / phase 3 ─────────────────────────────────
+  datagolf_tournament_predictions: DatagolfTournamentPredictionsTable;
+}
+
+// ── datagolf_tournament_predictions (migration 020) ──────────
+// Local cache of Datagolf's pre-tournament probabilities for the
+// upcoming event. Refreshed weekly by fairway-datagolf.timer.
+// UNIQUE (tournament_id, datagolf_player_id) makes re-pulls idempotent.
+export interface DatagolfTournamentPredictionsTable {
+  id:                  Generated<string>;          // UUID
+  tournament_id:       string;
+  golfer_id:           string | null;               // NULL until matcher links it
+  datagolf_player_id:  number;
+  player_name_raw:     string;
+  pulled_at:           Generated<Timestamp>;
+  // All probabilities are normalized to 0..1 at write time.
+  win_prob:            string | null;               // NUMERIC(6,5) — pg returns string
+  top_5_prob:          string | null;
+  top_10_prob:         string | null;
+  top_20_prob:         string | null;
+  make_cut_prob:       string | null;
+  expected_finish:     string | null;
+  raw_json:            unknown | null;              // JSONB
 }
 
 // ── league_messages (migration 011) ──────────────────────────

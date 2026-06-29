@@ -1,0 +1,35 @@
+# /etc/systemd/system/fairway-datagolf.service
+#
+# Pulls Datagolf's General-Use endpoints into the local Postgres
+# (golfer.datagolf_id back-fill + datagolf_tournament_predictions
+# cache for the upcoming PGA tournament). Triggered by the matching
+# .timer.
+#
+# Sources today:
+#   - https://feeds.datagolf.com/get-player-list
+#   - https://feeds.datagolf.com/preds/pre-tournament  (tour=pga)
+#
+# Reads DATAGOLF_API_KEY + CRON_SECRET from /opt/fairway-fantasy/.env.local.
+
+[Unit]
+Description=Fairway Fantasy — pull Datagolf rankings + pre-tournament preds
+After=fairway-fantasy.service network-online.target fairway-rankings.service
+Wants=network-online.target
+# Don't run if Fairway itself isn't up — curl would just fail.
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+ExecStart=/usr/bin/curl -fsS --max-time 120 \
+  -X GET \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/sync-scores/datagolf
+
+# Don't fail the unit on transient curl errors — just log + move on.
+# 207 = partial success (one of the two Datagolf calls failed); curl
+# would return 22 ("HTTP error returned") for any 4xx/5xx, so we
+# need SuccessExitStatus to include the partial-success path too.
+SuccessExitStatus=0
