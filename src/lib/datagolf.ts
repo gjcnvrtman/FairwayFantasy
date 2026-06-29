@@ -140,15 +140,30 @@ export async function getPreTournamentPredictions(
 
 // ── Helpers ────────────────────────────────────────────────────
 /**
- * Normalize Datagolf percent values (0..100, may be null/undefined,
- * may include the field as missing) into [0..1] with NULL coercion.
+ * Coerce a Datagolf probability field into [0..1] with NULL on
+ * anything that isn't a finite number.
+ *
+ * NOTE (2026-06-29): Despite passing `odds_format=percent`, Datagolf's
+ * General-tier `preds/pre-tournament` endpoint returns these as
+ * FRACTIONS in [0..1] — verified live: Ben Griffin's `win` field
+ * came back as `0.0533` (= 5.33%), not `5.33`. The `odds_format`
+ * param appears to apply to American-odds vs. decimal-odds endpoints,
+ * not to probability-percent fields. We clamp but do NOT rescale.
  */
-export function pct(v: unknown): number | null {
+export function prob(v: unknown): number | null {
   if (v == null) return null;
   const n = typeof v === 'number' ? v : Number(v);
   if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(1, n / 100));
+  return Math.max(0, Math.min(1, n));
 }
+
+/**
+ * Deprecated alias — prior implementation rescaled by /100. Kept as
+ * a shim through this rename only to make grep audits easy; new code
+ * should call `prob()` directly. Will be deleted in a follow-up once
+ * we confirm no other callers exist.
+ */
+export const pct = prob;
 
 /**
  * Datagolf player names are "Last, First". Our local DB uses
