@@ -146,9 +146,13 @@ export async function runPredictions(
       const [stats, dg, recent, history, comparable] = await Promise.all([
         queries.loadStatsSnapshot(g.golferId, asOf),
         queries.loadDatagolfPreds(opts.tournamentId, g.golferId),
-        queries.loadRecentFinishes(g.golferId, 6),
-        queries.loadCourseHistory(g.golferId, courseProfileId, 5),
-        queries.loadComparableHistory(g.golferId, comparableIds, 5),
+        // Pass asOf to the history loaders so the same date controls
+        // both the stats snapshot AND the "what did we know about
+        // recent form" question. For backtests this is the
+        // pick_deadline - 1 day boundary that prevents leakage.
+        queries.loadRecentFinishes(g.golferId, 6, asOf),
+        queries.loadCourseHistory(g.golferId, courseProfileId, 5, asOf),
+        queries.loadComparableHistory(g.golferId, comparableIds, 5, asOf),
       ]);
       return {
         ok: true as const,

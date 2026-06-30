@@ -160,6 +160,16 @@ function makeStubQueries(opts: StubOpts = {}): {
     async markRunFailed(runId, error) {
       captured.failedRunIds.push({ id: runId, error });
     },
+    // Backtest-path methods — not exercised by the orchestrator tests.
+    // Throw if called so a future test that needs them gets a clear
+    // error rather than silent null behavior.
+    async loadTournamentMeta() { throw new Error('stub: loadTournamentMeta not exercised'); },
+    async loadActualResults() { throw new Error('stub: loadActualResults not exercised'); },
+    async loadLeagueOutcomes() { throw new Error('stub: loadLeagueOutcomes not exercised'); },
+    async insertBacktestRun() { throw new Error('stub: insertBacktestRun not exercised'); },
+    async insertBacktestResult() { throw new Error('stub: insertBacktestResult not exercised'); },
+    async markBacktestComplete() { throw new Error('stub: markBacktestComplete not exercised'); },
+    async markBacktestFailed() { throw new Error('stub: markBacktestFailed not exercised'); },
   };
   return { queries, captured };
 }

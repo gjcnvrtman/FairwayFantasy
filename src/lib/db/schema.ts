@@ -320,6 +320,48 @@ export interface Database {
   tournament_prediction_runs:      TournamentPredictionRunsTable;
   golfer_predictions:              GolferPredictionsTable;
   foursome_recommendations:        FoursomeRecommendationsTable;
+  backtest_runs:                   BacktestRunsTable;
+  backtest_results:                BacktestResultsTable;
+}
+
+// ── backtest_runs (migration 019) ─────────────────────────────
+export interface BacktestRunsTable {
+  id:                             Generated<string>;
+  weight_config_id:               string;
+  tournament_ids:                 string[];
+  status:                         Generated<'pending' | 'running' | 'complete' | 'failed'>;
+  events_tested:                  number | null;
+  events_with_complete_data:      number | null;
+  avg_projected_vs_actual:        string | null;
+  avg_best_foursome_rank:         string | null;
+  pct_beat_league_average:        string | null;
+  pct_beat_league_winner:         string | null;
+  avg_sleeper_accuracy:           string | null;
+  notes:                          string | null;
+  triggered_by:                   string | null;
+  started_at:                     Generated<Timestamp>;
+  completed_at:                   Timestamp | null;
+}
+
+// ── backtest_results (migration 019) ──────────────────────────
+export interface BacktestResultsTable {
+  id:                                 Generated<string>;
+  backtest_run_id:                    string;
+  tournament_id:                      string;
+  prediction_run_id:                  string | null;
+  projected_score:                    string | null;
+  actual_score:                       string | null;
+  best_recommended_rank_in_league:    number | null;
+  beat_league_average:                boolean | null;
+  beat_league_winner:                 boolean | null;
+  avg_finish_recommended:             string | null;
+  made_cut_pct:                       string | null;
+  top_10_pct:                         string | null;
+  top_20_pct:                         string | null;
+  total_fantasy_points:               string | null;
+  regret_score:                       string | null;
+  sleeper_accuracy:                   string | null;
+  details:                            unknown | null;
 }
 
 // ── course_profiles (migration 016) ──────────────────────────

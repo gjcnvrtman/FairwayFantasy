@@ -59,6 +59,7 @@ export default async function PredictionsLayout({
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
           <Link href="/predictions/current"  style={navLinkStyle}>Current Tournament</Link>
           <Link href="/predictions/courses"  style={navLinkStyle}>Course Profiles</Link>
+          <Link href="/predictions/backtest" style={navLinkStyle}>Backtest</Link>
         </nav>
         <p style={{
           marginTop: '40px',

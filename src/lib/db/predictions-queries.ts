@@ -105,15 +105,79 @@ export interface PredictionsQueries {
   loadTournamentField(tournamentId: string): Promise<TournamentFieldRow[]>;
   loadStatsSnapshot(golferId: string, asOfDate: string): Promise<GolferStatRow | null>;
   loadDatagolfPreds(tournamentId: string, golferId: string): Promise<DatagolfPredsRow | null>;
-  loadRecentFinishes(golferId: string, limit?: number): Promise<Finish[]>;
-  loadCourseHistory(golferId: string, courseProfileId: string, limit?: number): Promise<Finish[]>;
-  loadComparableHistory(golferId: string, comparableProfileIds: string[], limit?: number): Promise<Finish[]>;
+  /**
+   * @param asOfDate Optional cutoff. When supplied, only events with
+   *   `end_date < asOfDate` are considered — used by the backtest
+   *   orchestrator to prevent future-data leakage.
+   */
+  loadRecentFinishes(golferId: string, limit?: number, asOfDate?: string): Promise<Finish[]>;
+  loadCourseHistory(golferId: string, courseProfileId: string, limit?: number, asOfDate?: string): Promise<Finish[]>;
+  loadComparableHistory(golferId: string, comparableProfileIds: string[], limit?: number, asOfDate?: string): Promise<Finish[]>;
   loadOwnership(tournamentId: string): Promise<Map<string, number>>;
   insertRun(input: RunPersistInput): Promise<string>;
   insertGolferPredictions(rows: GolferPredictionPersistRow[]): Promise<void>;
   insertFoursomes(rows: FoursomePersistRow[]): Promise<void>;
   markRunComplete(runId: string): Promise<void>;
   markRunFailed(runId: string, error: string): Promise<void>;
+
+  // ── Backtest paths ───────────────────────────────────
+  loadTournamentMeta(id: string): Promise<{ pickDeadline: string | null; endDate: string } | null>;
+  loadActualResults(tournamentId: string): Promise<BacktestActualRow[]>;
+  loadLeagueOutcomes(tournamentId: string): Promise<BacktestLeagueOutcomeRow[]>;
+  insertBacktestRun(input: BacktestRunPersistInput): Promise<string>;
+  insertBacktestResult(input: BacktestResultPersistInput): Promise<void>;
+  markBacktestComplete(id: string, agg: BacktestAggregatePersist): Promise<void>;
+  markBacktestFailed(id: string, error: string): Promise<void>;
+}
+
+export interface BacktestActualRow {
+  golferId: string;
+  owgrRank: number | null;
+  position: number;
+  missedCut: boolean;
+  fantasyScore: number | null;
+}
+
+export interface BacktestLeagueOutcomeRow {
+  leagueId: string;
+  userId: string;
+  golferIds: [string, string, string, string];
+  totalScore: number;
+}
+
+export interface BacktestRunPersistInput {
+  weightConfigId: string;
+  tournamentIds: string[];
+  triggeredBy: string | null;
+}
+
+export interface BacktestResultPersistInput {
+  backtestRunId: string;
+  tournamentId: string;
+  predictionRunId: string | null;
+  projectedScore: number;
+  actualScore: number;
+  bestRecommendedRankInLeague: number | null;
+  beatLeagueAverage: boolean | null;
+  beatLeagueWinner: boolean | null;
+  avgFinishRecommended: number;
+  madeCutPct: number;
+  top10Pct: number;
+  top20Pct: number;
+  totalFantasyPoints: number;
+  regretScore: number;
+  sleeperAccuracy: number;
+  details: unknown;
+}
+
+export interface BacktestAggregatePersist {
+  eventsTested: number;
+  eventsWithCompleteData: number;
+  avgProjectedVsActual: number;
+  avgBestFoursomeRank: number | null;
+  pctBeatLeagueAverage: number | null;
+  pctBeatLeagueWinner: number | null;
+  avgSleeperAccuracy: number;
 }
 
 // ── Production factory ─────────────────────────────────────
@@ -248,8 +312,8 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       };
     },
 
-    async loadRecentFinishes(golferId, limit = 6) {
-      const rows = await db.selectFrom('scores')
+    async loadRecentFinishes(golferId, limit = 6, asOfDate) {
+      let q = db.selectFrom('scores')
         .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
         .select([
           'scores.position as position',
@@ -264,8 +328,9 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
           eb('scores.status', '=', 'disqualified'),
         ]))
         .orderBy('tournaments.end_date', 'desc')
-        .limit(limit)
-        .execute();
+        .limit(limit);
+      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
+      const rows = await q.execute();
       return rows.map(r => ({
         position: parsePosition(r.position),
         missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
@@ -273,9 +338,9 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       }));
     },
 
-    async loadCourseHistory(golferId, courseProfileId, limit = 5) {
+    async loadCourseHistory(golferId, courseProfileId, limit = 5, asOfDate) {
       // Tournaments at this course = tournaments.course_profile_id matches.
-      const rows = await db.selectFrom('scores')
+      let q = db.selectFrom('scores')
         .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
         .select([
           'scores.position as position',
@@ -291,8 +356,9 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
           eb('scores.status', '=', 'disqualified'),
         ]))
         .orderBy('tournaments.end_date', 'desc')
-        .limit(limit)
-        .execute();
+        .limit(limit);
+      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
+      const rows = await q.execute();
       return rows.map(r => ({
         position: parsePosition(r.position),
         missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
@@ -300,9 +366,9 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       }));
     },
 
-    async loadComparableHistory(golferId, comparableProfileIds, limit = 5) {
+    async loadComparableHistory(golferId, comparableProfileIds, limit = 5, asOfDate) {
       if (comparableProfileIds.length === 0) return [];
-      const rows = await db.selectFrom('scores')
+      let q = db.selectFrom('scores')
         .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
         .select([
           'scores.position as position',
@@ -318,8 +384,9 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
           eb('scores.status', '=', 'disqualified'),
         ]))
         .orderBy('tournaments.end_date', 'desc')
-        .limit(limit)
-        .execute();
+        .limit(limit);
+      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
+      const rows = await q.execute();
       return rows.map(r => ({
         position: parsePosition(r.position),
         missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
@@ -433,6 +500,127 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       await db.updateTable('tournament_prediction_runs')
         .set({ status: 'failed', error, completed_at: new Date().toISOString() })
         .where('id', '=', runId)
+        .execute();
+    },
+
+    // ── Backtest paths ───────────────────────────────────
+
+    async loadTournamentMeta(id) {
+      const row = await db.selectFrom('tournaments')
+        .select(['pick_deadline', 'end_date'])
+        .where('id', '=', id)
+        .executeTakeFirst();
+      if (!row) return null;
+      return { pickDeadline: row.pick_deadline, endDate: row.end_date };
+    },
+
+    async loadActualResults(tournamentId) {
+      const rows = await db.selectFrom('scores')
+        .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
+        .select([
+          'scores.golfer_id as golferId',
+          'golfers.owgr_rank as owgrRank',
+          'scores.position as position',
+          'scores.status as status',
+          'scores.fantasy_score as fantasyScore',
+        ])
+        .where('scores.tournament_id', '=', tournamentId)
+        .execute();
+      return rows.map(r => ({
+        golferId: r.golferId,
+        owgrRank: r.owgrRank,
+        position: parsePosition(r.position),
+        missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
+        fantasyScore: r.fantasyScore,
+      }));
+    },
+
+    async loadLeagueOutcomes(tournamentId) {
+      // fantasy_results carries the final realized league total per
+      // member; picks carries which 4 golfers they submitted.
+      const rows = await db.selectFrom('fantasy_results')
+        .innerJoin('picks',
+          jb => jb.onRef('picks.league_id', '=', 'fantasy_results.league_id')
+            .onRef('picks.user_id', '=', 'fantasy_results.user_id')
+            .onRef('picks.tournament_id', '=', 'fantasy_results.tournament_id'))
+        .select([
+          'fantasy_results.league_id as leagueId',
+          'fantasy_results.user_id as userId',
+          'picks.golfer_1_id as g1',
+          'picks.golfer_2_id as g2',
+          'picks.golfer_3_id as g3',
+          'picks.golfer_4_id as g4',
+          'fantasy_results.total_score as totalScore',
+        ])
+        .where('fantasy_results.tournament_id', '=', tournamentId)
+        .execute();
+      return rows
+        .filter(r => r.g1 && r.g2 && r.g3 && r.g4 && r.totalScore != null)
+        .map(r => ({
+          leagueId: r.leagueId,
+          userId: r.userId,
+          golferIds: [r.g1!, r.g2!, r.g3!, r.g4!] as [string, string, string, string],
+          totalScore: r.totalScore!,
+        }));
+    },
+
+    async insertBacktestRun(input) {
+      const row = await db.insertInto('backtest_runs')
+        .values({
+          weight_config_id: input.weightConfigId,
+          tournament_ids:   input.tournamentIds,
+          status:           'running',
+          triggered_by:     input.triggeredBy,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      return row.id;
+    },
+
+    async insertBacktestResult(input) {
+      await db.insertInto('backtest_results')
+        .values({
+          backtest_run_id:                  input.backtestRunId,
+          tournament_id:                    input.tournamentId,
+          prediction_run_id:                input.predictionRunId,
+          projected_score:                  input.projectedScore.toString(),
+          actual_score:                     input.actualScore.toString(),
+          best_recommended_rank_in_league:  input.bestRecommendedRankInLeague,
+          beat_league_average:              input.beatLeagueAverage,
+          beat_league_winner:               input.beatLeagueWinner,
+          avg_finish_recommended:           input.avgFinishRecommended.toString(),
+          made_cut_pct:                     input.madeCutPct.toString(),
+          top_10_pct:                       input.top10Pct.toString(),
+          top_20_pct:                       input.top20Pct.toString(),
+          total_fantasy_points:             input.totalFantasyPoints.toString(),
+          regret_score:                     input.regretScore.toString(),
+          sleeper_accuracy:                 input.sleeperAccuracy.toString(),
+          details:                          input.details as unknown,
+        })
+        .execute();
+    },
+
+    async markBacktestComplete(id, agg) {
+      await db.updateTable('backtest_runs')
+        .set({
+          status:                       'complete',
+          events_tested:                agg.eventsTested,
+          events_with_complete_data:    agg.eventsWithCompleteData,
+          avg_projected_vs_actual:      agg.avgProjectedVsActual.toString(),
+          avg_best_foursome_rank:       agg.avgBestFoursomeRank == null ? null : agg.avgBestFoursomeRank.toString(),
+          pct_beat_league_average:      agg.pctBeatLeagueAverage  == null ? null : agg.pctBeatLeagueAverage.toString(),
+          pct_beat_league_winner:       agg.pctBeatLeagueWinner   == null ? null : agg.pctBeatLeagueWinner.toString(),
+          avg_sleeper_accuracy:         agg.avgSleeperAccuracy.toString(),
+          completed_at:                 new Date().toISOString(),
+        })
+        .where('id', '=', id)
+        .execute();
+    },
+
+    async markBacktestFailed(id, error) {
+      await db.updateTable('backtest_runs')
+        .set({ status: 'failed', notes: error, completed_at: new Date().toISOString() })
+        .where('id', '=', id)
         .execute();
     },
   };
