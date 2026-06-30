@@ -171,7 +171,11 @@ export default async function CurrentPredictionsPage() {
         </span>
       </div>
       <p style={{ color: '#555', marginTop: 0 }}>
-        Course: {tournament.course_name ?? '(unknown)'}
+        {/* Prefer the curated course_profiles.name over ESPN's
+            tournaments.course_name. ESPN often leaves course_name
+            NULL for upcoming events; the profile name is what we
+            curated and is authoritative once linked. */}
+        Course: {profile?.name ?? tournament.course_name ?? '(unknown)'}
       </p>
 
       {/* Profile state */}
