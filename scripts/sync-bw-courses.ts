@@ -51,24 +51,21 @@ if (!process.env.DATABASE_URL) {
   process.exit(2);
 }
 
-// Preferred tee names for the "championship yardage" pick. Order
-// matters — first match wins. Falls back to max yardage across all
-// tees on the hole if none match.
-const CHAMPIONSHIP_TEE_NAMES = [
-  'Championship', 'Tournament',
-  'Black (Men)', 'Black',
-  'TPC (Men)', 'TPC',
-  'Tips', 'Tiger',
-  'Blue (Men)', 'Blue',
-] as const;
-
+/**
+ * Championship yardage per hole = the longest tee, full stop.
+ *
+ * Prior version used a name-preference list (Championship,
+ * Tournament, Black, TPC, Tips, Blue) but that's fragile across
+ * courses — TPC Deere Run has both "Black (Men)" and "TPC (Men)"
+ * defined, and the TPC tees are LONGER than Black, even though
+ * Black appeared earlier in the preference list. Result: total
+ * yardage came out 7066 yd when the true championship-tee total
+ * is 7258. Picking the max per hole is course-agnostic and matches
+ * how "championship yardage" is universally defined: the longest
+ * playable set of tees.
+ */
 function pickHoleYardage(yardages: Record<string, unknown> | null | undefined): number | null {
   if (!yardages || typeof yardages !== 'object') return null;
-  for (const tee of CHAMPIONSHIP_TEE_NAMES) {
-    const v = (yardages as Record<string, unknown>)[tee];
-    if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v;
-  }
-  // Fallback: max value across all tees.
   let max = 0;
   for (const v of Object.values(yardages)) {
     if (typeof v === 'number' && Number.isFinite(v) && v > max) max = v;
