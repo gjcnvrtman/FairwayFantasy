@@ -1136,6 +1136,170 @@ ${body}
   return { subject: fullSubject, text, html };
 }
 
+// ── Course-fit prediction emails ──────────────────────────────
+
+export interface PredictionsEmailFoursome {
+  rank:           number;
+  topTier1Name:   string;
+  topTier2Name:   string;
+  darkHorse1Name: string;
+  darkHorse2Name: string;
+  projectedScore: number;
+  confidence:     number;       // 0..1
+  riskLevel:      'conservative' | 'balanced' | 'aggressive';
+  ownership:      number | null; // 0..100 percentage
+  explanation:    string | null;
+  keyStrengths:   string[];
+  keyConcerns:    string[];
+}
+
+/** Fired after a prediction run completes successfully — sends the
+ *  top-5 foursomes to the platform admins. */
+export function predictionsReadyEmail(params: {
+  recipientName:    string;
+  tournamentName:   string;
+  courseName:       string | null;
+  asOfDate:         string;
+  foursomes:        PredictionsEmailFoursome[];
+  fieldSize:        number;
+  golfersWithMissingStats: number;
+  missingInputsByField:    Record<string, number>;
+  siteUrl:          string;
+  runId:            string;
+}): { subject: string; text: string; html: string } {
+  const { recipientName, tournamentName, courseName, asOfDate, foursomes,
+          fieldSize, golfersWithMissingStats, missingInputsByField, siteUrl, runId } = params;
+  const runUrl = `${siteUrl}/predictions/current`;
+  const subject = `Top 5 predicted foursomes — ${tournamentName}`;
+
+  const fmtFoursomeText = (f: PredictionsEmailFoursome): string => {
+    const own = f.ownership != null ? ` · ${f.ownership.toFixed(1)}% ownership` : '';
+    const strengths = f.keyStrengths.length ? `\n   ✓ ${f.keyStrengths.join(' · ')}` : '';
+    const concerns  = f.keyConcerns.length  ? `\n   ⚠ ${f.keyConcerns.join(' · ')}`  : '';
+    return `#${f.rank}  Projected: ${f.projectedScore.toFixed(1)} vs par  ·  Conf: ${(f.confidence * 100).toFixed(0)}%  ·  ${f.riskLevel.toUpperCase()}${own}
+   Top-tier:   ${f.topTier1Name}, ${f.topTier2Name}
+   Dark horse: ${f.darkHorse1Name}, ${f.darkHorse2Name}${f.explanation ? `\n   ${f.explanation}` : ''}${strengths}${concerns}`;
+  };
+
+  const missingNote = Object.keys(missingInputsByField).length > 0
+    ? `\nData notes: ${golfersWithMissingStats} of ${fieldSize} golfers running on partial data. Missing fields: ${
+        Object.entries(missingInputsByField).map(([k, v]) => `${k}=${v}`).join(', ')
+      }.`
+    : '';
+
+  const text = `
+Hi ${recipientName},
+
+Course-fit predictions for ${tournamentName}${courseName ? ` at ${courseName}` : ''} are ready.
+
+Run as-of: ${asOfDate}   ·   Field: ${fieldSize} golfers${missingNote}
+
+TOP 5 FOURSOMES (lower projected score = better)
+============================================================
+${foursomes.map(fmtFoursomeText).join('\n\n')}
+
+View on site:
+${runUrl}
+
+These are model predictions, not guarantees.
+
+— FairwayFantasy predictor
+`.trim();
+
+  const fmtFoursomeHtml = (f: PredictionsEmailFoursome): string => {
+    const own = f.ownership != null
+      ? `<span style="color:#666; margin-left:8px;">${f.ownership.toFixed(1)}% own</span>` : '';
+    const riskColor = f.riskLevel === 'conservative' ? '#3a8e5b'
+                    : f.riskLevel === 'aggressive'   ? '#cc7a3a' : '#3a6ea5';
+    return `
+      <div style="border:1px solid #ddd; border-radius:8px; padding:14px; margin-bottom:12px;">
+        <div>
+          <span style="font-size:24px; font-weight:800; color:#888;">#${f.rank}</span>
+          <strong style="margin-left:8px;">${escapeHtml(f.topTier1Name)}</strong>,
+          <strong>${escapeHtml(f.topTier2Name)}</strong>
+          &nbsp;·&nbsp; ${escapeHtml(f.darkHorse1Name)}, ${escapeHtml(f.darkHorse2Name)}
+        </div>
+        <div style="margin-top:8px; font-size:13px; color:#444;">
+          Proj <strong>${f.projectedScore.toFixed(1)}</strong> vs par
+          &nbsp;·&nbsp; Conf <strong>${(f.confidence * 100).toFixed(0)}%</strong>
+          &nbsp;·&nbsp; <span style="color:${riskColor}; font-weight:600;">${f.riskLevel.toUpperCase()}</span>
+          ${own}
+        </div>
+        ${f.explanation ? `<p style="margin:8px 0 0; font-size:13px; color:#555;">${escapeHtml(f.explanation)}</p>` : ''}
+        ${f.keyStrengths.length ? `<p style="margin:4px 0 0; font-size:12px; color:#3a8e5b;">✓ ${f.keyStrengths.map(escapeHtml).join(' · ')}</p>` : ''}
+        ${f.keyConcerns.length  ? `<p style="margin:4px 0 0; font-size:12px; color:#c66;">⚠ ${f.keyConcerns.map(escapeHtml).join(' · ')}</p>`  : ''}
+      </div>`;
+  };
+
+  const html = `<!DOCTYPE html>
+<html><body style="font-family:-apple-system,Segoe UI,sans-serif; max-width:680px; margin:0 auto; padding:24px;">
+  <h2 style="margin:0 0 4px;">Top 5 predicted foursomes</h2>
+  <p style="margin:0 0 4px; color:#666;">${escapeHtml(tournamentName)}${courseName ? ` · ${escapeHtml(courseName)}` : ''}</p>
+  <p style="margin:0 0 16px; color:#888; font-size:13px;">
+    Run as-of ${escapeHtml(asOfDate)} · Field ${fieldSize} golfers · Lower projected score is better.
+  </p>
+  ${foursomes.map(fmtFoursomeHtml).join('')}
+  ${Object.keys(missingInputsByField).length > 0 ? `
+    <p style="margin-top:16px; padding:10px 12px; background:#fff8e1; border:1px solid #f0c060; border-radius:4px; font-size:12px;">
+      ${golfersWithMissingStats} of ${fieldSize} golfers on partial data.
+      Missing field counts: ${Object.entries(missingInputsByField).map(([k, v]) => `${escapeHtml(k)}=${v}`).join(', ')}.
+    </p>` : ''}
+  <p style="margin-top:20px; font-size:13px;">
+    <a href="${runUrl}" style="color:#1a3a2e;">View on site</a>
+  </p>
+  <p style="margin-top:20px; font-size:11px; color:#999;">
+    Model predictions, not guarantees. Run id ${runId}.
+  </p>
+</body></html>`;
+
+  return { subject, text, html };
+}
+
+/** Fired when ESPN publishes a field but the course profile hasn't
+ *  been curated yet — predictor can't run. Tells the admin what to do. */
+export function fieldPublishedNoProfileEmail(params: {
+  recipientName:  string;
+  tournamentName: string;
+  startDate:      string;
+  tournamentId:   string;
+  defaultCourseName: string | null;
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const { recipientName, tournamentName, startDate, tournamentId,
+          defaultCourseName, siteUrl } = params;
+  const courseQuery = defaultCourseName
+    ? `&course_name=${encodeURIComponent(defaultCourseName)}`
+    : '';
+  const profileUrl = `${siteUrl}/predictions/courses/new?tournament_id=${tournamentId}${courseQuery}`;
+  const subject = `[Predictions] ${tournamentName} field is set — curate a course profile`;
+  const text = `
+Hi ${recipientName},
+
+ESPN just published the field for ${tournamentName} (starts ${startDate}).
+To get predictions, curate a course profile first — search the venue,
+fill in importance weights, save. Then click Run predictions.
+
+Curate profile:
+${profileUrl}
+
+— FairwayFantasy predictor
+`.trim();
+  const html = `<!DOCTYPE html>
+<html><body style="font-family:-apple-system,Segoe UI,sans-serif; max-width:600px; margin:0 auto; padding:24px;">
+  <h2 style="margin:0 0 8px;">${escapeHtml(tournamentName)} — field is set</h2>
+  <p>ESPN published the field (event starts ${escapeHtml(startDate)}).
+    To get predictions, curate a course profile first.</p>
+  <p>
+    <a href="${profileUrl}" style="display:inline-block; background:#1a3a2e; color:#fff;
+       padding:10px 18px; border-radius:4px; text-decoration:none; font-weight:600;">
+      Curate course profile
+    </a>
+  </p>
+  <p style="font-size:11px; color:#999; margin-top:24px;">— FairwayFantasy predictor</p>
+</body></html>`;
+  return { subject, text, html };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

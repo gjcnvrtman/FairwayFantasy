@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import { db } from '@/lib/db';
 import RunButton from './RunButton';
+import EmailButton from './EmailButton';
 
 export const dynamic = 'force-dynamic';  // always fetch fresh; admin tool, no caching
 export const metadata = { title: 'Current — Predictions' };
@@ -218,7 +219,12 @@ export default async function CurrentPredictionsPage() {
               marginBottom: '12px',
             }}>
               <strong style={{ fontSize: '16px' }}>Prediction run</strong>
-              <RunButton tournamentId={tournament.id} />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {latest?.run && latest.run.status === 'complete' && (
+                  <EmailButton runId={latest.run.id} />
+                )}
+                <RunButton tournamentId={tournament.id} />
+              </div>
             </div>
             {latest?.run ? (
               <div style={{ color: '#555', fontSize: '14px' }}>

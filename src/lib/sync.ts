@@ -871,6 +871,21 @@ async function checkAndPublishField(tournament: {
     golferCount:    competitors.length,
   });
 
+  // Predictions auto-fire on first field publish (2026-06-30). Runs
+  // the course-fit predictor + emails the top-5 to platform admins
+  // (Greg + MJ) via predictions-email.ts:autoPredictAndEmail. Wrapped
+  // in its own try/catch so any failure here cannot affect the
+  // field-publish caller, and fire-and-forget so the 10-30s
+  // prediction run doesn't block the rest of the field-sync loop.
+  // If the course profile isn't curated yet, autoPredictAndEmail
+  // sends an alternate "go curate a profile" email instead of
+  // failing silently.
+  import('./predictions-email')
+    .then(m => m.autoPredictAndEmail(id))
+    .catch(err => console.error(
+      `[runFieldSync] autoPredictAndEmail failed for ${id}:`, err,
+    ));
+
   return {
     tournament:  name,
     espn_event_id,
