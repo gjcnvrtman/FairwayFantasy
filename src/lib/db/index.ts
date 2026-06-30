@@ -41,6 +41,14 @@ pgTypes.setTypeParser(1184, (val: string | null) =>
 pgTypes.setTypeParser(1114, (val: string | null) =>
   val == null ? null : new Date(val).toISOString(),
 );
+// DATE (OID 1082) — same alignment problem as TIMESTAMPTZ. Default
+// pg-node behavior returns a Date object midnight-UTC; kysely schema
+// declares DATE columns as `string` (YYYY-MM-DD). Mismatch bit the
+// /predictions/runs/[id]/email path 2026-06-30: emailPredictionsRun
+// passed run.stat_as_of_date to escapeHtml which calls .replace()
+// on it → "e.replace is not a function". pg-node delivers DATE
+// values in YYYY-MM-DD format already; just pass them through.
+pgTypes.setTypeParser(1082, (val: string | null) => val);
 
 // ── Lazy-init real client ────────────────────────────────────
 
