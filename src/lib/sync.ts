@@ -855,21 +855,18 @@ async function checkAndPublishField(tournament: {
   // commits the unlock regardless so users aren't blocked.
   await notifyFieldPublished({ tournamentId: id, tournamentName: name });
 
-  // Admin notification — fire the operator-facing "roster set" email to
-  // commissioners + co-commissioners of every league that overlaps this
-  // tournament. Separate from notifyFieldPublished above: that one goes
-  // to all league members (player-facing), this one is admin-flavored
-  // and goes through sendEmail directly (no REMINDERS_LIVE gate — the
-  // SMTP-not-configured check inside sendEmail is the dev/test safety
-  // net). Same once-per-tournament guarantee as the user notification,
-  // via the same NULL-gated runFieldSync prefilter. The hourly ESPN
-  // sync is now the ONLY path that publishes a field — manual upload
-  // was removed on Greg's call (2026-06-04).
-  await notifyAdminsRosterSet({
-    tournamentId:   id,
-    tournamentName: name,
-    golferCount:    competitors.length,
-  });
+  // Admin "roster set" notification — DISABLED 2026-06-30 (Greg).
+  // Reason: commissioners are also league members, so they already
+  // get the player-facing notifyFieldPublished email above. The
+  // admin-flavored email was a second hit to the same inbox for the
+  // same event — redundant. Re-enable by un-commenting this block if
+  // we ever need to surface admin-only info (golfer count, sync stats)
+  // separately from the player email.
+  // await notifyAdminsRosterSet({
+  //   tournamentId:   id,
+  //   tournamentName: name,
+  //   golferCount:    competitors.length,
+  // });
 
   // Predictions auto-fire on first field publish (2026-06-30). Runs
   // the course-fit predictor + emails the top-5 to platform admins
