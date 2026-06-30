@@ -140,7 +140,19 @@ export async function runPredictions(
 
   // 5 — load per-golfer inputs (parallel; one slow load doesn't
   // serialize the others)
-  const asOf = opts.statAsOfDate ?? todayIsoDate();
+  //
+  // Stat-snapshot as-of date default: prefer the LATEST snapshot date
+  // we have in the table over today's date. Greg imports stats with
+  // an as-of-date set to the Wednesday of tournament week — which is
+  // typically AFTER today when a fresh upload just landed. Using
+  // today as the cutoff would miss those snapshots entirely
+  // ("predictions running on partial data" with 134/134 stats missing
+  // even though 151 were just imported — exact incident 2026-06-30).
+  // For backtests the caller passes an explicit statAsOfDate and
+  // wins; this fallback only fires for the live/upcoming path.
+  const asOf = opts.statAsOfDate
+    ?? (await queries.loadLatestStatSnapshotDate())
+    ?? todayIsoDate();
   const perGolferLoad = await Promise.all(field.map(async g => {
     try {
       const [stats, dg, recent, history, comparable] = await Promise.all([

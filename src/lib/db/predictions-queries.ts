@@ -104,6 +104,11 @@ export interface PredictionsQueries {
   loadCourseProfile(tournamentId: string): Promise<{ id: string; profile: CourseProfile; comparableIds: string[] } | null>;
   loadTournamentField(tournamentId: string): Promise<TournamentFieldRow[]>;
   loadStatsSnapshot(golferId: string, asOfDate: string): Promise<GolferStatRow | null>;
+  /** Latest as_of_date across the snapshots table; used by the
+   *  orchestrator to default to "the most recent data we have"
+   *  rather than today's date (which can be earlier than a
+   *  freshly-uploaded Wednesday snapshot). NULL if no snapshots. */
+  loadLatestStatSnapshotDate(): Promise<string | null>;
   loadDatagolfPreds(tournamentId: string, golferId: string): Promise<DatagolfPredsRow | null>;
   /**
    * @param asOfDate Optional cutoff. When supplied, only events with
@@ -269,6 +274,13 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
         .where('datagolf_tournament_predictions.golfer_id', 'is not', null)
         .execute();
       return fromDg.map(r => ({ golferId: r.golferId, owgrRank: r.owgrRank }));
+    },
+
+    async loadLatestStatSnapshotDate() {
+      const row = await db.selectFrom('golfer_stat_snapshots')
+        .select(eb => eb.fn.max<string>('as_of_date').as('max_date'))
+        .executeTakeFirst();
+      return row?.max_date ?? null;
     },
 
     async loadStatsSnapshot(golferId, asOfDate) {

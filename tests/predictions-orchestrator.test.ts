@@ -117,6 +117,13 @@ function makeStubQueries(opts: StubOpts = {}): {
     async loadTournamentField(_tournamentId) {
       return opts.field ?? smallField();
     },
+    async loadLatestStatSnapshotDate() {
+      // Tests don't exercise the live-default path; explicit
+      // statAsOfDate (or its absence + tests not asserting date math)
+      // is fine. Return null so the orchestrator falls through to
+      // todayIsoDate() in test runs.
+      return null;
+    },
     async loadStatsSnapshot(golferId, _asOf) {
       if (opts.throwOnLoadFor?.includes(golferId)) throw new Error('boom');
       if (opts.statsByGolfer && golferId in opts.statsByGolfer) {
