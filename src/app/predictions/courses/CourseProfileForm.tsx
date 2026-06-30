@@ -4,12 +4,16 @@
 // /predictions/courses/[id]. The parent server-component decides
 // whether we POST (create) or PUT (update) by passing `mode`.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 export interface CourseProfileFormValues {
   name: string;
   tournamentId: string | null;
+  /** Link back to bw_courses_cache.id (the source-of-truth physical
+   *  course row). Set by the search-and-autofill flow; manually-entered
+   *  profiles stay NULL. */
+  external_course_id: string;
   total_par: string;
   total_yardage: string;
   par_3_count: string;
@@ -25,6 +29,18 @@ export interface CourseProfileFormValues {
   birdie_rate: string;
   bogey_rate: string;
   notes: string;
+}
+
+interface BwCourseSearchResult {
+  id: number;
+  name: string;
+  city: string | null;
+  state: string | null;
+  total_par: number | null;
+  total_yardage: number | null;
+  par_3_count: number | null;
+  par_4_count: number | null;
+  par_5_count: number | null;
 }
 
 export interface TournamentOption {
@@ -48,8 +64,64 @@ export default function CourseProfileForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Boys-weekend course search + autofill.
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<BwCourseSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
   function setField<K extends keyof CourseProfileFormValues>(k: K, v: CourseProfileFormValues[K]) {
     setValues(prev => ({ ...prev, [k]: v }));
+  }
+
+  // Debounced search effect.
+  useEffect(() => {
+    if (searchTerm.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/predictions/bw-courses/search?q=${encodeURIComponent(searchTerm)}`,
+        );
+        const body = await res.json().catch(() => ({}));
+        setSearchResults(Array.isArray(body?.results) ? body.results : []);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [searchTerm]);
+
+  // Apply one search hit. Only overwrites fields whose autofill data
+  // is present — manual edits to other fields aren't clobbered.
+  async function applyBwCourse(courseId: number) {
+    setSearching(true);
+    try {
+      const res = await fetch(`/api/predictions/bw-courses/${courseId}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.course) return;
+      const c = body.course;
+      setValues(prev => ({
+        ...prev,
+        // Only overwrite name if blank to avoid clobbering a manual edit.
+        name:                prev.name ? prev.name : c.name ?? prev.name,
+        external_course_id:  String(c.id),
+        total_par:           c.total_par != null ? String(c.total_par) : prev.total_par,
+        total_yardage:       c.total_yardage != null ? String(c.total_yardage) : prev.total_yardage,
+        par_3_count:         c.par_3_count != null ? String(c.par_3_count) : prev.par_3_count,
+        par_4_count:         c.par_4_count != null ? String(c.par_4_count) : prev.par_4_count,
+        par_5_count:         c.par_5_count != null ? String(c.par_5_count) : prev.par_5_count,
+      }));
+      setSearchTerm('');
+      setSearchOpen(false);
+    } finally {
+      setSearching(false);
+    }
   }
 
   async function submit(e: React.FormEvent) {
@@ -82,6 +154,75 @@ export default function CourseProfileForm({
 
   return (
     <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* ── Boys-weekend course search ──────────────────── */}
+      <div style={{
+        backgroundColor: '#eef5ee',
+        border: '1px solid #b9d4b9',
+        borderRadius: '8px',
+        padding: '14px 16px',
+      }}>
+        <strong style={{ fontSize: '14px' }}>Search boys-weekend (15k courses)</strong>
+        <p style={{ margin: '4px 0 10px', fontSize: '12px', color: '#456' }}>
+          Type a course name. Selecting one autofills par, yardage, and par counts.
+        </p>
+        <input
+          type="text"
+          placeholder="e.g. tpc deere, pebble, augusta"
+          value={searchTerm}
+          onChange={e => { setSearchTerm(e.target.value); setSearchOpen(true); }}
+          onFocus={() => setSearchOpen(true)}
+          style={inputStyle}
+        />
+        {searchOpen && searchResults.length > 0 && (
+          <div style={{
+            marginTop: '6px',
+            maxHeight: '220px',
+            overflowY: 'auto',
+            backgroundColor: '#fff',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}>
+            {searchResults.map(r => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => applyBwCourse(r.id)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '8px 12px',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  borderBottom: '1px solid #eee',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                }}
+              >
+                <strong>{r.name}</strong>
+                {' '}
+                <span style={{ color: '#666' }}>
+                  {[r.city, r.state].filter(Boolean).join(', ')}
+                </span>
+                {r.total_par != null && (
+                  <span style={{ color: '#888', marginLeft: '8px', fontSize: '12px' }}>
+                    par {r.total_par}{r.total_yardage ? ` · ${r.total_yardage} yd` : ''}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+        {searching && (
+          <p style={{ fontSize: '12px', color: '#666', marginTop: '6px' }}>Searching...</p>
+        )}
+        {values.external_course_id && (
+          <p style={{ fontSize: '12px', color: '#3a8e5b', marginTop: '6px' }}>
+            ✓ Linked to boys-weekend course #{values.external_course_id}
+          </p>
+        )}
+      </div>
+
       <Field label="Course name (required)">
         <input
           type="text"

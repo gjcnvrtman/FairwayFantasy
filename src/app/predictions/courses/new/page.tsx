@@ -36,6 +36,7 @@ export default async function NewCourseProfilePage({ searchParams }: Props) {
   const initial: CourseProfileFormValues = {
     name: searchParams.course_name ?? '',
     tournamentId: searchParams.tournament_id ?? null,
+    external_course_id: '',
     total_par: '',
     total_yardage: '',
     par_3_count: '',

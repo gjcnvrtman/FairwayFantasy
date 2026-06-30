@@ -48,6 +48,7 @@ export default async function EditCourseProfilePage({ params }: Props) {
   const initial: CourseProfileFormValues = {
     name: p.name,
     tournamentId: linkedTournamentId,
+    external_course_id:           p.external_course_id != null ? String(p.external_course_id) : '',
     total_par:                    p.total_par?.toString() ?? '',
     total_yardage:                p.total_yardage?.toString() ?? '',
     par_3_count:                  p.par_3_count?.toString() ?? '',

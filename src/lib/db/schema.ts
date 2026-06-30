@@ -322,6 +322,48 @@ export interface Database {
   foursome_recommendations:        FoursomeRecommendationsTable;
   backtest_runs:                   BacktestRunsTable;
   backtest_results:                BacktestResultsTable;
+  bw_courses_cache:                BwCoursesCacheTable;
+  bw_course_holes_cache:           BwCourseHolesCacheTable;
+}
+
+// ── bw_courses_cache (migration 021) ─────────────────────────
+// Local mirror of the boys-weekend Course table; populated by
+// scripts/sync-bw-courses.ts. The course-profile form autofills
+// physical fields from rows here so we never re-key the data.
+export interface BwCoursesCacheTable {
+  id:               number;        // boys-weekend Course.id
+  name:             string;
+  address:          string | null;
+  city:             string | null;
+  state:            string | null;
+  zip:              string | null;
+  phone:            string | null;
+  website:          string | null;
+  tee_time_url:     string | null;
+  google_maps_url:  string | null;
+  lat:              number | null;
+  lng:              number | null;
+  rating:           number | null;
+  slope:            number | null;
+  notes:            string | null;
+  active:           Generated<boolean>;
+  // Pre-computed roll-ups from CourseHole. Recomputed every sync.
+  total_par:        number | null;
+  total_yardage:    number | null;
+  par_3_count:      number | null;
+  par_4_count:      number | null;
+  par_5_count:      number | null;
+  hole_count:       number | null;
+  synced_at:        Generated<Timestamp>;
+}
+
+export interface BwCourseHolesCacheTable {
+  id:           number;
+  course_id:    number;
+  hole_number:  number;
+  par:          number;
+  stroke_index: number | null;
+  yardages:     unknown | null;
 }
 
 // ── backtest_runs (migration 019) ─────────────────────────────

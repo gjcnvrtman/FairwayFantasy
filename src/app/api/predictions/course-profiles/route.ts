@@ -20,6 +20,7 @@ import { db } from '@/lib/db';
 interface CreatePayload {
   name?: unknown;
   tournamentId?: unknown;
+  external_course_id?: unknown;
   total_par?: unknown;
   total_yardage?: unknown;
   par_3_count?: unknown;
@@ -89,6 +90,7 @@ export async function POST(req: NextRequest) {
       const row = await trx.insertInto('course_profiles')
         .values({
           name,
+          external_course_id:          numOrNull(body.external_course_id),
           total_par:                   numOrNull(body.total_par),
           total_yardage:               numOrNull(body.total_yardage),
           par_3_count:                 numOrNull(body.par_3_count),
