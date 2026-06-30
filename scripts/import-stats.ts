@@ -304,7 +304,7 @@ async function main() {
              scoring_avg, birdie_avg, bogey_avg, made_cut_pct,
              raw_json
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-           ON CONFLICT (golfer_id, as_of_date) DO UPDATE SET
+           ON CONFLICT (golfer_id, as_of_date) WHERE golfer_id IS NOT NULL DO UPDATE SET
              golfer_name_raw      = EXCLUDED.golfer_name_raw,
              source               = EXCLUDED.source,
              sg_total             = EXCLUDED.sg_total,

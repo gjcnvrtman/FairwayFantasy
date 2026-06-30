@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
           ${JSON.stringify(o.parsed.rawJson)}::jsonb,
           ${user.id}::uuid
         )
-        ON CONFLICT (golfer_id, as_of_date) DO UPDATE SET
+        ON CONFLICT (golfer_id, as_of_date) WHERE golfer_id IS NOT NULL DO UPDATE SET
           golfer_name_raw      = EXCLUDED.golfer_name_raw,
           source               = EXCLUDED.source,
           sg_total             = EXCLUDED.sg_total,
