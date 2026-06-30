@@ -122,6 +122,10 @@ export interface TournamentsTable {
   // NULL = not yet derived (pre-tee-off). Drives the par row on the
   // daily-scorecard PDF. Migration 006 (2026-06-04).
   par_by_hole:             number[] | null;
+  // Per-tournament link to the hand-curated course profile that
+  // drives the course-fit prediction. NULL = no profile curated
+  // yet; predictor refuses to run for these. Migration 016.
+  course_profile_id:       string | null;
   created_at:              Generated<Timestamp>;
 }
 
@@ -310,6 +314,134 @@ export interface Database {
   league_broadcasts:     LeagueBroadcastsTable;
   // ── predictions / phase 3 ─────────────────────────────────
   datagolf_tournament_predictions: DatagolfTournamentPredictionsTable;
+  course_profiles:                 CourseProfilesTable;
+  model_weight_configs:            ModelWeightConfigsTable;
+  golfer_stat_snapshots:           GolferStatSnapshotsTable;
+  tournament_prediction_runs:      TournamentPredictionRunsTable;
+  golfer_predictions:              GolferPredictionsTable;
+  foursome_recommendations:        FoursomeRecommendationsTable;
+}
+
+// ── course_profiles (migration 016) ──────────────────────────
+// Per-tournament hand-curated profile with fantasy-fit fields.
+// NUMERIC columns come back as strings via pg.
+export interface CourseProfilesTable {
+  id:                            Generated<string>;
+  external_course_id:            number | null;
+  name:                          string;
+  total_par:                     number | null;
+  total_yardage:                 number | null;
+  par_3_count:                   number | null;
+  par_4_count:                   number | null;
+  par_5_count:                   number | null;
+  grass_type:                    string | null;
+  scoring_difficulty:            string | null;
+  driving_distance_importance:   string | null;
+  driving_accuracy_importance:   string | null;
+  approach_importance:           string | null;
+  around_green_importance:       string | null;
+  putting_importance:            string | null;
+  birdie_rate:                   string | null;
+  bogey_rate:                    string | null;
+  comparable_course_ids:         string[] | null;
+  notes:                         string | null;
+  curated_by:                    string | null;
+  curated_at:                    Generated<Timestamp>;
+  updated_at:                    Generated<Timestamp>;
+}
+
+// ── model_weight_configs (migration 018) ─────────────────────
+export interface ModelWeightConfigsTable {
+  id:                       Generated<string>;
+  name:                     string;
+  course_fit_weight:        string;
+  recent_form_weight:       string;
+  long_term_weight:         string;
+  course_history_weight:    string;
+  cut_probability_weight:   string;
+  upside_weight:            string;
+  is_active:                Generated<boolean>;
+  description:              string | null;
+  created_by:               string | null;
+  created_at:               Generated<Timestamp>;
+}
+
+// ── golfer_stat_snapshots (migration 017) ────────────────────
+export interface GolferStatSnapshotsTable {
+  id:                    Generated<string>;
+  golfer_id:             string | null;
+  golfer_name_raw:       string;
+  as_of_date:            string;  // DATE comes back as YYYY-MM-DD string
+  source:                Generated<string>;
+  sg_total:              string | null;
+  sg_ott:                string | null;
+  sg_app:                string | null;
+  sg_arg:                string | null;
+  sg_putt:               string | null;
+  driving_distance:      string | null;
+  driving_accuracy_pct:  string | null;
+  gir_pct:               string | null;
+  scoring_avg:           string | null;
+  birdie_avg:            string | null;
+  bogey_avg:             string | null;
+  made_cut_pct:          string | null;
+  raw_json:              unknown | null;
+  uploaded_by:           string | null;
+  uploaded_at:           Generated<Timestamp>;
+}
+
+// ── tournament_prediction_runs (migration 019) ───────────────
+export interface TournamentPredictionRunsTable {
+  id:                             Generated<string>;
+  tournament_id:                  string;
+  weight_config_id:               string;
+  stat_as_of_date:                string | null;
+  field_size:                     number | null;
+  golfers_with_complete_stats:    number | null;
+  golfers_with_missing_stats:     number | null;
+  missing_inputs:                 unknown | null;
+  status:                         Generated<'pending' | 'running' | 'complete' | 'failed'>;
+  error:                          string | null;
+  triggered_by:                   string | null;
+  started_at:                     Generated<Timestamp>;
+  completed_at:                   Timestamp | null;
+}
+
+// ── golfer_predictions (migration 019) ───────────────────────
+// Composite PK (run_id, golfer_id). No `id`.
+export interface GolferPredictionsTable {
+  run_id:                     string;
+  golfer_id:                  string;
+  is_top_tier:                boolean;
+  course_fit_score:           string | null;
+  recent_form_score:          string | null;
+  long_term_score:            string | null;
+  course_history_score:       string | null;
+  cut_probability_score:      string | null;
+  upside_score:               string | null;
+  composite_score:            string;
+  projected_strokes_to_par:   string | null;
+  projected_cut_made_prob:    string | null;
+  explanation:                string | null;
+}
+
+// ── foursome_recommendations (migration 019) ─────────────────
+export interface FoursomeRecommendationsTable {
+  id:                       Generated<string>;
+  run_id:                   string;
+  rank:                     number;
+  top_tier_1_golfer_id:     string;
+  top_tier_2_golfer_id:     string;
+  dark_horse_1_golfer_id:   string;
+  dark_horse_2_golfer_id:   string;
+  foursome_hash:            string;
+  projected_fantasy_score:  string;
+  confidence_score:         string;
+  risk_level:               'conservative' | 'balanced' | 'aggressive';
+  estimated_ownership_pct:  string | null;
+  key_strengths:            string[] | null;
+  key_concerns:             string[] | null;
+  foursome_explanation:     string | null;
 }
 
 // ── datagolf_tournament_predictions (migration 020) ──────────
