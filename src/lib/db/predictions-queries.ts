@@ -253,27 +253,25 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
     },
 
     async loadTournamentField(tournamentId) {
-      // The field for an UPCOMING event comes from Datagolf preds
-      // (which is the only structured source we have for who's in
-      // this week's field). For events with scores already (in-play
-      // or complete), use the scores table — it's authoritative.
+      // Field source = `scores` rows seeded by runFieldSync at ESPN
+      // field-publish time. This is the SAME roster the picks system
+      // uses (gated on tournaments.field_published_at) — predictor
+      // recommendations are useless if they include golfers users
+      // can't actually pick. Earlier versions of this method fell
+      // back to datagolf_tournament_predictions when scores was
+      // empty; that fallback was removed 2026-06-30 because Datagolf
+      // and ESPN can disagree about who's in this week's field, and
+      // the only roster that matters for the predictor is the one
+      // users will pick from.
       //
-      // Try scores first; fall back to datagolf preds if empty.
-      const fromScores = await db.selectFrom('scores')
+      // When ESPN hasn't published yet (scores empty), this returns
+      // [] and the orchestrator throws NO_PUBLISHED_FIELD.
+      const rows = await db.selectFrom('scores')
         .innerJoin('golfers', 'golfers.id', 'scores.golfer_id')
         .select(['golfers.id as golferId', 'golfers.owgr_rank as owgrRank'])
         .where('scores.tournament_id', '=', tournamentId)
         .execute();
-      if (fromScores.length > 0) {
-        return fromScores.map(r => ({ golferId: r.golferId, owgrRank: r.owgrRank }));
-      }
-      const fromDg = await db.selectFrom('datagolf_tournament_predictions')
-        .innerJoin('golfers', 'golfers.id', 'datagolf_tournament_predictions.golfer_id')
-        .select(['golfers.id as golferId', 'golfers.owgr_rank as owgrRank'])
-        .where('datagolf_tournament_predictions.tournament_id', '=', tournamentId)
-        .where('datagolf_tournament_predictions.golfer_id', 'is not', null)
-        .execute();
-      return fromDg.map(r => ({ golferId: r.golferId, owgrRank: r.owgrRank }));
+      return rows.map(r => ({ golferId: r.golferId, owgrRank: r.owgrRank }));
     },
 
     async loadLatestStatSnapshotDate() {

@@ -124,12 +124,18 @@ export async function runPredictions(
   }
   const { id: courseProfileId, profile: course, comparableIds } = courseRow;
 
-  // 3 — field
+  // 3 — field (ESPN-published, via scores table seeded by runFieldSync)
   const field = await queries.loadTournamentField(opts.tournamentId);
+  if (field.length === 0) {
+    throw new OrchestratorError(
+      'NO_PUBLISHED_FIELD',
+      `ESPN has not published this tournament's field yet. The field-sync timer polls ESPN hourly; predictions will be available once ESPN releases the roster (typically Monday or Tuesday of tournament week). To force a sync now: sudo systemctl start fairway-field.service`,
+    );
+  }
   if (field.length < 4) {
     throw new OrchestratorError(
       'FIELD_TOO_SMALL',
-      `Tournament field has ${field.length} golfers — need at least 4 (2 top-tier + 2 dark-horse)`,
+      `Tournament field has only ${field.length} golfer(s) — need at least 4 (2 top-tier + 2 dark-horse). ESPN field-publish appears incomplete.`,
     );
   }
 
