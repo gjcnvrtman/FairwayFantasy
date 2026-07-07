@@ -61,6 +61,7 @@ async function loadUpcomingTournament(): Promise<TournamentRow | null> {
   const next = await db.selectFrom('tournaments')
     .select(['id', 'name', 'start_date', 'end_date', 'status',
              'course_name', 'course_profile_id'])
+    .where('hidden', '=', false)
     .where('start_date', '>=', nowIso)
     .where('type', 'in', ['regular', 'major'])
     .orderBy('start_date', 'asc')
@@ -70,6 +71,7 @@ async function loadUpcomingTournament(): Promise<TournamentRow | null> {
   return await db.selectFrom('tournaments')
     .select(['id', 'name', 'start_date', 'end_date', 'status',
              'course_name', 'course_profile_id'])
+    .where('hidden', '=', false)
     .where('status', '=', 'active')
     .orderBy('start_date', 'desc')
     .limit(1)

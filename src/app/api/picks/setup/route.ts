@@ -28,11 +28,18 @@ export async function GET(req: NextRequest) {
     .executeTakeFirst();
   if (!membership) return NextResponse.json({ error: 'Not a member' }, { status: 403 });
 
-  // Get next upcoming or active tournament
+  // Next upcoming or active tournament IN THIS LEAGUE'S SCHEDULE.
+  // Migration 022: without the league_tournaments join, the picks
+  // flow surfaces every global upcoming event — including opposite-
+  // field events the commissioner explicitly removed (ISCO, Corales
+  // Puntacana). Belt-and-suspenders filter on tournaments.hidden.
   const tournament = await db.selectFrom('tournaments')
-    .selectAll()
-    .where('status', 'in', ['upcoming', 'active'])
-    .orderBy('start_date', 'asc')
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .selectAll('tournaments')
+    .where('league_tournaments.league_id', '=', league.id)
+    .where('tournaments.hidden', '=', false)
+    .where('tournaments.status', 'in', ['upcoming', 'active'])
+    .orderBy('tournaments.start_date', 'asc')
     .limit(1)
     .executeTakeFirst();
 

@@ -39,8 +39,13 @@ export default async function DashboardPage() {
     .filter(m => m.league !== null)
     .map(m => ({ ...m.league!, role: m.role }));
 
+  // Dashboard "upcoming" card is user-scoped, not league-scoped, so
+  // we can't filter through league_tournaments (a user in multiple
+  // leagues could have different schedules per league). But hidden
+  // events are hidden for everyone by definition — filter those out.
   const upcoming = await db.selectFrom('tournaments')
     .selectAll()
+    .where('hidden', '=', false)
     .where('status', 'in', ['upcoming', 'active'])
     .orderBy('start_date', 'asc')
     .limit(3)

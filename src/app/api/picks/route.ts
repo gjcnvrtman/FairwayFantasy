@@ -45,10 +45,27 @@ export async function POST(req: NextRequest) {
     .executeTakeFirst();
   if (!membership) return NextResponse.json({ error: 'Not a member of this league.' }, { status: 403 });
 
+  // Migration 022: reject picks for tournaments that aren't in this
+  // league's schedule. The setup route already only offers scheduled
+  // tournaments, but a crafted POST could still target any global
+  // tournament id — belt-and-suspenders.
+  const scheduled = await db.selectFrom('league_tournaments')
+    .select('tournament_id')
+    .where('league_id',     '=', leagueId)
+    .where('tournament_id', '=', tournamentId)
+    .executeTakeFirst();
+  if (!scheduled) {
+    return NextResponse.json(
+      { error: 'This tournament is not on your league\'s schedule.' },
+      { status: 404 },
+    );
+  }
+
   // Check tournament is still open
   const tournament = await db.selectFrom('tournaments')
     .select(['pick_deadline', 'pick_deadline_override', 'status', 'name', 'field_published_at'])
     .where('id', '=', tournamentId)
+    .where('hidden', '=', false)
     .executeTakeFirst();
   if (!tournament) return NextResponse.json({ error: 'Tournament not found.' }, { status: 404 });
   if (tournament.status !== 'upcoming')
