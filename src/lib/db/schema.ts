@@ -126,7 +126,24 @@ export interface TournamentsTable {
   // drives the course-fit prediction. NULL = no profile curated
   // yet; predictor refuses to run for these. Migration 016.
   course_profile_id:       string | null;
+  // Soft-delete flag (migration 022). Hidden tournaments never
+  // auto-populate into new leagues and never appear in schedule /
+  // picks / history views. Toggled TRUE for opposite-field events
+  // Greg's leagues don't want (ISCO, Corales Puntacana).
+  hidden:                  Generated<boolean>;
   created_at:              Generated<Timestamp>;
+}
+
+// ── league_tournaments (migration 022) ───────────────────────
+// Per-league schedule. Every row is "this tournament is part of
+// this league's schedule." Populated at league creation from the
+// global tournaments table (non-hidden, inside the league's date
+// window); commissioners add/remove after that on AdminPanel.
+export interface LeagueTournamentsTable {
+  league_id:      string;
+  tournament_id:  string;
+  added_by:       string | null;
+  added_at:       Generated<Timestamp>;
 }
 
 // ── golfers ──────────────────────────────────────────────────
@@ -299,6 +316,7 @@ export interface Database {
   auth_credentials:      AuthCredentialsTable;
   league_members:        LeagueMembersTable;
   tournaments:           TournamentsTable;
+  league_tournaments:    LeagueTournamentsTable;
   golfers:               GolfersTable;
   picks:                 PicksTable;
   scores:                ScoresTable;

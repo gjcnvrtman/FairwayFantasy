@@ -71,11 +71,14 @@ export async function POST(req: NextRequest) {
   // out of the live-trading window.
   const lgStart = isoOrNull(auth.league.start_date);
   const lgEnd   = isoOrNull(auth.league.end_date);
+  // Per-league schedule (migration 022): only refuse if a tournament
+  // in THIS league's schedule is live. Another league's live event
+  // is none of our business.
   const activeInRange = await db.selectFrom('tournaments')
-    .select(['id', 'name', 'status'])
-    .where('status', 'in', ['active', 'cut_made'])
-    .$if(lgStart !== null, qb => qb.where('end_date',   '>=', lgStart!))
-    .$if(lgEnd   !== null, qb => qb.where('start_date', '<=', lgEnd!))
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .select(['tournaments.id', 'tournaments.name', 'tournaments.status'])
+    .where('league_tournaments.league_id', '=', auth.league.id)
+    .where('tournaments.status', 'in', ['active', 'cut_made'])
     .execute();
   if (activeInRange.length > 0) {
     const tourneys = activeInRange.map(t => `${t.name} (${t.status})`).join(', ');
@@ -98,7 +101,7 @@ export async function POST(req: NextRequest) {
       .where('league_id', '=', auth.league.id)
       .execute();
 
-    const completed = await getCompletedTournamentsInRange(lgStart, lgEnd);
+    const completed = await getCompletedTournamentsInRange(auth.league.id, lgStart, lgEnd);
     const tournamentResults = await Promise.all(
       completed.map(async t => {
         const results = await db.selectFrom('fantasy_results')

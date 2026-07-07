@@ -48,7 +48,7 @@ export default async function SchedulePage({ params }: Props) {
 
   const lgStart = isoOrNull(league.start_date);
   const lgEnd   = isoOrNull(league.end_date);
-  const all = await getAllTournamentsInRange(lgStart, lgEnd);
+  const all = await getAllTournamentsInRange(league.id, lgStart, lgEnd);
 
   const now = new Date();
   const upcomingCount  = all.filter(t => t.status === 'upcoming').length;

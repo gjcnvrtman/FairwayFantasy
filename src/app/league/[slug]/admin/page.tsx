@@ -39,16 +39,29 @@ export default async function AdminPage({ params }: Props) {
 
   const members = await getLeagueMembers(league.id);
 
-  // All tournaments, chronological. Pre-2026-05-19 this was
-  // `.orderBy('start_date', 'desc').limit(10)` — descending hid
+  // All non-hidden tournaments, chronological. Pre-2026-05-19 this
+  // was `.orderBy('start_date', 'desc').limit(10)` — descending hid
   // upcoming events past the 10th and the limit chopped off the
   // tail of the season. Commissioner needs the full list so
   // pick-deadline overrides can be set for ANY upcoming event,
-  // not just the next ten.
+  // not just the next ten. Migration 022 added tournaments.hidden;
+  // hidden rows are dropped everywhere in this panel.
   const tournaments = await db.selectFrom('tournaments')
     .selectAll()
+    .where('hidden', '=', false)
     .orderBy('start_date', 'asc')
     .execute();
+
+  // IDs currently in this league's schedule (migration 022).
+  // Drives the Schedule admin section — anything in this set is
+  // "in the league schedule and can be removed"; anything NOT in
+  // this set (but non-hidden + in the league window) is "available
+  // to add." Passed as string[] to keep the client prop plain.
+  const scheduleRows = await db.selectFrom('league_tournaments')
+    .select('tournament_id')
+    .where('league_id', '=', league.id)
+    .execute();
+  const scheduleIds = scheduleRows.map(r => r.tournament_id);
 
   const activeTournament = await db.selectFrom('tournaments')
     .selectAll()
@@ -108,6 +121,7 @@ export default async function AdminPage({ params }: Props) {
             activeTournament={activeTournament}
             tournamentIdsWithPicks={tournamentIdsWithPicks}
             tournamentBets={tournamentBets}
+            scheduleIds={scheduleIds}
             viewerRole={viewerRole}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />

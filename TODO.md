@@ -8,6 +8,16 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
+### Per-league schedule (migration 022) — landed 2026-07-07, needs prod apply
+- [ ] **Apply migration 022 to prod.** New `league_tournaments` join table + `tournaments.hidden` flag. Backfill populates existing leagues from tournaments in their date window (non-hidden). Soft-deletes ISCO Championship + Corales Puntacana Championship. Command:
+  `ssh server150 "docker exec -i fairway-postgres psql -U fairway -d fairway" < scripts/migrations/022-per-league-schedule.sql`
+- [ ] **After deploy, verify** on a real league: (a) Schedule tab still shows the same non-ISCO / non-Corales events it showed before, (b) Admin → Schedule section renders the current schedule + a picker for events in-window that aren't in it, (c) picks / history / stats unchanged for tournaments that were already there.
+- [ ] **NOT DOING this cycle** — flagged for follow-up:
+    - Admin "Import PGA schedule from ESPN" manual re-import button. The one-shot at league creation covers season start, but if ESPN adds a new event mid-season the commissioner has no way to pull it in without a script. Wire a button that calls `importPGAScheduleFromESPN()`.
+    - "Create a custom tournament" flow. Admin can currently only add tournaments that already exist in the global `tournaments` table (i.e. things ESPN's calendar knew about at league creation). No path to schedule a non-PGA event.
+    - Existing "Pick Deadlines" + "Tournament Status" sections still iterate every non-hidden tournament, not just this league's schedule. Cosmetically shows deadline controls for events the league isn't running. Filter to `scheduleIdSet` when we care.
+    - Unhide UI. `hidden` is set once via SQL; there's no admin toggle. If we ever want to bring ISCO back, it's a manual UPDATE.
+
 _(ESPN status-flip gap closed 2026-05-20 — `syncTournament` now infers completion from linescores. When tournament.end_date is in the past AND every cut-survivor has 4 played rounds in their linescores array, status flips to `complete` even when ESPN's scoreboard fallback keeps reporting STATUS_IN_PROGRESS. The Monday maintenance sweep in the rankings route stays in place as the safety net for weather-shortened tournaments or service outages. See Done section.)_
 
 - [x] **ESPN rankings dead → balldontlie integration landed.** ESPN's `/pga/rankings` returned 500 (`{"code":2404,"detail":"http error: not found"}`) in May 2026. Swapped rankings source to balldontlie's `/pga/v1/players` endpoint (free tier, 5 req/min). New file `src/lib/balldontlie.ts`. `src/lib/datagolf.ts` refactored — keeps the name + `syncRankingsToDatabase()` signature, now UPDATE-only (balldontlie has no ESPN ID, so we can't insert new golfers; ESPN's leaderboard / `scripts/seed-golfers.ts --from-event` is the source for new rows). Hand-maintained `data/owgr-top.json` + the `--apply-ranks` flag of seed-golfers remain as emergency fallback. ✓

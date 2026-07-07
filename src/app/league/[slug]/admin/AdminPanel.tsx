@@ -61,6 +61,11 @@ interface Props {
    *  Missing key = no override; renderers fall back to
    *  `league.weekly_bet_amount` as the effective bet. */
   tournamentBets:   Record<string, string>;
+  /** Tournament IDs currently in this league's schedule (migration
+   *  022 — league_tournaments join table). Drives the Schedule
+   *  section: in-set → shows a Remove button; not-in-set (and inside
+   *  the league date window) → shows an Add button. */
+  scheduleIds:      string[];
   /** The current viewer's role in this league. The admin page only
    *  renders this component for commissioners + co_commissioners.
    *  Used here to hide structural sections (Danger Zone, role
@@ -71,10 +76,86 @@ interface Props {
 
 export default function AdminPanel({
   league, members, tournaments, activeTournament,
-  tournamentIdsWithPicks, tournamentBets, viewerRole, inviteUrl,
+  tournamentIdsWithPicks, tournamentBets, scheduleIds,
+  viewerRole, inviteUrl,
 }: Props) {
   const isCommissioner = viewerRole === 'commissioner';
   const router = useRouter();
+
+  // ── Per-league schedule (migration 022) ──────────────────────
+  // Local mutable copy of the SSR-supplied scheduleIds so add/remove
+  // reflects instantly without a full page refresh. Also tracks the
+  // pick-from-dropdown state + per-action busy/error strings.
+  const [scheduleIdSet, setScheduleIdSet] = useState<Set<string>>(
+    () => new Set(scheduleIds),
+  );
+  const [addPickId,     setAddPickId]     = useState('');
+  const [scheduleBusy,  setScheduleBusy]  = useState<string | null>(null);
+  const [scheduleErr,   setScheduleErr]   = useState('');
+  const [scheduleMsg,   setScheduleMsg]   = useState('');
+
+  async function addTournamentToSchedule() {
+    const tournamentId = addPickId;
+    if (!tournamentId) {
+      setScheduleErr('Choose a tournament to add.');
+      return;
+    }
+    setScheduleBusy(tournamentId);
+    setScheduleErr('');
+    setScheduleMsg('');
+    try {
+      const res = await fetch('/api/admin/schedule', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ slug: league.slug, tournamentId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setScheduleErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setScheduleIdSet(s => {
+        const next = new Set(s);
+        next.add(tournamentId);
+        return next;
+      });
+      setAddPickId('');
+      setScheduleMsg(`Added "${data.tournament?.name ?? 'tournament'}" to schedule.`);
+    } catch (err) {
+      setScheduleErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScheduleBusy(null);
+    }
+  }
+
+  async function removeTournamentFromSchedule(tournamentId: string, name: string) {
+    if (!window.confirm(`Remove "${name}" from this league's schedule?`)) return;
+    setScheduleBusy(tournamentId);
+    setScheduleErr('');
+    setScheduleMsg('');
+    try {
+      const res = await fetch('/api/admin/schedule', {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ slug: league.slug, tournamentId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setScheduleErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setScheduleIdSet(s => {
+        const next = new Set(s);
+        next.delete(tournamentId);
+        return next;
+      });
+      setScheduleMsg(`Removed "${name}" from schedule.`);
+    } catch (err) {
+      setScheduleErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScheduleBusy(null);
+    }
+  }
 
   const [syncing,    setSyncing]    = useState(false);
   const [syncMsg,    setSyncMsg]    = useState('');
@@ -1316,6 +1397,158 @@ export default function AdminPanel({
         </div>
         )}
       </section>
+
+      {/* ── Schedule (add/remove tournaments) — migration 022 ── */}
+      {(() => {
+        const lgStartMs = league.start_date ? new Date(league.start_date as unknown as string | Date).getTime() : -Infinity;
+        const lgEndMs   = league.end_date   ? new Date(league.end_date   as unknown as string | Date).getTime() : +Infinity;
+        const inWindow = (t: Tournament) => {
+          const ms = new Date(t.start_date).getTime();
+          return ms >= lgStartMs && ms <= lgEndMs;
+        };
+        const inSchedule = tournaments
+          .filter(t => scheduleIdSet.has(t.id))
+          .sort((a, b) => new Date(a.start_date).getTime() - new Date(b.start_date).getTime());
+        const availableToAdd = tournaments
+          .filter(t => !scheduleIdSet.has(t.id) && inWindow(t))
+          .sort((a, b) => new Date(a.start_date).getTime() - new Date(b.start_date).getTime());
+        return (
+          <section className="card" style={{ padding: 0, overflow: 'hidden' }} aria-labelledby="schedule-h">
+            <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--cream-dark)' }}>
+              <h2 id="schedule-h" style={{
+                fontFamily: "'Playfair Display', serif",
+                fontSize: '1.2rem', fontWeight: 700, margin: 0,
+              }}>
+                Schedule
+              </h2>
+              <p style={{ margin: '0.4rem 0 0', fontSize: '0.85rem', color: 'var(--slate-mid)' }}>
+                Only tournaments in this list appear on the Schedule tab and count toward picks + money math.
+                Removing a tournament is blocked once picks or results exist for it.
+              </p>
+            </div>
+
+            {/* Current schedule */}
+            <div style={{ padding: '1rem 1.5rem' }}>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--slate-mid)', margin: '0 0 0.6rem' }}>
+                In this league&rsquo;s schedule ({inSchedule.length})
+              </h3>
+              {inSchedule.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--slate-mid)', margin: 0 }}>
+                  No tournaments in the schedule yet. Add one below.
+                </p>
+              ) : (
+                <table className="lb-table">
+                  <thead>
+                    <tr>
+                      <th>Tournament</th>
+                      <th className="hide-mobile">Starts</th>
+                      <th className="hide-mobile">Status</th>
+                      <th style={{ textAlign: 'right' }}>Remove</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inSchedule.map(t => {
+                      const busy = scheduleBusy === t.id;
+                      return (
+                        <tr key={t.id}>
+                          <td><strong style={{ fontSize: '0.875rem' }}>{t.name}</strong></td>
+                          <td className="hide-mobile" style={{ fontSize: '0.82rem', color: 'var(--slate-mid)' }}>
+                            {new Date(t.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </td>
+                          <td className="hide-mobile">
+                            <span className={`badge ${
+                              t.status === 'active'   ? 'badge-live'
+                              : t.status === 'complete' ? 'badge-green'
+                              : t.status === 'cut_made' ? 'badge-blue'
+                              : 'badge-gray'
+                            }`}>
+                              {t.status}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              onClick={() => removeTournamentFromSchedule(t.id, t.name)}
+                              disabled={busy}
+                              aria-busy={busy}
+                              style={{
+                                padding: '4px 10px',
+                                fontSize: '0.78rem',
+                                background: 'transparent',
+                                border: '1px solid var(--slate-mid)',
+                                color: 'var(--slate-deep)',
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              {busy ? '…' : 'Remove'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Add tournament */}
+            <div style={{
+              padding: '1rem 1.5rem 1.25rem',
+              borderTop: '1px solid var(--cream-dark)',
+              background: 'var(--cream)',
+            }}>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--slate-mid)', margin: '0 0 0.6rem' }}>
+                Add a tournament
+              </h3>
+              {availableToAdd.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: 'var(--slate-mid)', margin: 0 }}>
+                  All tournaments in the league&rsquo;s date window are already scheduled.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={addPickId}
+                    onChange={e => setAddPickId(e.target.value)}
+                    disabled={scheduleBusy !== null}
+                    aria-label="Choose a tournament to add"
+                    style={{
+                      flex: '1 1 260px',
+                      padding: '6px 10px',
+                      fontSize: '0.9rem',
+                      border: '1px solid var(--cream-dark)',
+                      borderRadius: 4,
+                      background: 'white',
+                    }}
+                  >
+                    <option value="">Choose a tournament…</option>
+                    {availableToAdd.map(t => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} — {new Date(t.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={addTournamentToSchedule}
+                    disabled={!addPickId || scheduleBusy !== null}
+                    style={{ padding: '6px 14px', fontSize: '0.85rem' }}
+                  >
+                    {scheduleBusy === addPickId ? 'Adding…' : 'Add'}
+                  </button>
+                </div>
+              )}
+              {scheduleErr && (
+                <p style={{ marginTop: '0.6rem', color: 'var(--red)', fontSize: '0.82rem' }}>{scheduleErr}</p>
+              )}
+              {scheduleMsg && !scheduleErr && (
+                <p style={{ marginTop: '0.6rem', color: 'var(--green-mid)', fontSize: '0.82rem' }}>✓ {scheduleMsg}</p>
+              )}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* ── Tournament status ──────────────────────────────── */}
       <section className="card" style={{ padding: 0, overflow: 'hidden' }} aria-labelledby="tourn-h">

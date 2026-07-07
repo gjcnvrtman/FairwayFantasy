@@ -67,9 +67,9 @@ export default async function LeaguePage({ params }: Props) {
 
   const [members, activeTournament, upcoming, completedTournaments] = await Promise.all([
     getLeagueMembers(league.id),
-    getActiveTournamentInRange(lgStart, lgEnd),
-    getUpcomingTournamentsInRange(lgStart, lgEnd, 4),
-    getCompletedTournamentsInRange(lgStart, lgEnd),
+    getActiveTournamentInRange(league.id, lgStart, lgEnd),
+    getUpcomingTournamentsInRange(league.id, lgStart, lgEnd, 4),
+    getCompletedTournamentsInRange(league.id, lgStart, lgEnd),
   ]);
 
   // Money summary for the sidebar card: per-user net across every

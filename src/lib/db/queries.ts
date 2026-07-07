@@ -79,22 +79,39 @@ export function isoOrNull(v: unknown): string | null {
   return String(v);
 }
 
-// ── League-window-aware variants ─────────────────────────────
-// When a league sets start_date/end_date, callers want the same
-// queries restricted to tournaments inside that window. Each
-// helper accepts nullable bounds — null = unbounded on that side
-// (matches the schema: existing/legacy leagues with NULL dates
-// keep behaving as "all tournaments").
+// ── Per-league schedule (migration 022) ──────────────────────
+// Pre-022 these helpers were "every global tournament whose
+// start_date lies in the league's date window." Post-022 the
+// source of truth is the league_tournaments join table — the
+// window is only a legacy secondary filter (the backfill in
+// migration 022 already respected it, so passing it here is
+// mostly redundant but harmless). Callers that already compute
+// (start, end) keep working unchanged; new callers can pass
+// (null, null) and rely purely on the join.
+//
+// Every helper INNER JOINs league_tournaments so events the
+// commissioner removed disappear from the schedule, picks page,
+// history, stats, money math, everywhere. `tournaments.hidden`
+// is filtered as belt-and-suspenders — a hidden row shouldn't
+// be in league_tournaments to begin with (migration 022's
+// backfill excludes them + the /api/admin/schedule add endpoint
+// rejects them), but if one slips in the display still won't
+// leak it.
 
 export async function getActiveTournamentInRange(
-  start: string | null,
-  end:   string | null,
+  leagueId: string,
+  start:    string | null,
+  end:      string | null,
 ) {
   // Same time-based logic as getActiveTournament, layered with the
   // league window. Returns null when no in-range tournament is live.
   const now       = new Date();
   const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  let q = db.selectFrom('tournaments').selectAll()
+  let q = db.selectFrom('tournaments')
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .selectAll('tournaments')
+    .where('league_tournaments.league_id', '=', leagueId)
+    .where('tournaments.hidden', '=', false)
     .where('start_date', '<=', now.toISOString())
     .where('end_date',   '>=', oneDayAgo.toISOString())
     .where('status', '!=', 'complete');
@@ -104,11 +121,16 @@ export async function getActiveTournamentInRange(
 }
 
 export async function getUpcomingTournamentsInRange(
-  start: string | null,
-  end:   string | null,
+  leagueId: string,
+  start:    string | null,
+  end:      string | null,
   limit = 5,
 ) {
-  let q = db.selectFrom('tournaments').selectAll()
+  let q = db.selectFrom('tournaments')
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .selectAll('tournaments')
+    .where('league_tournaments.league_id', '=', leagueId)
+    .where('tournaments.hidden', '=', false)
     .where('status', '=', 'upcoming');
   if (start) q = q.where('start_date', '>=', start);
   if (end)   q = q.where('start_date', '<=', end);
@@ -122,10 +144,15 @@ export async function getUpcomingTournamentsInRange(
  * top-to-bottom.
  */
 export async function getCompletedTournamentsInRange(
-  start: string | null,
-  end:   string | null,
+  leagueId: string,
+  start:    string | null,
+  end:      string | null,
 ) {
-  let q = db.selectFrom('tournaments').selectAll()
+  let q = db.selectFrom('tournaments')
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .selectAll('tournaments')
+    .where('league_tournaments.league_id', '=', leagueId)
+    .where('tournaments.hidden', '=', false)
     .where('status', '=', 'complete');
   if (start) q = q.where('start_date', '>=', start);
   if (end)   q = q.where('start_date', '<=', end);
@@ -133,17 +160,23 @@ export async function getCompletedTournamentsInRange(
 }
 
 /**
- * Every tournament inside the league window, regardless of status.
- * Drives the Schedule tab — needs upcoming + active + cut_made +
- * complete in one chronological list. Ordered ascending so the page
- * reads "what's next at the top, what already happened at the bottom"
- * (with current week's tournament in the middle if there is one).
+ * Every tournament in the league's per-league schedule, regardless
+ * of status. Drives the Schedule tab — needs upcoming + active +
+ * cut_made + complete in one chronological list. Ordered ascending
+ * so the page reads "what's next at the top, what already happened
+ * at the bottom" (with current week's tournament in the middle if
+ * there is one).
  */
 export async function getAllTournamentsInRange(
-  start: string | null,
-  end:   string | null,
+  leagueId: string,
+  start:    string | null,
+  end:      string | null,
 ) {
-  let q = db.selectFrom('tournaments').selectAll();
+  let q = db.selectFrom('tournaments')
+    .innerJoin('league_tournaments', 'league_tournaments.tournament_id', 'tournaments.id')
+    .selectAll('tournaments')
+    .where('league_tournaments.league_id', '=', leagueId)
+    .where('tournaments.hidden', '=', false);
   if (start) q = q.where('start_date', '>=', start);
   if (end)   q = q.where('start_date', '<=', end);
   return await q.orderBy('start_date', 'asc').execute();

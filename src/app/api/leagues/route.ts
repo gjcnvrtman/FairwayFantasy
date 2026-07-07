@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { generateInviteCode } from '@/lib/db/queries';
 import { validateCreateLeague, LEAGUE_LIMITS } from '@/lib/validation';
 import { requireSameOrigin } from '@/lib/same-origin';
+import { importPGAScheduleFromESPN } from '@/lib/schedule-import';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 
 export async function POST(req: NextRequest) {
@@ -76,6 +77,48 @@ export async function POST(req: NextRequest) {
   await db.insertInto('league_members')
     .values({ league_id: league.id, user_id: user.id, role: 'commissioner' })
     .execute();
+
+  // ── One-shot ESPN schedule import + per-league schedule seed ──
+  // Migration 022 moved the ESPN calendar pull out of the weekly
+  // rankings cron and into league creation. If the global tournaments
+  // table is empty for this league's window, the import fills it;
+  // otherwise the upsert is a near no-op. We then populate the
+  // per-league schedule with every non-hidden tournament inside the
+  // date window — commissioners can prune from AdminPanel.
+  //
+  // Import failure is non-fatal — the league row is already committed
+  // and members can be added; the commissioner can retry the import
+  // via the schedule admin UI. The seed step still runs so any
+  // pre-existing tournaments show up in the schedule.
+  try {
+    await importPGAScheduleFromESPN();
+  } catch (err) {
+    console.error('League create: ESPN schedule import failed:', err);
+  }
+
+  try {
+    await db.insertInto('league_tournaments')
+      .columns(['league_id', 'tournament_id', 'added_by'])
+      .expression(eb => eb
+        .selectFrom('tournaments')
+        .select(eb2 => [
+          eb2.val(league.id).as('league_id'),
+          'tournaments.id as tournament_id',
+          eb2.val(user.id).as('added_by'),
+        ])
+        .where('tournaments.hidden', '=', false)
+        .$if(!!league.start_date, qb =>
+          qb.where('tournaments.start_date', '>=',
+            new Date(league.start_date as unknown as string).toISOString()))
+        .$if(!!league.end_date, qb =>
+          qb.where('tournaments.start_date', '<=',
+            new Date(league.end_date as unknown as string).toISOString())),
+      )
+      .onConflict(oc => oc.doNothing())
+      .execute();
+  } catch (err) {
+    console.error('League create: league_tournaments seed failed:', err);
+  }
 
   return NextResponse.json({ league, inviteUrl: `/join/${slug}/${inviteCode}` });
 }

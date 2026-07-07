@@ -43,7 +43,7 @@ export default async function HistoryPage({ params }: Props) {
   // Legacy leagues with NULL dates fall back to unbounded.
   const lgStart = isoOrNull(league.start_date);
   const lgEnd   = isoOrNull(league.end_date);
-  const completedTournaments = await getCompletedTournamentsInRange(lgStart, lgEnd);
+  const completedTournaments = await getCompletedTournamentsInRange(league.id, lgStart, lgEnd);
 
   const members        = await getLeagueMembers(league.id);
   const membersById    = Object.fromEntries(members.map((m: any) => [m.user_id, m]));
