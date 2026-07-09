@@ -82,11 +82,16 @@ export async function runScoreSync(): Promise<SyncSummary> {
     const now        = new Date();
     const oneDayAgo  = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
+    // Migration 022 added tournaments.hidden. Sync loop must skip
+    // hidden events — otherwise a soft-deleted opposite-field event
+    // (e.g. ISCO 2026-07-09) still gets scored and, worse, fed into
+    // the missed-deadline sweep at the end of this function.
     const activeTournaments = await db.selectFrom('tournaments')
       .selectAll()
       .where('start_date', '<=', now.toISOString())
       .where('end_date',   '>=', oneDayAgo.toISOString())
       .where('status', '!=', 'complete')
+      .where('hidden', '=', false)
       .execute();
 
     if (activeTournaments.length === 0) {
@@ -742,11 +747,15 @@ export async function runFieldSync(): Promise<FieldSyncSummary> {
     // tournaments whose start_date drifts (weather, schedule shuffle).
     const horizon = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
+    // Hidden filter (migration 022) — soft-deleted tournaments must
+    // never fire the field-publish notify email even if ESPN publishes
+    // their field.
     const candidates = await db.selectFrom('tournaments')
       .select(['id', 'espn_event_id', 'name', 'start_date'])
       .where('field_published_at', 'is', null)
       .where('start_date', '>',  now.toISOString())
       .where('start_date', '<', horizon.toISOString())
+      .where('hidden', '=', false)
       .execute();
 
     if (candidates.length === 0) {
@@ -926,16 +935,16 @@ async function notifyFieldPublished(args: {
     if (!t) return;
     const pickDeadline = effectivePickDeadline(t);
 
+    // Per-league schedule (migration 022) — only leagues that have
+    // this tournament on their schedule receive the field-publish
+    // email. Pre-022 date-window match would fire on every league
+    // whose window covered the tournament week regardless of
+    // whether the commissioner had removed the event.
     const leagues = await db.selectFrom('leagues')
-      .select(['id', 'name', 'slug'])
-      .where(eb => eb.or([
-        eb('start_date', 'is', null),
-        eb('start_date', '<=', t.end_date),
-      ]))
-      .where(eb => eb.or([
-        eb('end_date', 'is', null),
-        eb('end_date', '>=', t.start_date),
-      ]))
+      .innerJoin('league_tournaments',
+                 'league_tournaments.league_id', 'leagues.id')
+      .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+      .where('league_tournaments.tournament_id', '=', tournamentId)
       .execute();
     if (leagues.length === 0) return;
 
@@ -1036,19 +1045,13 @@ export async function notifyAdminsRosterSet(args: {
       .executeTakeFirst();
     if (!t) return;
 
-    // Same overlap query notifyFieldPublished uses — leagues whose
-    // [start_date, end_date] includes this tournament. Open-ended on
-    // either side means "no constraint on that side".
+    // Per-league schedule (migration 022) — admin-tier notify fires
+    // only for leagues that have this tournament on their schedule.
     const leagues = await db.selectFrom('leagues')
-      .select(['id', 'name', 'slug'])
-      .where(eb => eb.or([
-        eb('start_date', 'is', null),
-        eb('start_date', '<=', t.end_date),
-      ]))
-      .where(eb => eb.or([
-        eb('end_date', 'is', null),
-        eb('end_date', '>=', t.start_date),
-      ]))
+      .innerJoin('league_tournaments',
+                 'league_tournaments.league_id', 'leagues.id')
+      .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+      .where('league_tournaments.tournament_id', '=', tournamentId)
       .execute();
     if (leagues.length === 0) return;
 
@@ -1151,13 +1154,18 @@ async function sweepMissedPicks(): Promise<void> {
   try {
     const nowIso = new Date().toISOString();
 
-    // ── 1. Candidate tournaments: deadline passed, status not done.
+    // ── 1. Candidate tournaments: deadline passed, status not done,
+    // and NOT hidden. The hidden gate closes the 2026-07-09 ISCO
+    // regression where a soft-deleted tournament reached the sweep
+    // and auto-assigned lineups + emailed every user in every
+    // date-window-adjacent league.
     const candidates = await db.selectFrom('tournaments')
       .select([
         'id', 'name', 'start_date', 'end_date',
         'pick_deadline', 'pick_deadline_override', 'status',
       ])
       .where('status', 'in', ['upcoming', 'active'])
+      .where('hidden', '=', false)
       .execute();
 
     const dueNow = candidates.filter(t => {
@@ -1192,17 +1200,16 @@ async function sweepMissedPicksForTournament(
   },
   nowIso: string,
 ): Promise<void> {
-  // ── 2. Leagues whose window includes this tournament.
+  // ── 2. Leagues that have THIS tournament on their per-league
+  // schedule (migration 022). Pre-022 this was a date-window match,
+  // which is why the ISCO regression on 2026-07-09 enrolled every
+  // league whose window covered mid-July regardless of whether the
+  // commissioner had removed ISCO from that league's schedule.
   const leagues = await db.selectFrom('leagues')
-    .select(['id', 'name', 'slug'])
-    .where(eb => eb.or([
-      eb('start_date', 'is', null),
-      eb('start_date', '<=', t.end_date),
-    ]))
-    .where(eb => eb.or([
-      eb('end_date', 'is', null),
-      eb('end_date', '>=', t.start_date),
-    ]))
+    .innerJoin('league_tournaments',
+               'league_tournaments.league_id', 'leagues.id')
+    .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+    .where('league_tournaments.tournament_id', '=', t.id)
     .execute();
   if (leagues.length === 0) return;
 
@@ -1405,9 +1412,12 @@ async function sweepMissedPicksForTournament(
  */
 export async function detectAndSendDailyScorecards(): Promise<void> {
   try {
+    // Hidden filter (migration 022) — soft-deleted tournaments must
+    // never produce daily-scorecard emails.
     const candidateTournaments = await db.selectFrom('tournaments')
       .select(['id', 'name', 'start_date', 'end_date', 'status'])
       .where('status', 'in', ['active', 'cut_made', 'complete'])
+      .where('hidden', '=', false)
       .execute();
 
     for (const t of candidateTournaments) {
@@ -1461,17 +1471,14 @@ async function sendScorecardsForCompletedRounds(t: {
 
   if (fieldRows.length === 0) return;
 
-  // Pre-fetch leagues whose window overlaps this tournament.
+  // Per-league schedule (migration 022) — daily scorecard emails
+  // fire only for leagues that have this tournament on their
+  // schedule.
   const leagues = await db.selectFrom('leagues')
-    .select(['id', 'name', 'slug'])
-    .where(eb => eb.or([
-      eb('start_date', 'is', null),
-      eb('start_date', '<=', t.end_date),
-    ]))
-    .where(eb => eb.or([
-      eb('end_date', 'is', null),
-      eb('end_date', '>=', t.start_date),
-    ]))
+    .innerJoin('league_tournaments',
+               'league_tournaments.league_id', 'leagues.id')
+    .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+    .where('league_tournaments.tournament_id', '=', t.id)
     .execute();
   if (leagues.length === 0) return;
 
@@ -1811,24 +1818,22 @@ async function sendDailyScorecardForLeague(args: {
  */
 async function detectAndSendTournamentRecaps(): Promise<void> {
   try {
+    // Hidden filter (migration 022) — soft-deleted tournaments must
+    // never produce a recap email even after status flips to complete.
     const completedTournaments = await db.selectFrom('tournaments')
       .select(['id', 'name', 'start_date', 'end_date', 'status'])
       .where('status', '=', 'complete')
+      .where('hidden', '=', false)
       .execute();
 
     for (const t of completedTournaments) {
-      // Pre-fetch leagues whose window overlaps this tournament. Same
-      // overlap rule as the daily-scorecard arm.
+      // Per-league schedule (migration 022) — recap fires only for
+      // leagues that have this tournament on their schedule.
       const leagues = await db.selectFrom('leagues')
-        .select(['id', 'name', 'slug'])
-        .where(eb => eb.or([
-          eb('start_date', 'is', null),
-          eb('start_date', '<=', t.end_date),
-        ]))
-        .where(eb => eb.or([
-          eb('end_date', 'is', null),
-          eb('end_date', '>=', t.start_date),
-        ]))
+        .innerJoin('league_tournaments',
+                   'league_tournaments.league_id', 'leagues.id')
+        .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+        .where('league_tournaments.tournament_id', '=', t.id)
         .execute();
 
       for (const lg of leagues) {

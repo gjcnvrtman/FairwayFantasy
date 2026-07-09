@@ -8,15 +8,16 @@ Cross-references like `(P1 #3.1)` point back to the Prompt 1 repo review (in-con
 
 ## P0 — blocks production / security / data corruption
 
-### Per-league schedule (migration 022) — landed 2026-07-07, needs prod apply
-- [ ] **Apply migration 022 to prod.** New `league_tournaments` join table + `tournaments.hidden` flag. Backfill populates existing leagues from tournaments in their date window (non-hidden). Soft-deletes ISCO Championship + Corales Puntacana Championship. Command:
-  `ssh server150 "docker exec -i fairway-postgres psql -U fairway -d fairway" < scripts/migrations/022-per-league-schedule.sql`
-- [ ] **After deploy, verify** on a real league: (a) Schedule tab still shows the same non-ISCO / non-Corales events it showed before, (b) Admin → Schedule section renders the current schedule + a picker for events in-window that aren't in it, (c) picks / history / stats unchanged for tournaments that were already there.
-- [ ] **NOT DOING this cycle** — flagged for follow-up:
-    - Admin "Import PGA schedule from ESPN" manual re-import button. The one-shot at league creation covers season start, but if ESPN adds a new event mid-season the commissioner has no way to pull it in without a script. Wire a button that calls `importPGAScheduleFromESPN()`.
-    - "Create a custom tournament" flow. Admin can currently only add tournaments that already exist in the global `tournaments` table (i.e. things ESPN's calendar knew about at league creation). No path to schedule a non-PGA event.
-    - Existing "Pick Deadlines" + "Tournament Status" sections still iterate every non-hidden tournament, not just this league's schedule. Cosmetically shows deadline controls for events the league isn't running. Filter to `scheduleIdSet` when we care.
-    - Unhide UI. `hidden` is set once via SQL; there's no admin toggle. If we ever want to bring ISCO back, it's a manual UPDATE.
+### Per-league schedule (migration 022) — landed + deployed 2026-07-07
+- [x] Migration 022 applied on prod (2026-07-07). Backfill: 26 + 12 + 26 = 64 league_tournaments rows across the three leagues. ISCO + Corales flagged hidden. Prod head `1797bff → be080e9`.
+- [x] Same-day follow-on `670fd4f` — picks flow, dashboard "upcoming", and predictions/current all now filter through `league_tournaments` + `hidden`. Greg caught that the picks page was still surfacing ISCO after the first deploy.
+- [x] Verified on a real league by Greg 2026-07-07 — schedule / admin schedule section / picks / history / stats all behave as expected post-migration.
+
+### Migration 022 follow-on #2 — sync loops still surfaced ISCO (2026-07-09)
+- [x] **Incident** — auto-lineup email fired for ISCO Championship at 01:00 CT 2026-07-09 despite ISCO being hidden. 32 auto-assigned picks landed across the 3 leagues (gmn-test 1, gunga-galunga-gang 26, royal-duffers 5). Every 10 min the score sync also refreshed fantasy_results.
+- [x] **Data hotfix (2026-07-09 ~08:00 CT)** — DELETEd 32 picks + 32 fantasy_results for ISCO. Flipped ISCO status `active → complete` to stop the sweep loop from re-populating. Also flipped Corales Puntacana `upcoming → complete` (deadline was 2026-07-16 06:00 UTC; same bug would have fired on that event next week).
+- [x] **Code fix (staged, not deployed)** — every sync-loop tournament selector and league-enrolment query in `src/lib/sync.ts` was still bypassing migration 022's `hidden` flag and `league_tournaments` join. Applied identical fixes in 7 additional call sites: `runScoreSync` (candidate tournaments), `sweepMissedPicks` (candidate tournaments), `sweepMissedPicksForTournament` (league enrolment), `runFieldSync` (candidate tournaments), `notifyFieldPublished` (league enrolment), `notifyAdminsRosterSet` (league enrolment), `detectAndSendDailyScorecards` (candidate tournaments), `sendScorecardsForCompletedRounds` (league enrolment), `detectAndSendTournamentRecaps` (candidate tournaments), `sendTournamentRecapForLeague` (league enrolment). Tournament selectors add `.where('hidden', '=', false)`. League enrolment replaces date-window match with `.innerJoin('league_tournaments', ...)`. Hold for Greg's review + deploy.
+
 
 _(ESPN status-flip gap closed 2026-05-20 — `syncTournament` now infers completion from linescores. When tournament.end_date is in the past AND every cut-survivor has 4 played rounds in their linescores array, status flips to `complete` even when ESPN's scoreboard fallback keeps reporting STATUS_IN_PROGRESS. The Monday maintenance sweep in the rankings route stays in place as the safety net for weather-shortened tournaments or service outages. See Done section.)_
 
@@ -90,7 +91,6 @@ _(Per-tournament cut rule closed 2026-05-30 — commit `085f319`. New `inferCutR
 - [x] **`mapESPNStatus` MDF → active (explicit)** *(P1 #5.10)* — Closed 2026-05-17 in `e095e90`. Per product decision MDF stays as `active` (player survived the cut, pulled out mid-tournament, their stroke total up to withdrawal continues to count). Made explicit via dedicated `if (s === 'mdf') return 'active'` branch in `mapESPNStatus` instead of relying on fall-through. Test renamed accordingly + new "still falls through to active for truly unknown statuses" test pins the defensive default separately.
 - [x] **Score-sync recomputeResults batched** *(P1 #5.7)* — Closed 2026-05-20. `recomputeResults` was doing one `INSERT … ON CONFLICT` per fantasy_results row and one per season_standings row inside two nested loops, with each `.execute()` its own auto-commit (fsync per row). At 5 leagues × 5 members during play that's ~25 sequential commits per sync cycle, fired every 10 min. Collapsed both upserts into single batched statements via `db.insertInto(...).values(allRows).onConflict(...)`. No semantic change — same conflict columns, same updateSet, same `updated_at` (shared across both tables now so they reflect a single cycle). 259/259 tests still pass. Files: `src/lib/sync.ts`.
 - [x] **`MAX_PLAYERS` editable from commissioner UI** *(P4 risks)* — Shipped 2026-05-17 in `1626a88`. New POST `/api/admin/league-settings` (commissioner-gated, slug-authenticated) accepts `{ maxPlayers }`, validates bounds via existing `LEAGUE_LIMITS` (4–50) and rejects shrinking below the current member count. AdminPanel's "League Settings" card now has an inline number input + Save button replacing the read-only row. Footnote updated to explain the constraint (name+slug fixed at creation, max can grow or shrink with the member-count floor). Save button auto-disables on no-op (empty / unchanged).
-- [ ] **Demo leaderboard sample data could collide with real PGA results** *(P3 risks)* — if a real Masters happens to produce identical names + scores, the demo will look stale. Low probability.
 - [x] **Relative-time label now live-updates** *(P5 risks)* — Shipped 2026-05-17 in `90e16e7`. `LockStatusRow` schedules a 60s interval that bumps an unused tick state so React re-renders and `formatRelativeTime` re-evaluates against `Date.now()`. Granularity matches the smallest unit the formatter emits (minutes). Skipped when isLocked=true or lockDeadline=null — nothing dynamic to display in those cases.
 - [x] **More `tests/espn.test.ts` fixtures landed** — Completed 2026-05-19. Originally 9 tests against the Round-2-in-progress fixture; now 21 tests across three fixtures: (a) the existing Round 2 in-progress, (b) `espn-pga-championship-round4-final.json` — live-captured post-event scoreboard for the 2026 PGA Championship, 156 competitors with 82 made-cut (4 rounds) and 74 missed-cut (2 rounds), event status STATUS_FINAL — pins linescore-length-by-cut-status, default-active behavior, and the STATUS_FINAL/state=post/description=Final fields the open ESPN-complete-flip P0 can match against, (c) `espn-scoreboard-empty.json` — synthetic no-event case for fetchLiveLeaderboard's empty-events branch, (d) `espn-leaderboard-shape.json` — synthetic leaderboard-endpoint pass-through fixture covering c.displayName direct (not nested), pre-wrapped score, score-to-par-in-value linescores, and per-golfer status with active/missed_cut/withdrawn variants. 259/259 tests passing.
 
@@ -114,7 +114,6 @@ _(picks.golfer_N_id NOT NULL shipped 2026-05-20 — migration 005. The original 
 
 _(Co-commissioner role shipped 2026-05-20 — tiered deputy model. See Done section.)_
 
-- [ ] **Heavy emoji use renders inconsistently** *(P1 #6.7)* — across iOS/Android/desktop. **DEFERRED**: UX redesign, taste decision. The emojis are part of the brand voice (🏆 ⛳ 📋 etc.); replacing them with SVG icons would change the aesthetic. Punt until somebody complains.
 
 _(PWA manifest + icons shipped 2026-05-20. "Add to Home Screen" now installs cleanly on iOS, Android, and Chrome/Edge desktop with the Fairway flag icon + brand-green theme color. Offline service-worker punted — see Done. Real engineering for marginal benefit on a LAN deploy.)_
 
@@ -130,6 +129,7 @@ _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemc
 - Vercel-specific assumptions in any new code — explicitly removed by every prompt's deploy preamble.
 - DataGolf integration — replaced by ESPN rankings inside `src/lib/datagolf.ts` (filename retained pending docs cleanup).
 - Standalone `/api/sync-scores` Vercel cron config — folded into the systemd timer plan above.
+- Cross-platform emoji rendering consistency (P1 #6.7) — closed as won't-do 2026-07-07. Fairway has been live with heavy emoji use for months with zero user complaints; the "inconsistency matters" premise isn't validated. Reopens cheaply if a complaint ever comes in (Twemoji or similar bundled as static assets is the correct fix).
 
 ---
 
