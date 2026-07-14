@@ -3,16 +3,16 @@
 // ─────────────────────────────────────────────────────────────
 // SMACK BOARD — per-tournament chat thread.
 //
-// Layout: floating panel anchored bottom-right, OPEN by default
-// every page load (Greg's call 2026-06-12 third iteration: when
-// the page loads the chat should be visible, not hidden behind a
-// FAB; users still get a ✕ close button to dismiss within a
-// session, at which point a FAB launcher appears in the same
-// corner so re-opening is one click away).
+// Layout: floating panel anchored bottom-right.
+//   • Desktop: OPEN by default every page load (Greg 2026-06-12).
+//   • Mobile:  CLOSED by default (FAB only) so the fullscreen
+//     panel doesn't cover the leaderboard on every page load
+//     (Greg 2026-07-14). Users still tap the FAB to open.
 //
-// State is NOT persisted across visits — fresh load = panel open.
-// lastSeen is persisted so the unread-count badge on the FAB
-// remembers the last reading point across visits.
+// Neither open/closed state is persisted across visits — a fresh
+// load re-applies the viewport default. lastSeen IS persisted so
+// the unread-count badge on the FAB remembers the last reading
+// point across visits.
 //
 // Each row:
 //   • author display_name + relative time
@@ -78,8 +78,15 @@ export default function SmackBoard({ slug, tournamentId, tournamentName, current
   const [sending,  setSending] = useState(false);
   const [sendErr,  setSendErr] = useState('');
 
-  // Open by default on every page load. Not persisted across visits.
-  const [open,     setOpen]     = useState(true);
+  // Open by default on desktop; closed by default on mobile so the
+  // fullscreen panel doesn't cover the leaderboard on page load.
+  // SSR has no window and defaults to open; the client re-evaluates
+  // the initializer on hydration and picks the right value per
+  // viewport.
+  const [open,     setOpen]     = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return !window.matchMedia(`(max-width: ${MOBILE_MAX_PX}px)`).matches;
+  });
   const [lastSeen, setLastSeen] = useState<number>(0);
 
   // The "tick" state forces a re-render every minute so relative
