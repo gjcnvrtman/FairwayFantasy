@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { normalizeScoreboardCompetitor, parseESPNScore } from '@/lib/espn';
+import { isMajor, normalizeScoreboardCompetitor, parseESPNScore } from '@/lib/espn';
 
 const fixturePath = resolve(__dirname, 'fixtures/espn-pga-championship-round2.json');
 const fixture     = JSON.parse(readFileSync(fixturePath, 'utf8'));
@@ -304,5 +304,30 @@ describe('Leaderboard-shape (pass-through) fixture', () => {
     const wd = lbComp.competitors.find((c: any) => c.status.type.name === 'withdrawn');
     expect(mc.linescores.length).toBe(2);
     expect(wd.linescores.length).toBeLessThanOrEqual(2);
+  });
+});
+
+// Pins the majors matcher against the exact names ESPN currently emits
+// in `leagues[0].calendar[].label`. Regression-driven: 2026-07-18 The Open
+// came through as bare "The Open" (no "Championship" suffix), fell to
+// `type: 'regular'`, and every player was mis-classified for the cut.
+describe('isMajor — current ESPN calendar labels', () => {
+  it('recognizes the four 2026 majors under the labels ESPN actually returns', () => {
+    expect(isMajor('Masters Tournament')).toBe(true);
+    expect(isMajor('PGA Championship')).toBe(true);
+    expect(isMajor('U.S. Open')).toBe(true);
+    expect(isMajor('The Open')).toBe(true);
+  });
+
+  it('still recognizes the long-form Open name for future label churn', () => {
+    expect(isMajor('The Open Championship')).toBe(true);
+  });
+
+  it('does not misclassify regular events', () => {
+    expect(isMajor('Charles Schwab Challenge')).toBe(false);
+    expect(isMajor('Truist Championship')).toBe(false);
+    expect(isMajor('Rocket Mortgage Classic')).toBe(false);
+    expect(isMajor('Barracuda Championship')).toBe(false);
+    expect(isMajor('ISCO Championship')).toBe(false);
   });
 });

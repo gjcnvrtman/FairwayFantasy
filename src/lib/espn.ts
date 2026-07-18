@@ -30,8 +30,11 @@ export async function fetchPGASchedule() {
   }));
 }
 
-function isMajor(name: string): boolean {
-  const majors = ['Masters', 'PGA Championship', 'U.S. Open', 'The Open Championship'];
+// Exported for tests/espn.test.ts pinning the four current ESPN labels.
+// Note: 'The Open' (not 'The Open Championship') is what ESPN's calendar
+// returns as of 2026 — the bare form matches both variants.
+export function isMajor(name: string): boolean {
+  const majors = ['Masters', 'PGA Championship', 'U.S. Open', 'The Open'];
   return majors.some(m => name.includes(m));
 }
 

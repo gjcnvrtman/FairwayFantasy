@@ -161,7 +161,9 @@ export function inferCutRule(
     return { kind: 'topN', n: 60 };
   }
   // The Open Championship (British Open) — top 70 + ties (R&A standard).
-  if (name.includes('open championship') || name.includes('british open')) {
+  // ESPN's 2026 calendar emits the bare name "The Open" (no "Championship"
+  // suffix); match all three variants to survive future label churn.
+  if (name.includes('the open') || name.includes('open championship') || name.includes('british open')) {
     return { kind: 'topN', n: 70 };
   }
   // PGA Championship — top 70 + ties (historical PGA of America rule).
@@ -284,7 +286,14 @@ async function syncTournament(tournament: {
     for (const c of competitors) {
       const ls = c.linescores ?? [];
       const r1 = ls[0]?.value, r2 = ls[1]?.value;
-      if (typeof r1 === 'number' && typeof r2 === 'number') {
+      // Skip WD/DQ: ESPN's scoreboard shape encodes a not-played round as
+      // `displayValue: '-'`, which parseESPNScore normalizes to `value: 0`.
+      // Including those pollutes `totalsSortedAsc[0]` — most visibly for the
+      // Masters (min + 10 strokesBack rule) but also leaks into topN when
+      // a WD survives at N-1.
+      const r1Real = ls[0]?.displayValue !== undefined && ls[0]?.displayValue !== '-';
+      const r2Real = ls[1]?.displayValue !== undefined && ls[1]?.displayValue !== '-';
+      if (typeof r1 === 'number' && typeof r2 === 'number' && r1Real && r2Real) {
         totals.push(r1 + r2);
       }
     }

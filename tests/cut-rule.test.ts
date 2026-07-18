@@ -46,6 +46,12 @@ describe('inferCutRule', () => {
   it('returns top-70 for The Open Championship / British Open (R&A standard)', () => {
     expect(inferCutRule('The Open Championship', 'major')).toEqual({ kind: 'topN', n: 70 });
     expect(inferCutRule('British Open', 'major')).toEqual({ kind: 'topN', n: 70 });
+    // Regression pin (2026-07-18): ESPN's calendar dropped the "Championship"
+    // suffix — event 401811957 came through as bare "The Open" and was mis-
+    // classified regular → topN(65) → wrong cut → Min Woo Lee (+1 through 36)
+    // and ~12 others wrongly flagged missed_cut. Both matchers (isMajor and
+    // this one) need to survive the bare-name variant.
+    expect(inferCutRule('The Open', 'major')).toEqual({ kind: 'topN', n: 70 });
   });
 
   it('returns top-70 for PGA Championship', () => {
