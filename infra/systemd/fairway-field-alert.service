@@ -1,0 +1,34 @@
+# /etc/systemd/system/fairway-field-alert.service
+#
+# Tuesday-midnight guardrail. Fires once a week from
+# fairway-field-alert.timer at 00:05 CT Wednesday (5 min past Tue
+# midnight). Hits /api/check-field-alert, which:
+#
+#   - queries for non-hidden tournaments with field_published_at IS NULL
+#     starting within the next 5 days
+#   - if any exist, emails admin a heads-up so they can decide whether
+#     to wait, manually trigger the sync, or override the pick deadline
+#   - stays silent when nothing is pending
+#
+# Why this exists: fairway-field.timer runs hourly Mon-Wed only. Once
+# the Tue 23:00 poll finishes, we go dark until Mon 06:00. If ESPN
+# publishes a field Wed-Sun (rare but not zero), the "make your picks"
+# email never fires and picks stay locked into the tournament.
+
+[Unit]
+Description=Fairway Fantasy — alert if imminent tournament field not yet published
+After=fairway-fantasy.service network-online.target
+Wants=network-online.target
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+ExecStart=/usr/bin/curl -fsS --max-time 30 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/check-field-alert
+
+SuccessExitStatus=0

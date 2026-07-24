@@ -1,0 +1,21 @@
+# /etc/systemd/system/fairway-field-alert.timer
+#
+# Fires fairway-field-alert.service once a week at 00:05 local time
+# Wednesday — i.e. 5 minutes past midnight Tuesday, after the final
+# fairway-field.timer poll of the Mon–Wed window (Tue 23:00) has run.
+#
+# Server timezone is America/Chicago, so a bare 00:05:00 hits the
+# right wall-clock minute. Persistent=true so a missed fire (server
+# down at midnight) catches up on next boot rather than skipping the
+# week entirely.
+
+[Unit]
+Description=Weekly Wed 00:05 CT: alert if imminent tournament field not yet published
+
+[Timer]
+OnCalendar=Wed *-*-* 00:05:00
+Persistent=true
+Unit=fairway-field-alert.service
+
+[Install]
+WantedBy=timers.target

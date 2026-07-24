@@ -424,6 +424,114 @@ is an FYI so you know the field is locked in for the week.
 }
 
 // ============================================================
+// Field-not-yet-published admin alert.
+//
+// Fires once per week from the fairway-field-alert.timer at 00:05 CT
+// Wednesday (5 min past Tuesday midnight). If the hourly Mon–Wed
+// field poll (fairway-field.timer) hasn't stamped
+// tournaments.field_published_at for an imminent tournament by then,
+// admin gets a heads-up so they can decide whether to intervene
+// (manual retry, override the deadline, escalate to ESPN, etc).
+// Silent on quiet weeks — the endpoint only sends when there's a
+// pending tournament to flag.
+// ============================================================
+
+export function fieldNotYetPublishedAlertEmail(params: {
+  tournaments: Array<{ name: string; startDate: Date; espnEventId: string }>;
+}): { subject: string; text: string; html: string } {
+  const { tournaments } = params;
+
+  const fmtDate = (d: Date) => d.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    timeZone: 'America/Chicago',
+  });
+
+  const subject = tournaments.length === 1
+    ? `[Fairway Fantasy] ⚠️ Field not yet published for ${tournaments[0].name}`
+    : `[Fairway Fantasy] ⚠️ Field not yet published for ${tournaments.length} tournaments`;
+
+  const bulletText = tournaments
+    .map(t => `  • ${t.name} — starts ${fmtDate(t.startDate)} (ESPN event ${t.espnEventId})`)
+    .join('\n');
+
+  const text = `
+Heads up —
+
+As of midnight Tuesday CT, ESPN has NOT published the field for the
+following imminent tournament${tournaments.length === 1 ? '' : 's'}:
+
+${bulletText}
+
+The Mon–Wed hourly field poll will not run again until next Monday
+06:00 CT. If the field isn't up by then, the "make your picks" email
+will not fire and picks will stay locked heading into the tournament.
+
+Options:
+  1. Wait — ESPN sometimes publishes late Wed morning. Fine if you're
+     watching for it.
+  2. Manually trigger the sync once you see the field on espn.com:
+       systemctl start fairway-field.service
+  3. Override the pick_deadline_override on the tournament so players
+     can pick without an ESPN-seeded roster (edge case).
+
+— Fairway Fantasy alert bot
+`.trim();
+
+  const bulletHtml = tournaments
+    .map(t => `<li style="margin-bottom:6px;">
+      <strong>${escapeHtml(t.name)}</strong> — starts ${escapeHtml(fmtDate(t.startDate))}
+      <span style="color:#888; font-size:13px;">(ESPN event ${escapeHtml(t.espnEventId)})</span>
+    </li>`)
+    .join('\n');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">⚠️</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">Field not yet published</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">Fairway Fantasy admin alert</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5;">
+    As of midnight Tuesday CT, ESPN has not published the field for
+    the following imminent tournament${tournaments.length === 1 ? '' : 's'}:
+  </p>
+
+  <ul style="font-size:15px; line-height:1.5; padding-left:20px;">
+    ${bulletHtml}
+  </ul>
+
+  <p style="font-size:14px; line-height:1.5; background:#fff3cd; padding:12px 14px; border-radius:6px; border:1px solid #ffe08a;">
+    The Mon–Wed hourly field poll will not run again until <strong>next Monday 06:00 CT</strong>.
+    If the field isn't up by then, the "make your picks" email will not fire and
+    picks will stay locked heading into the tournament.
+  </p>
+
+  <p style="font-size:14px; line-height:1.5; margin-top:20px;">
+    <strong>Options:</strong>
+  </p>
+  <ol style="font-size:14px; line-height:1.6; padding-left:20px;">
+    <li>Wait — ESPN sometimes publishes late Wed morning. Fine if you're watching for it.</li>
+    <li>Manually trigger the sync once you see the field on espn.com:<br>
+      <code style="background:#f3f3f3; padding:2px 6px; border-radius:3px;">systemctl start fairway-field.service</code>
+    </li>
+    <li>Override <code style="background:#f3f3f3; padding:2px 6px; border-radius:3px;">pick_deadline_override</code>
+      on the tournament so players can pick without an ESPN-seeded roster (edge case).</li>
+  </ol>
+
+  <p style="font-size:12px; color:#999; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6;">
+    — Fairway Fantasy alert bot
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
+// ============================================================
 // Missed-deadline auto-assign template.
 //
 // Fired once per (user, league, tournament) by the missed-deadline
