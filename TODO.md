@@ -135,6 +135,24 @@ _(vercel.json deleted 2026-05-20 — LAN deploy is committed; the file was dead 
 _(Stray typo'd files on .150 cleaned up 2026-05-20 — `eep 65` and `udo systemctl start fairway-rankings.service` rm'd from `/opt/fairway-fantasy`. `git status` clean.)_
 - [x] **`.eslintrc` setup** — done in P10. Added `.eslintrc.json` extending `next/core-web-vitals`, pinned `eslint@^8.57.0` + `eslint-config-next@^14.2.35`. ✓
 
+### Product decisions surfaced 2026-07-24
+
+Raised by Greg during the Jason Day / 3M Open scorecard incident. Each is a product/scoring question, not a bug — spec before code.
+
+- [ ] **1-3 payout structure.** Decide whether league payouts should distribute across the top 3 finishers (vs winner-take-all today), and in what ratio. Needs: split percentages (e.g., 60/30/10 or 50/30/20), tie-handling rules (do ties split evenly, or does the tiebreaker in `fantasy_results.rank` decide?), and whether the pool math sits in the money layer (`src/lib/money.ts`) or a new payout helper. Also: does this change per league, per tournament, or per season?
+- [ ] **Fairness on dropouts.** Product policy for what happens when a picked golfer WD/DQs *after* picks lock and *after* R1 tee-off — i.e., past the current replacement window. Today those users just eat the null score (Rule 3d in [scoring.ts:120](repo/src/lib/scoring.ts:120)). Options: (a) leave as-is, (b) allow a late replacement pulled from a restricted pool (e.g., MDF/complete golfers still eligible), (c) drop-the-slot with a fixed penalty, (d) different behavior for WDs that happen before R1 tee (bug this week — see Jason Day). Ties directly into the pending WD-reconciliation code fix; that fix stops the *detection* gap, this decides the *policy*.
+- [ ] **Limits on player picks.** Cap how often the same golfer can be picked — either (a) per league (no golfer may appear in more than N users' foursomes this week), (b) per user across the season (each user must pick at least X distinct golfers over the year), or (c) both. Needs: which cap, what N, whether the cap is enforced at pick time (soft warning vs hard reject in `/api/picks`) or after the fact (surfaced in league stats). Also: does the cap survive the WD-replacement flow?
+
+### Graphify audit questions (2026-07-18)
+
+Surfaced by a `/graphify` pass over the repo — 1167 nodes / 2352 edges / 88 communities. These are exploration items, not blockers. Investigate by running `graphify query "<question>"` from the repo root (uses the persisted `graphify-out/graph.json`).
+
+- [ ] **Why does `requireSameOrigin()` bridge Auth & Authorization, League Domain & Money, Predictions Admin API, ESPN Client & Validation, and Stats Snapshots?** — high betweenness (0.026); ties directly to the belt-and-suspenders CSRF pass shipped 2026-05-20. Trace to confirm which of the "12 browser-driven state-changing endpoints" actually carry the guard today vs which may have been added since without it. Coverage-audit style.
+- [ ] **Why does `db` bridge 18 communities (betweenness 0.141)?** — expected in principle (every module hits Postgres), but the very high centrality means any DB-layer change has an outsized blast radius. Worth confirming there's no accidental query re-implementation across the seven `predictions-*` clusters.
+- [ ] **Should `Auth & Authorization` be split into smaller modules?** — 120 nodes, cohesion 0.06. That's a grab-bag: `auth-league`, `auth-validation`, `auth-decisions`, plus every API route's authorization checks. Refactor candidate — one of `authz` (role/permission checks) vs `authn` (NextAuth wiring, session, credentials) vs `route-guards` (`requireSameOrigin` / `requireCommissioner` helpers).
+- [ ] **Should `League Domain & Money` (80 nodes, cohesion 0.07) and `Predictions Admin API` (78 nodes, cohesion 0.06) be split?** — same low-cohesion grab-bag pattern as Auth. Predictions Admin API in particular is the entire `/api/predictions/*` surface — five sub-features (course-profiles, weights, backtests, stats upload, current) that could plausibly live as their own communities.
+- [ ] **What connects the 378 weakly-connected nodes?** — likely graph-build noise (tsconfig glob patterns, `.d.ts` references, top-level `package.json` string entries). Skim once to confirm; if it's genuinely noise, close as won't-do. If any real code lives in there orphaned from the main graph, that's a "code exists but nothing references it" signal worth surfacing.
+
 ---
 
 ## NOT doing (per scope decisions)

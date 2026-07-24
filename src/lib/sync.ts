@@ -475,6 +475,53 @@ async function syncTournament(tournament: {
       .execute();
   }
 
+  // ── Withdrawn reconciliation (2026-07-24) ─────────────
+  // ESPN silently drops WD golfers from every response — there is
+  // no explicit `STATUS_WITHDREW` flag on any endpoint. Confirmed
+  // 2026-07-24: Jason Day WD'd from 3M Open and was absent from
+  // /pga/scoreboard, /pga/leaderboard (which 404s anyway), and
+  // sports.core.api's competitors list; his individual competitor
+  // URL 404'd. The only signal is his absence from the field
+  // response.
+  //
+  // So: any golfer we've seeded (active `scores` row) whose
+  // espn_golfer_id is missing from this sync's response has
+  // withdrawn (or been DQ'd — same handling). Flip to 'withdrawn'
+  // so the daily-scorecard gate (which filters by status) no
+  // longer waits forever for a round total that will never post,
+  // and so scoring correctly zeros the slot.
+  //
+  // Guarded on competitors.length >= 100 to protect against a
+  // partial/broken ESPN response wiping the whole field. Full PGA
+  // fields are 132–156; a legitimate response is always well above
+  // 100. The known scoreboard event-id override bug (returning the
+  // currently-live event regardless of the ?event= filter) would
+  // also fall below this threshold if the wrong event is smaller
+  // than 100 competitors.
+  if (competitors.length >= 100) {
+    const espnGolferIds = new Set(competitors.map(c => c.id));
+    const activeRows = await db.selectFrom('scores')
+      .select(['golfer_id', 'espn_golfer_id'])
+      .where('tournament_id', '=', id)
+      .where('status', '=', 'active')
+      .execute();
+    const missingGolferIds = activeRows
+      .filter(r => r.espn_golfer_id && !espnGolferIds.has(r.espn_golfer_id))
+      .map(r => r.golfer_id);
+    if (missingGolferIds.length > 0) {
+      await db.updateTable('scores')
+        .set({ status: 'withdrawn' })
+        .where('tournament_id', '=', id)
+        .where('golfer_id', 'in', missingGolferIds)
+        .execute();
+      // eslint-disable-next-line no-console
+      console.log(
+        `[wd-recon] ${tournament.name}: marked ${missingGolferIds.length} ` +
+        `golfer(s) withdrawn (absent from ESPN response of ${competitors.length})`,
+      );
+    }
+  }
+
   // ── Derive course par-by-hole from the field ──
   // ESPN doesn't expose course par directly; we derive it from any
   // golfer's per-hole (strokes - relative_to_par) pair. All golfers
@@ -1447,18 +1494,25 @@ export async function detectAndSendDailyScorecards(): Promise<void> {
 }
 
 /**
- * Per-tournament arm: for each round 1..4 with ANY scored data,
+ * Per-tournament arm: for each round 1..4 that's actually COMPLETE,
  * send the daily scorecard (idempotent via daily_scorecard_log).
  *
- * Gate (relaxed 2026-06-13): we no longer require every cut survivor
- * to have an 18-element `round_N_holes` array. ESPN's `/pga/scoreboard`
- * fallback (the only endpoint we get since `/pga/leaderboard` started
- * 404ing 2026-05-14) doesn't reliably populate inner per-hole linescores
- * for completed rounds — especially R4 — so the old gate never tripped
- * and R3/R4 scorecards never went out for any tournament after that.
- * Now we fire on the integer round total (`scores.round_N`), which IS
- * populated by both endpoints. The daily-scorecard timer (7pm CT Thu-Sun)
- * is the schedule; this function just picks which rounds have data.
+ * Gate (rewritten 2026-07-24): require `round_N_holes.length === 18`
+ * for every cut survivor. Previous versions checked `round_N != null`
+ * because a 2026-06-13 change worried that scoreboard fallback wouldn't
+ * populate inner per-hole linescores for completed rounds — but that
+ * moved us to a *worse* failure mode: ESPN's `linescores[N-1].value` is
+ * `0` for not-started rounds and cumulative-strokes-so-far during play,
+ * so `round_N != null` fires the moment the leaders tee off round N+1,
+ * mailing bogus intra-round totals as if they were final. Observed live
+ * 2026-07-24 on 3M Open R2 after a manual R1 fire — R2 scorecards
+ * mailed at 07:09 CDT with 7-stroke-through-2-holes totals.
+ *
+ * The R4-holes-may-not-populate concern is real but preferable — a
+ * missing R4 email is fixable with a manual fire; a bogus round-in-flight
+ * email is what users see and can't be unsent. If the R4-holes issue
+ * bites, add a wall-clock fallback (fire if now > start_date + 4 days
+ * even without holes) here rather than reintroducing the `!= null` bug.
  */
 async function sendScorecardsForCompletedRounds(t: {
   id: string;
@@ -1473,7 +1527,8 @@ async function sendScorecardsForCompletedRounds(t: {
       'golfers.id as golfer_id',
       'golfers.name as golfer_name',
       'scores.status',
-      'scores.round_1', 'scores.round_2', 'scores.round_3', 'scores.round_4',
+      'scores.round_1_holes', 'scores.round_2_holes',
+      'scores.round_3_holes', 'scores.round_4_holes',
     ])
     .where('scores.tournament_id', '=', t.id)
     .execute();
@@ -1492,7 +1547,7 @@ async function sendScorecardsForCompletedRounds(t: {
   if (leagues.length === 0) return;
 
   for (let roundNum = 1; roundNum <= 4; roundNum++) {
-    const totalCol = `round_${roundNum}` as const;
+    const holesCol = `round_${roundNum}_holes` as const;
     // Filter to golfers expected to play this round: status active
     // or complete. (Pre-cut: all are active. Post-cut: MC/WD/DQ
     // are excluded.)
@@ -1500,21 +1555,15 @@ async function sendScorecardsForCompletedRounds(t: {
       r => r.status === 'active' || r.status === 'complete',
     );
     if (expectedPlayers.length === 0) continue;
-    // Fire ONLY when every expected player has a round_N total
-    // (tightened 2026-06-16 from "any" to "all"). This handles rounds
-    // that bleed across days due to rain delays / darkness — the 7pm
-    // sweep on day-of will SKIP an incomplete round, and the next
-    // day's 7pm sweep will catch it once the stragglers post.
-    //
-    // Previous "any" gate sent emails based on the leading group's
-    // score even when most of the field was still on course, which
-    // mailed misleading day-snapshot leaderboards. The 7pm timer is
-    // a wall-clock fence, not a "is the round done yet" signal.
-    const allFinished = expectedPlayers.every(r => {
-      const total = (r as Record<string, unknown>)[totalCol];
-      return total != null;
+    // Fire ONLY when every expected player has an 18-hole scorecard
+    // for round N — i.e., the round is actually finished for them.
+    // See the block comment on this function for why we can't gate
+    // on `round_N != null`.
+    const allComplete = expectedPlayers.every(r => {
+      const holes = (r as Record<string, unknown>)[holesCol];
+      return Array.isArray(holes) && holes.length === 18;
     });
-    if (!allFinished) continue;
+    if (!allComplete) continue;
 
     // Idempotent per (league, tournament, round) — re-runs of the
     // same day's sweep are cheap no-ops.
@@ -1540,23 +1589,27 @@ async function sendScorecardsForCompletedRounds(t: {
 /**
  * Pure helper for the "should we fire round N's scorecard yet?" gate.
  * Extracted from sendScorecardsForCompletedRounds so tests don't have
- * to spin up the DB. See decideTournamentStatus for the parallel
- * pattern.
+ * to spin up the DB.
  *
- * Tightened 2026-06-16: previously fired as soon as ANY expected
- * player had a non-null round_N total. Now requires every expected
- * player (status active/complete, i.e. cut survivors) to have a
- * non-null total — accommodates rain/darkness rounds that finish the
- * next morning without sending day-of half-baked leaderboards.
+ * Rewritten 2026-07-24: the signal is `roundHoles.length === 18` —
+ * i.e., every cut survivor has walked the full 18 for the round.
+ * Prior gates keyed off `round_N != null`, which fires the moment
+ * ESPN populates the in-flight round's cumulative-strokes-so-far
+ * counter (typically the leaders' first hole of the next round).
+ * That mis-fired R2 scorecards on 2026-07-24 with 7-strokes-through-2
+ * totals rendered as final round totals — see block comment on
+ * sendScorecardsForCompletedRounds.
  */
 export function isRoundReadyForScorecard(args: {
-  expectedPlayers: Array<{ status: string; roundTotal: number | null }>;
+  expectedPlayers: Array<{ status: string; roundHoles: number[] | null }>;
 }): boolean {
   const cutSurvivors = args.expectedPlayers.filter(
     p => p.status === 'active' || p.status === 'complete',
   );
   if (cutSurvivors.length === 0) return false;
-  return cutSurvivors.every(p => p.roundTotal != null);
+  return cutSurvivors.every(
+    p => Array.isArray(p.roundHoles) && p.roundHoles.length === 18,
+  );
 }
 
 /**
