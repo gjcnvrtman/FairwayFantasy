@@ -14,6 +14,7 @@ import {
   getCompletedTournamentsInRange,
   getFantasyResultsForTournaments,
   getEffectiveBetsForTournaments,
+  getEffectivePayoutsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
@@ -85,6 +86,12 @@ export default async function LeaguePage({ params }: Props) {
   const effectiveBets  = await getEffectiveBetsForTournaments(
     league.id, completedIds, betAmount,
   );
+  // Per-tournament payout snapshots (migration 024). Frozen for
+  // tournaments that were past pick-lock at the time of a payout edit;
+  // fall back to the current league default otherwise.
+  const effectivePayouts = await getEffectivePayoutsForTournaments(
+    league.id, completedIds, payoutFromLeague(league),
+  );
   // Group the result rows by tournament so we can pass an ordered
   // array into computeLeagueMoney that matches completedTournaments.
   const resultsByTourn = new Map<string, Array<{ user_id: string; rank: number | null }>>();
@@ -106,6 +113,7 @@ export default async function LeaguePage({ params }: Props) {
     tournaments: completedTournaments.map(t => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount: effectiveBets.get(t.id) ?? betAmount,
+      payout:    effectivePayouts.get(t.id),
       results:   resultsByTourn.get(t.id) ?? [],
     })),
   });

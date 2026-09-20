@@ -336,6 +336,7 @@ export interface Database {
   daily_scorecard_log:   DailyScorecardLogTable;
   tournament_recap_log:  TournamentRecapLogTable;
   league_tournament_bets:LeagueTournamentBetsTable;
+  league_tournament_payouts: LeagueTournamentPayoutsTable;
   league_messages:       LeagueMessagesTable;
   league_broadcasts:     LeagueBroadcastsTable;
   // ── predictions / phase 3 ─────────────────────────────────
@@ -615,6 +616,22 @@ export interface LeagueTournamentBetsTable {
   tournament_id:  string;        // PK part 2
   bet_amount:     string;        // NUMERIC(10,2) — pg returns string for precision
   updated_at:     Generated<Timestamp>;
+}
+
+// ── league_tournament_payouts (migration 024) ────────────────
+// Frozen per-(league, tournament) payout split. Written at the
+// moment a commissioner CHANGES the league-level payout_pct_*,
+// capturing the OLD values for every tournament in that league
+// already past its pick_deadline. Missing row = tournament was
+// pre-lock at the time of every edit so far → money math falls
+// back to the current leagues.payout_pct_*.
+export interface LeagueTournamentPayoutsTable {
+  league_id:      string;        // PK part 1, FK leagues(id) ON DELETE CASCADE
+  tournament_id:  string;        // PK part 2, FK tournaments(id) ON DELETE CASCADE
+  payout_pct_1:   number;
+  payout_pct_2:   number;
+  payout_pct_3:   number;
+  snapshot_at:    Generated<Timestamp>;
 }
 
 // ── tournament_recap_log (migration 009) ─────────────────────

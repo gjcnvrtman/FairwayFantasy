@@ -210,10 +210,61 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  await db.updateTable('leagues')
-    .set(updates as any)
-    .where('id', '=', auth.league.id)
-    .execute();
+  // Payout freeze rule (migration 024): when the payout split
+  // changes, snapshot the OLD league-level values for every
+  // tournament in this league whose picks are already locked, so
+  // history displays don't retroactively rewrite. ON CONFLICT DO
+  // NOTHING means a tournament that was already snapshotted from
+  // an earlier edit keeps its earlier (older) frozen value —
+  // exactly the "going forward only" semantic Greg specified.
+  //
+  // Wrapped in a transaction so a snapshot failure aborts the
+  // league update, and a concurrent read can't observe the new
+  // league values before its own tournament's snapshot exists.
+  const payoutChanged = payoutTouched && (
+    (updates.payout_pct_1 as number) !== auth.league.payout_pct_1 ||
+    (updates.payout_pct_2 as number) !== auth.league.payout_pct_2 ||
+    (updates.payout_pct_3 as number) !== auth.league.payout_pct_3
+  );
+
+  await db.transaction().execute(async (trx) => {
+    if (payoutChanged) {
+      // Snapshot OLD values for every past-lock tournament in this
+      // league's schedule that doesn't already have a snapshot.
+      // COALESCE picks the override deadline when set (per
+      // effectivePickDeadline in @/lib/pick-deadline).
+      await trx.insertInto('league_tournament_payouts')
+        .columns([
+          'league_id', 'tournament_id',
+          'payout_pct_1', 'payout_pct_2', 'payout_pct_3',
+        ])
+        .expression(eb => eb.selectFrom('league_tournaments as lt')
+          .innerJoin('tournaments as t', 't.id', 'lt.tournament_id')
+          .select(eb2 => [
+            'lt.league_id',
+            'lt.tournament_id',
+            eb2.val(auth.league.payout_pct_1).as('payout_pct_1'),
+            eb2.val(auth.league.payout_pct_2).as('payout_pct_2'),
+            eb2.val(auth.league.payout_pct_3).as('payout_pct_3'),
+          ])
+          .where('lt.league_id', '=', auth.league.id)
+          .where(eb2 => eb2.fn.coalesce(
+            eb2.ref('t.pick_deadline_override'),
+            eb2.ref('t.pick_deadline'),
+          ), '<', new Date().toISOString()),
+        )
+        .onConflict(oc => oc
+          .columns(['league_id', 'tournament_id'])
+          .doNothing(),
+        )
+        .execute();
+    }
+
+    await trx.updateTable('leagues')
+      .set(updates as any)
+      .where('id', '=', auth.league.id)
+      .execute();
+  });
 
   const updated = await db.selectFrom('leagues')
     .select(['id', 'slug', 'name', 'max_players',

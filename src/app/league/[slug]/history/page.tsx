@@ -7,6 +7,7 @@ import {
   getLeagueMembers,
   getCompletedTournamentsInRange,
   getEffectiveBetsForTournaments,
+  getEffectivePayoutsForTournaments,
   getPicksForTournament,
   isoOrNull,
 } from '@/lib/db/queries';
@@ -87,12 +88,16 @@ export default async function HistoryPage({ params }: Props) {
   const effectiveBets = await getEffectiveBetsForTournaments(
     league.id, withResults.map(t => t.tournament.id), betAmount,
   );
+  const effectivePayouts = await getEffectivePayoutsForTournaments(
+    league.id, withResults.map(t => t.tournament.id), payoutFromLeague(league),
+  );
   const moneySummary = computeLeagueMoney({
     members: moneyMembers,
     payout:  payoutFromLeague(league),
     tournaments: withResults.map(({ tournament: t, results }) => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount: effectiveBets.get(t.id) ?? betAmount,
+      payout:    effectivePayouts.get(t.id),
       results:   results.map((r: any) => ({ user_id: r.user_id, rank: r.rank })),
     })),
   });

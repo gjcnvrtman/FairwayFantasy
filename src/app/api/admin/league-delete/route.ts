@@ -27,6 +27,7 @@ import { db } from '@/lib/db';
 import {
   getCompletedTournamentsInRange,
   getEffectiveBetsForTournaments,
+  getEffectivePayoutsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, payoutFromLeague } from '@/lib/money';
@@ -130,12 +131,16 @@ export async function POST(req: NextRequest) {
     const effectiveBets = await getEffectiveBetsForTournaments(
       auth.league.id, withResults.map(t => t.tournament.id), betAmount,
     );
+    const effectivePayouts = await getEffectivePayoutsForTournaments(
+      auth.league.id, withResults.map(t => t.tournament.id), payoutFromLeague(auth.league),
+    );
     const moneySummary = computeLeagueMoney({
       members: moneyMembers,
       payout:  payoutFromLeague(auth.league),
       tournaments: withResults.map(({ tournament: t, results }) => ({
         lockedAt:  effectivePickDeadline(t) ?? t.start_date,
         betAmount: effectiveBets.get(t.id) ?? betAmount,
+        payout:    effectivePayouts.get(t.id),
         results:   results.map(r => ({ user_id: r.user_id, rank: r.rank })),
       })),
     });

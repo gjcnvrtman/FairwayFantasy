@@ -230,6 +230,45 @@ export async function getEffectiveBetsForTournaments(
   return out;
 }
 
+// ── per-tournament payout snapshots (migration 024) ──────────
+
+import type { PayoutStructure } from '@/lib/money';
+
+/**
+ * Return a `Map<tournament_id, PayoutStructure>` for every tournament
+ * in `tournamentIds`. Tournaments without a snapshot resolve to the
+ * league-level default (typically the current `leagues.payout_pct_*`).
+ *
+ * Snapshots exist when a commissioner edited the league payout AFTER
+ * the tournament's pick_deadline passed — see the "freeze rule" block
+ * comment in migration 024. Missing snapshot means either (a) the
+ * tournament is still pre-lock, or (b) no edit has happened yet, in
+ * which case falling back to the current league default is the right
+ * answer.
+ */
+export async function getEffectivePayoutsForTournaments(
+  leagueId: string,
+  tournamentIds: string[],
+  leagueDefaultPayout: PayoutStructure,
+): Promise<Map<string, PayoutStructure>> {
+  const out = new Map<string, PayoutStructure>();
+  for (const tid of tournamentIds) out.set(tid, leagueDefaultPayout);
+  if (tournamentIds.length === 0) return out;
+  const rows = await db.selectFrom('league_tournament_payouts')
+    .select(['tournament_id', 'payout_pct_1', 'payout_pct_2', 'payout_pct_3'])
+    .where('league_id', '=', leagueId)
+    .where('tournament_id', 'in', tournamentIds)
+    .execute();
+  for (const r of rows) {
+    out.set(r.tournament_id, {
+      pct1: r.payout_pct_1,
+      pct2: r.payout_pct_2,
+      pct3: r.payout_pct_3,
+    });
+  }
+  return out;
+}
+
 // ── picks (with embedded golfer rows for all 4 slots) ────────
 
 export async function getPicksForTournament(leagueId: string, tournamentId: string) {
