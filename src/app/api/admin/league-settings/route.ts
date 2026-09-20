@@ -1,8 +1,9 @@
 // /api/admin/league-settings — commissioner-only league-config edits.
 //
-// POST { slug, maxPlayers?, startDate?, endDate?, weeklyBetAmount? }
+// POST { slug, maxPlayers?, startDate?, endDate?, weeklyBetAmount?,
+//        payoutPct1?, payoutPct2?, payoutPct3? }
 //   - slug authenticates as a commissioner of THIS league.
-//   - Any of the four field params can be present; absent fields are
+//   - Any of the supported params can be present; absent fields are
 //     not touched. At least one supported field must be provided.
 //   - maxPlayers — bounded by LEAGUE_LIMITS, cannot drop below the
 //     current member count.
@@ -11,6 +12,9 @@
 //     null clears the column (back to unbounded).
 //   - weeklyBetAmount — bounded by LEAGUE_LIMITS.BET_MIN..BET_MAX.
 //     ≤2 decimal places.
+//   - payoutPct1/2/3 — integers 0..100 that must sum to 100. Must be
+//     supplied as a set (all three or none); we don't allow updating
+//     one at a time since the sum invariant would break mid-write.
 //
 // Returns 200 with the updated league row on success, 400 with a
 // human-readable error on validation failure.
@@ -35,6 +39,9 @@ export async function POST(req: NextRequest) {
   const startDateRaw     = body.startDate;
   const endDateRaw       = body.endDate;
   const weeklyBetAmtRaw  = body.weeklyBetAmount;
+  const payoutPct1Raw    = body.payoutPct1;
+  const payoutPct2Raw    = body.payoutPct2;
+  const payoutPct3Raw    = body.payoutPct3;
 
   const auth = await requireCommissioner({ slug });
   if (isAuthFail(auth)) return auth.response;
@@ -153,6 +160,49 @@ export async function POST(req: NextRequest) {
     updates.weekly_bet_amount = weeklyBetAmtRaw.toFixed(2);
   }
 
+  // payoutPct1/2/3 — must be supplied as a set. Reject partial to
+  // avoid a mid-write state that violates the sum-to-100 invariant.
+  const payoutTouched =
+    payoutPct1Raw !== undefined ||
+    payoutPct2Raw !== undefined ||
+    payoutPct3Raw !== undefined;
+  if (payoutTouched) {
+    if (
+      payoutPct1Raw === undefined ||
+      payoutPct2Raw === undefined ||
+      payoutPct3Raw === undefined
+    ) {
+      return NextResponse.json(
+        { error: 'payoutPct1, payoutPct2, and payoutPct3 must all be provided together.' },
+        { status: 400 },
+      );
+    }
+    const p1 = payoutPct1Raw, p2 = payoutPct2Raw, p3 = payoutPct3Raw;
+    for (const [name, v] of [['payoutPct1', p1], ['payoutPct2', p2], ['payoutPct3', p3]] as const) {
+      if (typeof v !== 'number' || !Number.isInteger(v)) {
+        return NextResponse.json(
+          { error: `${name} must be an integer.` },
+          { status: 400 },
+        );
+      }
+      if (v < 0 || v > 100) {
+        return NextResponse.json(
+          { error: `${name} must be between 0 and 100.` },
+          { status: 400 },
+        );
+      }
+    }
+    if ((p1 as number) + (p2 as number) + (p3 as number) !== 100) {
+      return NextResponse.json(
+        { error: 'payoutPct1 + payoutPct2 + payoutPct3 must equal 100.' },
+        { status: 400 },
+      );
+    }
+    updates.payout_pct_1 = p1 as number;
+    updates.payout_pct_2 = p2 as number;
+    updates.payout_pct_3 = p3 as number;
+  }
+
   if (Object.keys(updates).length === 0) {
     return NextResponse.json(
       { error: 'No supported settings field was provided.' },
@@ -167,7 +217,8 @@ export async function POST(req: NextRequest) {
 
   const updated = await db.selectFrom('leagues')
     .select(['id', 'slug', 'name', 'max_players',
-             'start_date', 'end_date', 'weekly_bet_amount'])
+             'start_date', 'end_date', 'weekly_bet_amount',
+             'payout_pct_1', 'payout_pct_2', 'payout_pct_3'])
     .where('id', '=', auth.league.id)
     .executeTakeFirstOrThrow();
 

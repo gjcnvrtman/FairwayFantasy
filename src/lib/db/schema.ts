@@ -43,9 +43,17 @@ export interface LeaguesTable {
   // null as unbounded on either side).
   start_date:      Timestamp | null;
   end_date:        Timestamp | null;
-  // Per-tournament stake in dollars. Each non-winner pays this to
-  // the (collective) winner; on ties the pot splits evenly.
+  // Per-tournament stake in dollars. Each eligible member antes this;
+  // the pot distributes across the top 3 finishers per payout_pct_*
+  // using the PGA combined-share tie rule (see computeTournamentMoney
+  // in src/lib/money.ts).
   weekly_bet_amount: Generated<string>;     // NUMERIC(10,2) — pg returns string for precision
+  // Top-3 payout split (migration 023). Integers 0-100 summing to 100.
+  // DB CHECK constraints enforce both invariants. Default 100/0/0
+  // matches pre-023 winner-take-all behavior.
+  payout_pct_1:    Generated<number>;
+  payout_pct_2:    Generated<number>;
+  payout_pct_3:    Generated<number>;
   created_at:      Generated<Timestamp>;
 }
 

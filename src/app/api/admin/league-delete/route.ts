@@ -29,7 +29,7 @@ import {
   getEffectiveBetsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
-import { computeLeagueMoney } from '@/lib/money';
+import { computeLeagueMoney, payoutFromLeague } from '@/lib/money';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
@@ -132,6 +132,7 @@ export async function POST(req: NextRequest) {
     );
     const moneySummary = computeLeagueMoney({
       members: moneyMembers,
+      payout:  payoutFromLeague(auth.league),
       tournaments: withResults.map(({ tournament: t, results }) => ({
         lockedAt:  effectivePickDeadline(t) ?? t.start_date,
         betAmount: effectiveBets.get(t.id) ?? betAmount,

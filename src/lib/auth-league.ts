@@ -36,6 +36,10 @@ export interface LeagueRow {
   start_date:        string | null;
   end_date:          string | null;
   weekly_bet_amount: string;       // NUMERIC(10,2) → pg returns string
+  // Top-3 payout split (migration 023). Integers 0-100, sum to 100.
+  payout_pct_1:      number;
+  payout_pct_2:      number;
+  payout_pct_3:      number;
   created_at:        string;
 }
 

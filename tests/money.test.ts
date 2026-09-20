@@ -3,6 +3,8 @@ import {
   computeTournamentMoney,
   computeLeagueMoney,
   formatMoney,
+  PAYOUT_WINNER_TAKE_ALL,
+  type PayoutStructure,
 } from '@/lib/money';
 
 // All baseline-everyone-eligible tests use a single shared lock time;
@@ -398,6 +400,358 @@ describe('computeLeagueMoney', () => {
       { user_id: 'u2', amount: 0 },
     ]);
     expect(r.byTournament).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// formatMoney — display helper
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// Top-3 payout structures — migration 023.
+//
+// Under the new algorithm each eligible member antes betAmount and
+// the pot (eligible × betAmount) splits across the top 3 finishers
+// per `payout`. Ties resolve by the PGA combined-share rule.
+//
+// With payout = PAYOUT_WINNER_TAKE_ALL (100/0/0), results match the
+// legacy "loser pool distributed to rank-1" model (all baseline
+// tests above use the default and still pass).
+// ─────────────────────────────────────────────────────────────
+
+const P_50_30_20: PayoutStructure = { pct1: 50, pct2: 30, pct3: 20 };
+const P_60_30_10: PayoutStructure = { pct1: 60, pct2: 30, pct3: 10 };
+
+describe('computeTournamentMoney — 50/30/20 with no ties', () => {
+  it('10 members $10 ante — rank1 +$40, rank2 +$20, rank3 +$10, rank4-10 -$10', () => {
+    const r = computeTournamentMoney({
+      members: mk(['u1','u2','u3','u4','u5','u6','u7','u8','u9','u10']),
+      lockedAt: LOCK_TIME,
+      results: Array.from({ length: 10 }, (_, i) => ({
+        user_id: `u${i + 1}`, rank: i + 1,
+      })),
+      betAmount: 10,
+      payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    // pot = 10 × $10 = $100. Gross: r1=$50, r2=$30, r3=$20. Net = gross - $10 ante.
+    expect(byId.u1).toBe(40);
+    expect(byId.u2).toBe(20);
+    expect(byId.u3).toBe(10);
+    for (let i = 4; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    // Money conserved.
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBe(0);
+  });
+});
+
+describe('computeTournamentMoney — PGA tie rule at rank 1', () => {
+  it('2-way tie at 1 (K=2) → they split combined pct_1+pct_2, no rank-3 payout to them', () => {
+    // 10 members, $10 ante, pot=$100. K=2 tied at 1 occupy ranks 1&2.
+    // Combined = 50+30 = 80%. Each gets $40 gross. Rank 3 (u3) still
+    // gets pct_3 = 20% = $20 gross. Everyone else pays $10.
+    const results = [
+      { user_id: 'u1', rank: 1 },
+      { user_id: 'u2', rank: 1 },
+      { user_id: 'u3', rank: 3 },  // rank 2 is consumed by the tie
+      ...Array.from({ length: 7 }, (_, i) => ({
+        user_id: `u${i + 4}`, rank: i + 4,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME,
+      results,
+      betAmount: 10,
+      payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(30);   // 40 gross - 10 ante
+    expect(byId.u2).toBe(30);
+    expect(byId.u3).toBe(10);   // 20 gross - 10 ante
+    for (let i = 4; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+
+  it('3-way tie at 1 (K=3) → they split all three shares (100%) equally', () => {
+    // 10 members. K=3 at rank 1 occupy 1/2/3. Combined = 100%.
+    // Each of the 3 gets $100/3 ≈ $33.33 gross, net ≈ $23.33.
+    const results = [
+      { user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 1 }, { user_id: 'u3', rank: 1 },
+      ...Array.from({ length: 7 }, (_, i) => ({
+        user_id: `u${i + 4}`, rank: i + 4,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    const expectedGross = 100 / 3;
+    expect(byId.u1).toBeCloseTo(expectedGross - 10, 10);
+    expect(byId.u2).toBeCloseTo(expectedGross - 10, 10);
+    expect(byId.u3).toBeCloseTo(expectedGross - 10, 10);
+    for (let i = 4; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    // Rank 1 wins consume ranks 1-3, so no other paid ranks.
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+
+  it('4-way tie at 1 (K=4) → only ranks 1..3 pay, 4th tied gets pct_4 = 0 in the combined pool', () => {
+    // K=4 at rank 1 occupy 1/2/3/4. Combined = 50+30+20+0 = 100%.
+    // Each of the 4 gets $25 gross, net $15. Ranks 5+ pay ante.
+    const results = [
+      { user_id: 'u1', rank: 1 }, { user_id: 'u2', rank: 1 },
+      { user_id: 'u3', rank: 1 }, { user_id: 'u4', rank: 1 },
+      ...Array.from({ length: 6 }, (_, i) => ({
+        user_id: `u${i + 5}`, rank: i + 5,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    for (let i = 1; i <= 4; i++) expect(byId[`u${i}`]).toBe(15);
+    for (let i = 5; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+});
+
+describe('computeTournamentMoney — PGA tie rule at rank 2', () => {
+  it('2-way tie at 2 (K=2) → they split combined pct_2+pct_3, rank 1 gets pct_1', () => {
+    const results = [
+      { user_id: 'u1', rank: 1 },
+      { user_id: 'u2', rank: 2 }, { user_id: 'u3', rank: 2 },
+      ...Array.from({ length: 7 }, (_, i) => ({
+        user_id: `u${i + 4}`, rank: i + 4,  // rank 3 skipped by tie
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    // Rank 1: 50% × $100 = $50 gross, net +$40.
+    // Tied at 2: (30+20)/2 = 25% each × $100 = $25 gross, net +$15.
+    expect(byId.u1).toBe(40);
+    expect(byId.u2).toBe(15);
+    expect(byId.u3).toBe(15);
+    for (let i = 4; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+
+  it('5-way tie at 2 (K=5, like FedEx St. Jude 2026) → combined pct_2+pct_3 split 5 ways', () => {
+    // Occupies ranks 2..6. Combined = 30+20+0+0+0 = 50%.
+    // Each tied player gets 50/5 = 10% × $100 = $10 gross, net $0.
+    const results = [
+      { user_id: 'u1', rank: 1 },
+      ...['u2','u3','u4','u5','u6'].map(id => ({ user_id: id, rank: 2 })),
+      ...Array.from({ length: 4 }, (_, i) => ({
+        user_id: `u${i + 7}`, rank: i + 7,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(40);
+    for (const id of ['u2','u3','u4','u5','u6']) expect(byId[id]).toBe(0);
+    for (let i = 7; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+
+  it('4-way tie at 2 (K=4, like RBC Canadian Open 2026) → still fully distributes pot', () => {
+    // Occupies 2/3/4/5. Combined = 30+20+0+0 = 50%. $12.50 each gross,
+    // net $2.50. Rank 1: $40. Others: -$10.
+    const results = [
+      { user_id: 'u1', rank: 1 },
+      ...['u2','u3','u4','u5'].map(id => ({ user_id: id, rank: 2 })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        user_id: `u${i + 6}`, rank: i + 6,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(40);
+    for (const id of ['u2','u3','u4','u5']) expect(byId[id]).toBe(2.5);
+    for (let i = 6; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+});
+
+describe('computeTournamentMoney — PGA tie rule at rank 3', () => {
+  it('2-way tie at 3 → they split just pct_3 (nothing to combine below)', () => {
+    // Ranks 1,2 single, then tied at 3 (occupying 3&4). Combined
+    // pct = 20+0 = 20%. Split 2 ways = 10% each × $100 = $10 gross,
+    // net $0. Rank 1 gets $40, rank 2 gets $20.
+    const results = [
+      { user_id: 'u1', rank: 1 },
+      { user_id: 'u2', rank: 2 },
+      { user_id: 'u3', rank: 3 }, { user_id: 'u4', rank: 3 },
+      ...Array.from({ length: 6 }, (_, i) => ({
+        user_id: `u${i + 5}`, rank: i + 5,
+      })),
+    ];
+    const r = computeTournamentMoney({
+      members: mk(results.map(x => x.user_id)),
+      lockedAt: LOCK_TIME, results, betAmount: 10, payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(40);
+    expect(byId.u2).toBe(20);
+    expect(byId.u3).toBe(0);
+    expect(byId.u4).toBe(0);
+    for (let i = 5; i <= 10; i++) expect(byId[`u${i}`]).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+});
+
+describe('computeTournamentMoney — top-3 payout edge cases', () => {
+  it('winner-take-all default matches old behavior — no payout param', () => {
+    // Regression: passing no payout at all uses the WTA default,
+    // which reproduces the legacy loser-pool math exactly.
+    const r = computeTournamentMoney({
+      members:  mk(['u1', 'u2', 'u3', 'u4']),
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+        { user_id: 'u3', rank: 3 },
+        { user_id: 'u4', rank: 4 },
+      ],
+      betAmount: 10,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(30);   // 4 × $10 pot to rank 1, minus $10 ante
+    expect(byId.u2).toBe(-10);
+    expect(byId.u3).toBe(-10);
+    expect(byId.u4).toBe(-10);
+  });
+
+  it('explicit PAYOUT_WINNER_TAKE_ALL is a no-op on top of default', () => {
+    const r = computeTournamentMoney({
+      members:  mk(['u1', 'u2', 'u3']),
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+        { user_id: 'u3', rank: 3 },
+      ],
+      betAmount: 10,
+      payout: PAYOUT_WINNER_TAKE_ALL,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(20);
+    expect(byId.u2).toBe(-10);
+    expect(byId.u3).toBe(-10);
+  });
+
+  it('nobody at rank 1 → pot dissolves, all amounts 0', () => {
+    // e.g., every user's picks all withdrew, so rank is null for all.
+    const r = computeTournamentMoney({
+      members:  mk(['u1', 'u2', 'u3']),
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: null },
+        { user_id: 'u2', rank: null },
+        { user_id: 'u3', rank: null },
+      ],
+      betAmount: 10,
+      payout: P_50_30_20,
+    });
+    expect(r.every(d => d.amount === 0)).toBe(true);
+  });
+
+  it('late joiner excluded — algorithm still balances among eligible', () => {
+    // 3 eligible + 1 late joiner. Pot = 3 × $10 = $30 (late joiner
+    // not counted). With 50/30/20 top 3: r1=$15, r2=$9, r3=$6.
+    // Nets: r1=+5, r2=-1, r3=-4. Late joiner: 0.
+    const r = computeTournamentMoney({
+      members: [
+        { user_id: 'u1', joined_at: BEFORE_LOCK },
+        { user_id: 'u2', joined_at: BEFORE_LOCK },
+        { user_id: 'u3', joined_at: BEFORE_LOCK },
+        { user_id: 'u4', joined_at: AFTER_LOCK },
+      ],
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+        { user_id: 'u3', rank: 3 },
+      ],
+      betAmount: 10,
+      payout: P_50_30_20,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(5);
+    expect(byId.u2).toBe(-1);
+    expect(byId.u3).toBe(-4);
+    expect(byId.u4).toBe(0);
+  });
+
+  it('60/30/10 arbitrary split works — different percentages, same conservation', () => {
+    const r = computeTournamentMoney({
+      members: mk(['u1','u2','u3','u4','u5']),
+      lockedAt: LOCK_TIME,
+      results: [
+        { user_id: 'u1', rank: 1 },
+        { user_id: 'u2', rank: 2 },
+        { user_id: 'u3', rank: 3 },
+        { user_id: 'u4', rank: 4 },
+        { user_id: 'u5', rank: 5 },
+      ],
+      betAmount: 10,
+      payout: P_60_30_10,
+    });
+    const byId = Object.fromEntries(r.map(d => [d.user_id, d.amount]));
+    // pot $50 — r1 60% = $30 gross, net +$20; r2 30% = $15, net +$5;
+    // r3 10% = $5, net -$5.
+    expect(byId.u1).toBe(20);
+    expect(byId.u2).toBe(5);
+    expect(byId.u3).toBe(-5);
+    expect(byId.u4).toBe(-10);
+    expect(byId.u5).toBe(-10);
+    expect(r.reduce((s, d) => s + d.amount, 0)).toBeCloseTo(0, 10);
+  });
+
+  it('computeLeagueMoney propagates the league-level payout to every tournament', () => {
+    // Two tournaments in a league configured 50/30/20. u1 sweeps.
+    const r = computeLeagueMoney({
+      members: mk(['u1', 'u2', 'u3', 'u4']),
+      payout: P_50_30_20,
+      tournaments: [
+        {
+          lockedAt: LOCK_TIME,
+          betAmount: 10,
+          results: [
+            { user_id: 'u1', rank: 1 },
+            { user_id: 'u2', rank: 2 },
+            { user_id: 'u3', rank: 3 },
+            { user_id: 'u4', rank: 4 },
+          ],
+        },
+        {
+          lockedAt: LOCK_TIME,
+          betAmount: 10,
+          results: [
+            { user_id: 'u1', rank: 1 },
+            { user_id: 'u2', rank: 2 },
+            { user_id: 'u3', rank: 3 },
+            { user_id: 'u4', rank: 4 },
+          ],
+        },
+      ],
+    });
+    // Per tournament pot $40. Gross: r1=$20, r2=$12, r3=$8, r4=$0.
+    // Nets: +$10, +$2, -$2, -$10. Doubled across 2 tournaments.
+    const byId = Object.fromEntries(r.totals.map(d => [d.user_id, d.amount]));
+    expect(byId.u1).toBe(20);
+    expect(byId.u2).toBe(4);
+    expect(byId.u3).toBe(-4);
+    expect(byId.u4).toBe(-20);
   });
 });
 

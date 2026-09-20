@@ -16,7 +16,7 @@ import {
   getEffectiveBetsForTournaments,
   isoOrNull,
 } from '@/lib/db/queries';
-import { computeLeagueMoney, formatMoney } from '@/lib/money';
+import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { formatScore, formatThruIndicator } from '@/lib/scoring';
 import {
@@ -102,6 +102,7 @@ export default async function LeaguePage({ params }: Props) {
   }));
   const moneySummary = computeLeagueMoney({
     members: moneyMembers,
+    payout:  payoutFromLeague(league),
     tournaments: completedTournaments.map(t => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount: effectiveBets.get(t.id) ?? betAmount,

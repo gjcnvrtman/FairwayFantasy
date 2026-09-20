@@ -13,6 +13,10 @@ interface League {
   start_date:          string | null;
   end_date:            string | null;
   weekly_bet_amount:   string;       // pg NUMERIC → string
+  // Top-3 payout split (migration 023). Integers 0-100, sum to 100.
+  payout_pct_1:        number;
+  payout_pct_2:        number;
+  payout_pct_3:        number;
   created_at:          string;
 }
 
@@ -208,6 +212,16 @@ export default function AdminPanel({
   const [betBusy,   setBetBusy]   = useState(false);
   const [betMsg,    setBetMsg]    = useState('');
   const [betErr,    setBetErr]    = useState('');
+
+  // Top-3 payout (migration 023). Three integer % that must sum to 100.
+  // Default 100/0/0 = winner-take-all. Save is disabled until the sum
+  // is 100 and at least one field changed from the DB value.
+  const [payout1Input, setPayout1Input] = useState<string>(String(league.payout_pct_1));
+  const [payout2Input, setPayout2Input] = useState<string>(String(league.payout_pct_2));
+  const [payout3Input, setPayout3Input] = useState<string>(String(league.payout_pct_3));
+  const [payoutBusy,   setPayoutBusy]   = useState(false);
+  const [payoutMsg,    setPayoutMsg]    = useState('');
+  const [payoutErr,    setPayoutErr]    = useState('');
 
   // ── Per-tournament bet overrides (migration 010) ─────────────
   // Initialize from the SSR-supplied map; key by tournament_id.
@@ -605,6 +619,46 @@ export default function AdminPanel({
     }
   }
 
+  async function savePayoutStructure() {
+    setPayoutBusy(true);
+    setPayoutMsg('');
+    setPayoutErr('');
+    const p1 = parseInt(payout1Input, 10);
+    const p2 = parseInt(payout2Input, 10);
+    const p3 = parseInt(payout3Input, 10);
+    if (![p1, p2, p3].every(v => Number.isInteger(v) && v >= 0 && v <= 100)) {
+      setPayoutErr('Each field must be an integer 0–100.');
+      setPayoutBusy(false);
+      return;
+    }
+    if (p1 + p2 + p3 !== 100) {
+      setPayoutErr(`The three percentages must sum to 100 (currently ${p1 + p2 + p3}).`);
+      setPayoutBusy(false);
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/league-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug: league.slug,
+          payoutPct1: p1, payoutPct2: p2, payoutPct3: p3,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPayoutErr(data.error ?? `Failed (HTTP ${res.status})`);
+        return;
+      }
+      setPayoutMsg(`Saved — payout is now ${p1}% / ${p2}% / ${p3}%.`);
+      router.refresh();
+    } catch (err) {
+      setPayoutErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPayoutBusy(false);
+    }
+  }
+
   async function deleteLeague() {
     setDeleteBusy(true);
     setDeleteErr('');
@@ -861,6 +915,88 @@ export default function AdminPanel({
                 fontSize: '0.82rem',
               }}>
                 {betErr || betMsg}
+              </dd>
+            </>
+          )}
+
+          <dt style={{ color: 'var(--slate-mid)' }}>Payout split</dt>
+          <dd style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+            {(['1st','2nd','3rd'] as const).map((label, i) => {
+              const value  = [payout1Input, payout2Input, payout3Input][i];
+              const setter = [setPayout1Input, setPayout2Input, setPayout3Input][i];
+              return (
+                <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <label htmlFor={`payout-${label}`} style={{ color: 'var(--slate-mid)', fontSize: '0.82rem' }}>
+                    {label}
+                  </label>
+                  <input
+                    id={`payout-${label}`}
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    inputMode="numeric"
+                    value={value}
+                    onChange={(e) => setter(e.target.value)}
+                    disabled={payoutBusy}
+                    aria-label={`${label} place payout percentage`}
+                    style={{
+                      width: '3.6rem', padding: '0.25rem 0.4rem',
+                      fontFamily: 'monospace', fontSize: '0.88rem',
+                    }}
+                  />
+                  <span style={{ color: 'var(--slate-mid)' }}>%</span>
+                </span>
+              );
+            })}
+            {(() => {
+              const p1 = parseInt(payout1Input, 10);
+              const p2 = parseInt(payout2Input, 10);
+              const p3 = parseInt(payout3Input, 10);
+              const parts = [p1, p2, p3];
+              const valid = parts.every(v => Number.isInteger(v) && v >= 0 && v <= 100);
+              const sum = valid ? p1 + p2 + p3 : NaN;
+              const changed = valid && (
+                p1 !== league.payout_pct_1 ||
+                p2 !== league.payout_pct_2 ||
+                p3 !== league.payout_pct_3
+              );
+              return (
+                <>
+                  <span style={{
+                    color: valid && sum === 100 ? 'var(--green)' : 'var(--red)',
+                    fontSize: '0.82rem', fontFamily: 'monospace',
+                  }}>
+                    {valid ? `sum = ${sum}` : 'sum = —'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={savePayoutStructure}
+                    disabled={payoutBusy || !valid || sum !== 100 || !changed}
+                    aria-busy={payoutBusy}
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.85rem' }}
+                  >
+                    {payoutBusy ? 'Saving…' : 'Save'}
+                  </button>
+                </>
+              );
+            })()}
+          </dd>
+          <dt />
+          <dd style={{ color: 'var(--slate-mid)', fontSize: '0.78rem' }}>
+            Three integer % that sum to 100. Ties resolve by PGA rule
+            (tied players occupy adjacent ranks; their combined shares
+            split evenly). E.g., 100/0/0 = winner-take-all,
+            50/30/20 = payout to top 3.
+          </dd>
+          {(payoutMsg || payoutErr) && (
+            <>
+              <dt />
+              <dd style={{
+                color: payoutErr ? 'var(--red)' : 'var(--green)',
+                fontSize: '0.82rem',
+              }}>
+                {payoutErr || payoutMsg}
               </dd>
             </>
           )}

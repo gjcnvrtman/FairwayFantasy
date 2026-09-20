@@ -12,7 +12,7 @@ import {
 } from '@/lib/db/queries';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
-import { computeLeagueMoney, formatMoney } from '@/lib/money';
+import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -89,6 +89,7 @@ export default async function HistoryPage({ params }: Props) {
   );
   const moneySummary = computeLeagueMoney({
     members: moneyMembers,
+    payout:  payoutFromLeague(league),
     tournaments: withResults.map(({ tournament: t, results }) => ({
       lockedAt:  effectivePickDeadline(t) ?? t.start_date,
       betAmount: effectiveBets.get(t.id) ?? betAmount,
