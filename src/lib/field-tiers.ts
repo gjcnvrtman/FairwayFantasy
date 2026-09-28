@@ -20,8 +20,8 @@
 // Used by:
 //   - /api/picks/setup route (returns the Set as an array)
 //   - /api/picks POST + PUT validation
-//   - /api/players?tier= when a tournament_id is supplied
 //   - sweepMissedPicks → buildAutoLineup
+//   - the predictions orchestrator / backtest (tier per field)
 //
 // We retain the global `golfers.is_dark_horse` column as a static
 // hint for non-tournament contexts; it just isn't authoritative for

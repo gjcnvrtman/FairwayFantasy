@@ -28,7 +28,8 @@
 // 6-man majors (migration 026/029): rankTop5Six builds 3 top-tier +
 // 3 dark-horse teams scored on the best 4 of 6. Exhaustive search is
 // ~700M teams, so the field is first pruned by dominance (see
-// pruneDominated) — exact for the top 5 up to exact score ties.
+// pruneDominated) — exact for the top 5, including their order. The
+// 4-man search uses the same pruning (perf, 2026-09-28).
 //
 // Pure — no I/O, no clock reads.
 // ============================================================
@@ -246,62 +247,66 @@ export function rankTopK(inputs: OptimizerInputs, k: number): FoursomeCandidate[
     throw new Error(`Need >=2 dark-horse golfers, got ${darkHorse.length}`);
   }
 
-  const topPairs = pairs(topTier);
-  const darkPairs = pairs(darkHorse);
+  // Perf (2026-09-28): prune golfers that can't reach the top k (see
+  // pruneDominated — exact, including tie order), score every remaining
+  // foursome, keep the best k, and only build strengths / concerns /
+  // explanation for those. Was ~5–6 s per call on a real field because
+  // all ~2.3M foursomes got full objects; output is byte-identical
+  // (tests/lineup-optimizer-perf.test.ts checks it against the old
+  // exhaustive algorithm).
+  const topPairs = pairs(pruneDominated(topTier, 2, k));
+  const darkPairs = pairs(pruneDominated(darkHorse, 2, k));
 
-  // Build raw candidate list. Use a Map keyed by hash to dedup as we go
-  // — without dedup, the same SET can theoretically appear twice from
-  // different pair orderings (it can't with our enforcement above, but
-  // belt-and-braces).
-  const byHash = new Map<string, FoursomeCandidate>();
-
+  // Top k by (score asc, hash asc) — the same total order the old
+  // sort-everything version used.
+  const kept: Array<{ four: OptimizerGolfer[]; score: number; hash: string }> = [];
+  const before = (s: number, h: string, o: { score: number; hash: string }) =>
+    s < o.score || (s === o.score && h.localeCompare(o.hash) < 0);
   for (const [t1, t2] of topPairs) {
     for (const [d1, d2] of darkPairs) {
       const four: OptimizerGolfer[] = [t1, t2, d1, d2];
-      const hash = computeFoursomeHash([t1.id, t2.id, d1.id, d2.id]);
-      if (byHash.has(hash)) continue;
-
       const score = projectedFantasyScore(four);
-      const risk = classifyRisk(four);
-      const conf = confidence(four);
-
-      // Ownership estimated as the AVERAGE of per-golfer ownership
-      // across the foursome — gives a rough "how chalky is this pick".
-      let ownership: number | null = null;
-      if (inputs.ownership && inputs.ownership.size > 0) {
-        const vals = four.map(g => inputs.ownership!.get(g.id) ?? 0);
-        ownership = (vals.reduce((a, b) => a + b, 0) / 4) * 100;
-      }
-
-      byHash.set(hash, {
-        teamSize: 4,
-        topTier1Id: t1.id,
-        topTier2Id: t2.id,
-        darkHorse1Id: d1.id,
-        darkHorse2Id: d2.id,
-        topTier3Id: null,
-        darkHorse3Id: null,
-        foursomeHash: hash,
-        projectedFantasyScore: score,
-        confidenceScore: conf,
-        riskLevel: risk,
-        estimatedOwnershipPct: ownership,
-        keyStrengths: buildKeyStrengths(four),
-        keyConcerns: buildKeyConcerns(four),
-        foursomeExplanation: buildFoursomeExplanation(four, score, risk),
-      });
+      if (kept.length >= k && score > kept[kept.length - 1].score) continue;
+      const hash = computeFoursomeHash([t1.id, t2.id, d1.id, d2.id]);
+      if (kept.length >= k && !before(score, hash, kept[kept.length - 1])) continue;
+      let i = kept.length;
+      while (i > 0 && before(score, hash, kept[i - 1])) i--;
+      kept.splice(i, 0, { four, score, hash });
+      if (kept.length > k) kept.pop();
     }
   }
 
-  // Sort ascending (lower projected score = better). Tiebreak by hash
-  // for full determinism.
-  const all = Array.from(byHash.values()).sort((a, b) => {
-    const d = a.projectedFantasyScore - b.projectedFantasyScore;
-    if (d !== 0) return d;
-    return a.foursomeHash.localeCompare(b.foursomeHash);
-  });
+  return kept.map(({ four, score, hash }) => {
+    const [t1, t2, d1, d2] = four;
+    const risk = classifyRisk(four);
+    const conf = confidence(four);
 
-  return all.slice(0, k);
+    // Ownership estimated as the AVERAGE of per-golfer ownership
+    // across the foursome — gives a rough "how chalky is this pick".
+    let ownership: number | null = null;
+    if (inputs.ownership && inputs.ownership.size > 0) {
+      const vals = four.map(g => inputs.ownership!.get(g.id) ?? 0);
+      ownership = (vals.reduce((a, b) => a + b, 0) / 4) * 100;
+    }
+
+    return {
+      teamSize: 4 as const,
+      topTier1Id: t1.id,
+      topTier2Id: t2.id,
+      darkHorse1Id: d1.id,
+      darkHorse2Id: d2.id,
+      topTier3Id: null,
+      darkHorse3Id: null,
+      foursomeHash: hash,
+      projectedFantasyScore: score,
+      confidenceScore: conf,
+      riskLevel: risk,
+      estimatedOwnershipPct: ownership,
+      keyStrengths: buildKeyStrengths(four),
+      keyConcerns: buildKeyConcerns(four),
+      foursomeExplanation: buildFoursomeExplanation(four, score, risk),
+    };
+  });
 }
 
 // ── 6-man majors: 3 top-tier + 3 dark-horse, best 4 of 6 ─────
@@ -313,16 +318,19 @@ export function rankTopK(inputs: OptimizerInputs, k: number): FoursomeCandidate[
 export const MAX_SIX_TEAMS = 3_000_000;
 
 /**
- * Drop golfers who can't appear in the top-k teams.
+ * Drop golfers who can't appear in the top-k teams (4- and 6-man).
  *
- * The 6-man objective only depends on each golfer's projected strokes
- * (lower is better) and cut probability (higher is better), and it is
- * monotone in both. If golfer d is at least as good as g on both and
- * strictly better on one, swapping g → d in any team never makes it
- * worse. So a golfer strictly dominated by ≥ slots + k − 1 others can be
- * removed: any team containing it has ≥ k distinct swaps that are at
- * least as good (at most slots − 1 of those dominators are already in
- * the team). Exact up to exact score ties.
+ * A team's projected score (best N strokes + expected missed-cut
+ * penalty) only depends on each golfer's projected strokes (lower is
+ * better) and cut probability (higher is better). Say d dominates g
+ * when d's cut probability is STRICTLY higher and its strokes are no
+ * worse: swapping g → d then makes any team STRICTLY better (the
+ * penalty term strictly drops, the best-N sum can't rise). So a golfer
+ * dominated by ≥ slots + k − 1 others is dropped: any team containing
+ * it has ≥ k distinct swaps that rank strictly ahead of it (at most
+ * slots − 1 of those dominators are already in the team). Because
+ * "strictly ahead" never depends on the hash tiebreak, the top k —
+ * including their order — is exactly what an exhaustive search gives.
  */
 export function pruneDominated(golfers: OptimizerGolfer[], slots: number, k: number): OptimizerGolfer[] {
   const limit = slots + k - 1;
@@ -331,8 +339,7 @@ export function pruneDominated(golfers: OptimizerGolfer[], slots: number, k: num
     let dominators = 0;
     for (const o of golfers) {
       if (o === g) continue;
-      const os = o.subscores.projectedStrokesToPar, op = o.subscores.projectedCutProb;
-      if (os <= gs && op >= gp && (os < gs || op > gp)) {
+      if (o.subscores.projectedCutProb > gp && o.subscores.projectedStrokesToPar <= gs) {
         if (++dominators >= limit) return false;
       }
     }
