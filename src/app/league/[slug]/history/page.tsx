@@ -16,6 +16,7 @@ import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
 import { teamShapeFor, teamSlots, isTopTierSlot } from '@/lib/team-shape';
+import { loadSeasonBets, withSideBets } from '@/lib/db/season-data';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -108,7 +109,10 @@ export default async function HistoryPage({ params }: Props) {
     for (const d of deltas) m.set(d.user_id, d.amount);
     return m;
   });
-  const moneyTotalsRanked = [...moneySummary.totals].sort((a, b) => b.amount - a.amount);
+  // Settled season bets (migration 027) roll into the season totals.
+  const seasonBets = await loadSeasonBets(league);
+  const moneyTotalsRanked = withSideBets(moneySummary.totals, seasonBets)
+    .sort((a, b) => b.amount - a.amount);
 
   // ── Season total-score per player ───────────────────────────
   // Sum total_score across this league's completed tournaments.
@@ -131,7 +135,8 @@ export default async function HistoryPage({ params }: Props) {
 
   return (
     <div className="page-shell">
-      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
+      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name}
+           showSeasons={!!seasonBets} />
 
       <div className="t-hero" style={{ padding: '2.5rem 1.5rem' }}>
         <div className="container">

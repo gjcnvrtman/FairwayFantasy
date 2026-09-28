@@ -60,6 +60,9 @@ export interface OrchestrateResult {
   golfersScored: number;
   foursomesProduced: number;
   missingInputsSummary: Record<string, number>;
+  /** Golfers left out because their input load threw (also counted as
+   *  missingInputsSummary.load_failed). Empty on a clean run. */
+  droppedGolfers: Array<{ golferId: string; error: string }>;
   /** Snapshot of the top-5 written, for the immediate caller's
    *  convenience. The full read path goes through the
    *  /api/predictions/runs/[id] endpoint. */
@@ -74,6 +77,26 @@ export class OrchestratorError extends Error {
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/** Golfers whose inputs load at once (5 queries each) — keeps a run
+ *  to 5 of the pool's 8 connections so page requests aren't starved. */
+export const GOLFER_LOAD_CONCURRENCY = 1;
+
+/** Promise.all with at most `limit` in flight; results in input order. */
+export async function mapBounded<T, R>(
+  items: T[], limit: number, fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
 
 function todayIsoDate(): string {
   // YYYY-MM-DD in UTC. The scorer only cares about ordering for
@@ -159,7 +182,11 @@ export async function runPredictions(
   const asOf = opts.statAsOfDate
     ?? (await queries.loadLatestStatSnapshotDate())
     ?? todayIsoDate();
-  const perGolferLoad = await Promise.all(field.map(async g => {
+  // Bounded: GOLFER_LOAD_CONCURRENCY golfers at a time (5 queries each).
+  // Firing the whole field at once (~720 queries for 144 golfers) took
+  // every connection in the 8-conn pool and queued page requests behind
+  // the run. Results keep field order (determinism).
+  const perGolferLoad = await mapBounded(field, GOLFER_LOAD_CONCURRENCY, async g => {
     try {
       const [stats, dg, recent, history, comparable] = await Promise.all([
         queries.loadStatsSnapshot(g.golferId, asOf),
@@ -184,9 +211,21 @@ export async function runPredictions(
       // from this run's field and continue with the rest.
       return { ok: false as const, golferId: g.golferId, error: err };
     }
-  }));
+  });
 
   const loaded = perGolferLoad.filter(x => x.ok) as Extract<typeof perGolferLoad[number], { ok: true }>[];
+  // Dropped golfers are recorded, not silent: logged here, counted as
+  // `load_failed` in the run's persisted missing_inputs, and listed in
+  // the result. A run can no longer look complete while missing golfers.
+  const droppedGolfers = perGolferLoad
+    .filter(x => !x.ok)
+    .map(x => ({
+      golferId: x.golferId,
+      error: 'error' in x ? (x.error instanceof Error ? x.error.message : String(x.error)) : '',
+    }));
+  for (const d of droppedGolfers) {
+    console.error(`[predictions] tournament ${opts.tournamentId}: dropped golfer ${d.golferId} — input load failed: ${d.error}`);
+  }
   if (loaded.length < 4) {
     throw new OrchestratorError(
       'FIELD_TOO_SMALL',
@@ -230,6 +269,7 @@ export async function runPredictions(
   // 8 — persist the run row first (so per-golfer + foursome inserts
   // have a parent to reference)
   const missingSummary = aggregateMissing(scored.map(s => s.subscores));
+  if (droppedGolfers.length > 0) missingSummary.load_failed = droppedGolfers.length;
   const golfersWithMissing = scored.filter(s => s.subscores.missingInputs.length > 0).length;
   const runId = await queries.insertRun({
     tournamentId:                opts.tournamentId,
@@ -294,6 +334,7 @@ export async function runPredictions(
     golfersScored:          scored.length,
     foursomesProduced:      foursomeRows.length,
     missingInputsSummary:   missingSummary,
+    droppedGolfers,
     topFoursomes:           foursomeRows,
   };
 }

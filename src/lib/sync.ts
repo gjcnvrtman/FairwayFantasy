@@ -12,19 +12,23 @@
 // ============================================================
 
 import { db } from './db';
-import { fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore } from './espn';
+import {
+  fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore,
+  fetchCompetitorStatuses, competitorStatusToken, deriveCutLine,
+  type CompetitorStatus,
+} from './espn';
 import {
   applyFantasyRules, computeLeagueResults,
   buildAutoLineup, computeFoursomeHash,
 } from './scoring';
 import { computeTopTierIds } from './field-tiers';
 import { autoLockSetupLeagues } from './league-setup';
+import { withReplacements } from './db/queries';
 import { teamShapeFor, pickGolferIds } from './team-shape';
-// notifyFieldPublished used to route through dispatchReminder /
-// fieldPublishedMessage in src/lib/notifier.ts, but that pipeline has
-// no real email driver registered (only a consoleDriver fallback), so
-// the old path never sent anything. Refactored 2026-06-16 to use
-// sendEmail directly via the new fieldPublishedEmail template.
+// notifyFieldPublished used to route through the console-only notifier
+// placeholder (removed 2026-09-28), so it never sent anything.
+// Refactored 2026-06-16 to use sendEmail directly via the new
+// fieldPublishedEmail template.
 import { effectivePickDeadline } from './pick-deadline';
 import {
   sendEmail, rosterSetAdminEmail, missedDeadlineEmail,
@@ -279,10 +283,43 @@ async function syncTournament(tournament: {
   //   • The Open / British → top 70 + ties
   //   • PGA Championship  → top 70 + ties
   const r2PlayComplete = currentRound === 2 && status === 'STATUS_PLAY_COMPLETE';
-  const cutHasBeenMade = currentRound >= 3 || r2PlayComplete || espnCut !== null;
 
-  let effectiveCut: number | null = espnCut ?? cut_score;
-  if (cutHasBeenMade && effectiveCut === null) {
+  // Per-golfer status from ESPN's core API (2026-09-28). Authoritative
+  // for missed cut / WD / DQ / finish; the inference below only covers
+  // golfers whose status couldn't be fetched. Treated as authoritative
+  // when we got statuses for most of the field (a broken or partial
+  // response falls back to the old inference for everyone).
+  const statuses = currentRound >= 1
+    ? await fetchCompetitorStatuses(espn_event_id, competitors.map(c => c.id))
+    : new Map<string, CompetitorStatus>();
+  const statusesAuthoritative = statuses.size >= competitors.length * 0.8;
+  const tokenFor = (c: { id: string }) => {
+    const s = statuses.get(c.id);
+    return s ? competitorStatusToken(s) : null;
+  };
+  const anyCutToken = competitors.some(c => tokenFor(c) === 'cut');
+
+  // espnCut (situation.cutLine.value, leaderboard endpoint only) is in
+  // STROKES; cut_score is stored TO PAR everywhere else (the made-cut
+  // cap and the admin display compare it to to-par scores). Only use
+  // espnCut as a "the cut has been made" signal — never store it.
+  const cutHasBeenMade = currentRound >= 3 || r2PlayComplete || espnCut !== null || anyCutToken;
+
+  let effectiveCut: number | null;
+  if (statusesAuthoritative) {
+    // Cut line from real statuses: worst made-cut 36-hole score. null
+    // for no-cut events (nobody STATUS_CUT) → no fake cap, no fake MC.
+    effectiveCut = cutHasBeenMade
+      ? deriveCutLine(competitors.map(c => ({
+          token: tokenFor(c),
+          r1: c.linescores?.[0]?.displayValue && c.linescores[0].displayValue !== '-' ? c.linescores[0].value : null,
+          r2: c.linescores?.[1]?.displayValue && c.linescores[1].displayValue !== '-' ? c.linescores[1].value : null,
+        })))
+      : null;
+  } else {
+    effectiveCut = cut_score;
+  }
+  if (!statusesAuthoritative && cutHasBeenMade && effectiveCut === null) {
     const totals: number[] = [];
     for (const c of competitors) {
       const ls = c.linescores ?? [];
@@ -307,7 +344,10 @@ async function syncTournament(tournament: {
   const newStatus = decideTournamentStatus(status, cutHasBeenMade);
 
   await db.updateTable('tournaments')
-    .set({ status: newStatus, cut_score: effectiveCut ?? cut_score })
+    // With real statuses the cut line is recomputed each sync (and is
+    // legitimately null at no-cut events); the fallback keeps the old
+    // "don't clobber a known cut" behavior.
+    .set({ status: newStatus, cut_score: statusesAuthoritative ? effectiveCut : (effectiveCut ?? cut_score) })
     .where('id', '=', id)
     .execute();
 
@@ -352,7 +392,9 @@ async function syncTournament(tournament: {
     }
     if (!golfer) continue;
 
-    let espnStatus  = c.status?.type?.name ?? 'active';
+    const espnGolferStatus = statuses.get(c.id) ?? null;
+    const token     = espnGolferStatus ? competitorStatusToken(espnGolferStatus) : null;
+    let espnStatus  = token ?? c.status?.type?.name ?? 'active';
     const scoreStr  = c.score?.displayValue ?? 'E';
     const rounds    = c.linescores?.map(ls => ls.value) ?? [];
 
@@ -373,7 +415,9 @@ async function syncTournament(tournament: {
     // don't override an explicit WD / DQ / MC from the leaderboard
     // endpoint when reachable. Also requires the cut to have been
     // made (avoids classifying mid-R2 WDs as missed_cut).
-    if (cutMade && espnStatus === 'active') {
+    // 2026-09-28: skipped entirely when ESPN's per-golfer status is
+    // known — this guessing is what mis-cut no-cut events.
+    if (token === null && !statusesAuthoritative && cutMade && espnStatus === 'active') {
       const r1 = rounds[0], r2 = rounds[1];
       if (r1 != null && r2 != null) {
         if (effectiveCut !== null) {
@@ -394,7 +438,7 @@ async function syncTournament(tournament: {
     // sync doesn't blow away a real thru value from the prior
     // leaderboard sync.
     const holesPlayedFromEspn =
-      typeof c.status?.thru === 'number' ? c.status.thru : null;
+      espnGolferStatus?.thru ?? (typeof c.status?.thru === 'number' ? c.status.thru : null);
 
     // Per-hole strokes per round. ESPN may give us a partial array
     // for the in-progress round (e.g. 9 entries when thru=9), and
@@ -411,7 +455,8 @@ async function syncTournament(tournament: {
       round_1: rounds[0] ?? null, round_2: rounds[1] ?? null,
       round_3: rounds[2] ?? null, round_4: rounds[3] ?? null,
       score_to_par:   parseESPNScore(scoreStr),
-      position:       String(c.sortOrder ?? ''),
+      // ESPN's real position ("T58") when known; else scoreboard order.
+      position:       espnGolferStatus?.position ?? String(c.sortOrder ?? ''),
       status:         mappedStatus,
       fantasy_score:  fantasyScore,
       holes_played:   holesPlayedFromEspn,
@@ -637,8 +682,10 @@ async function recomputeResults(tournamentId: string) {
   const scoreMap = new Map<string, Score>();
   for (const s of allScores) scoreMap.set(s.golfer_id, s as Score);
 
+  // Each player's own WD swaps (migration 028).
+  const picksWithSwaps = await withReplacements(allPicks as Pick[]);
   const byLeague = new Map<string, Pick[]>();
-  for (const p of allPicks as Pick[]) {
+  for (const p of picksWithSwaps) {
     if (!byLeague.has(p.league_id)) byLeague.set(p.league_id, []);
     byLeague.get(p.league_id)!.push(p);
   }
@@ -923,11 +970,7 @@ async function checkAndPublishField(tournament: {
     .execute();
 
   // "Field is set" notifications — fire once, on the NULL → set
-  // transition. Routes through the same notifier pipeline as
-  // pick-deadline reminders (src/lib/notifier.ts), so it inherits
-  // the REMINDERS_LIVE gate: console logs in dev/staging, real
-  // delivery only once a ChannelDriver is registered AND
-  // REMINDERS_LIVE=true (today only the console driver is wired).
+  // transition. Sent directly via sendEmail (see notifyFieldPublished).
   //
   // We don't write to reminder_log here — the existing dedup index
   // is (user_id, tournament_id, channel), and reusing it would block
@@ -1716,7 +1759,7 @@ async function sendDailyScorecardForLeague(args: {
       .execute(),
     db.selectFrom('picks')
       .select([
-        'user_id', 'penalty_strokes',
+        'id', 'user_id', 'penalty_strokes',
         'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
         'golfer_5_id', 'golfer_6_id',
       ])
@@ -1773,7 +1816,8 @@ async function sendDailyScorecardForLeague(args: {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
   const dateLabel = formatTournamentRoundDate(tournament, roundNum);
   const scoreByGolferId = new Map(scoreRows.map(s => [s.golfer_id, s]));
-  const pickByUser = new Map(picks.map(p => [p.user_id, p]));
+  // Each player's own WD swaps (migration 028) resolve per slot below.
+  const pickByUser = new Map((await withReplacements(picks)).map(p => [p.user_id, p]));
 
   let emailsSent = 0;
 
@@ -1788,7 +1832,8 @@ async function sendDailyScorecardForLeague(args: {
     const fr   = frByUser.get(m.user_id);
 
     // Build the foursome for this user's email body + PDF.
-    const slotGolferIds: Array<string | null> = pickGolferIds(pick, shape);
+    const slotGolferIds: Array<string | null> = pickGolferIds(pick, shape)
+      .map((id, i) => pick.replacements[i + 1] ?? id);
     const countingSlots = new Set<number>(
       (fr?.counting_golfers ?? []) as number[],
     );
@@ -2003,7 +2048,7 @@ async function sendTournamentRecapForLeague(args: {
       .where('league_members.league_id', '=', league.id)
       .execute(),
     db.selectFrom('picks')
-      .select(['user_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
+      .select(['id', 'user_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
                'golfer_5_id', 'golfer_6_id'])
       .where('league_id', '=', league.id)
       .where('tournament_id', '=', tournament.id)
@@ -2076,7 +2121,8 @@ async function sendTournamentRecapForLeague(args: {
   // ── Per-recipient render loop ──
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
   const scoreByGolferId = new Map(scoreRows.map(s => [s.golfer_id, s]));
-  const pickByUser = new Map(picks.map(p => [p.user_id, p]));
+  // Each player's own WD swaps (migration 028).
+  const pickByUser = new Map((await withReplacements(picks)).map(p => [p.user_id, p]));
 
   let emailsSent = 0;
 
@@ -2092,7 +2138,8 @@ async function sendTournamentRecapForLeague(args: {
     if (pick) {
       // Slots 5/6 are only set on 6-man majors (migration 026).
       const golferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id,
-                         pick.golfer_4_id, pick.golfer_5_id, pick.golfer_6_id];
+                         pick.golfer_4_id, pick.golfer_5_id, pick.golfer_6_id]
+        .map((id, i) => pick.replacements[i + 1] ?? id);
       for (const gid of golferIds) {
         if (!gid) continue;
         const s = scoreByGolferId.get(gid);

@@ -326,6 +326,17 @@ describe('validateCreateLeague — setup rules', () => {
     expect(validateCreateLeague({ ...valid, payoutPct1: 50.5, payoutPct2: 29.5, payoutPct3: 20 }).payout).toBeDefined();
   });
 
+  it('seasons 1..4 and season-bet amounts (migration 027)', () => {
+    expect(validateCreateLeague({ ...valid, seasonCount: 4, betTeamCumulative: 50,
+      betTopTierCumulative: null, betDarkHorseCumulative: 25.5, betAceBounty: 5 })).toEqual({});
+    expect(validateCreateLeague({ ...valid, seasonCount: 5 }).seasonCount).toBeDefined();
+    expect(validateCreateLeague({ ...valid, seasonCount: 0 }).seasonCount).toBeDefined();
+    expect(validateCreateLeague({ ...valid, betTeamCumulative: -1 }).seasonBets).toBeDefined();
+    expect(validateCreateLeague({ ...valid, betAceBounty: 1001 }).seasonBets).toBeDefined();
+    expect(validateCreateLeague({ ...valid, betTopTierCumulative: NaN }).seasonBets).toBeDefined();
+    expect(validateCreateLeague({ ...valid, betDarkHorseCumulative: 1.005 }).seasonBets).toBeDefined();
+  });
+
   it('penalties must be whole strokes within 0..10', () => {
     expect(validateCreateLeague({ ...valid, missedCutPenalty: 0 })).toEqual({});
     expect(validateCreateLeague({ ...valid, missedCutPenalty: 1.5 }).missedCutPenalty).toBeDefined();

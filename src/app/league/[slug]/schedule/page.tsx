@@ -9,6 +9,7 @@ import {
 } from '@/lib/db/queries';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
+import { hasSeasonBets, seasonBetConfigFromLeague } from '@/lib/season-bets';
 import type { Metadata } from 'next';
 
 interface Props { params: { slug: string } }
@@ -57,7 +58,8 @@ export default async function SchedulePage({ params }: Props) {
 
   return (
     <div className="page-shell">
-      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
+      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name}
+           showSeasons={hasSeasonBets(seasonBetConfigFromLeague(league))} />
 
       <div className="t-hero" style={{ padding: '2.5rem 1.5rem' }}>
         <div className="container">

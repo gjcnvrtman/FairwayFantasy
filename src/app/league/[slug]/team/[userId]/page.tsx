@@ -12,7 +12,7 @@ import { redirect, notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { getLeagueBySlug, getActiveTournamentInRange, isoOrNull } from '@/lib/db/queries';
+import { getLeagueBySlug, getActiveTournamentInRange, isoOrNull, loadReplacements } from '@/lib/db/queries';
 import { deriveLockStatus, shouldRevealOtherPicks } from '@/lib/league-dashboard';
 import { formatScore } from '@/lib/scoring';
 import {
@@ -21,6 +21,7 @@ import {
 } from '@/lib/team-scorecard';
 import { teamShapeFor, teamSlots, pickGolferIds } from '@/lib/team-shape';
 import Nav from '@/components/layout/Nav';
+import { hasSeasonBets, seasonBetConfigFromLeague } from '@/lib/season-bets';
 import AutoRefresh from '@/components/league/AutoRefresh';
 
 export const dynamic = 'force-dynamic';
@@ -75,7 +76,8 @@ export default async function TeamScorecardPage({ params, searchParams }: Props)
 
   const shell = (body: React.ReactNode, sub?: string) => (
     <div className="page-shell">
-      <Nav leagueSlug={params.slug} leagueName={league.name} userName={viewerProfile?.display_name} />
+      <Nav leagueSlug={params.slug} leagueName={league.name} userName={viewerProfile?.display_name}
+           showSeasons={hasSeasonBets(seasonBetConfigFromLeague(league))} />
       <div className="t-hero" style={{ padding: '2.25rem 1.5rem' }}>
         <div className="container">
           <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78rem', fontWeight: 700,
@@ -137,23 +139,18 @@ export default async function TeamScorecardPage({ params, searchParams }: Props)
   const SLOTS = teamSlots(shape);
   const slotGolferIds = pickGolferIds(pick, shape);
   const baseIds = slotGolferIds.filter((id): id is string => !!id);
+  // This player's own WD swaps (migration 028).
+  const swaps = (await loadReplacements([pick.id])).get(pick.id) ?? {};
+  const lookupIds = [...new Set([...baseIds, ...Object.values(swaps).filter((id): id is string => !!id)])];
 
-  const scoreRows = baseIds.length === 0 ? [] : await db.selectFrom('scores')
+  const scoreRows = lookupIds.length === 0 ? [] : await db.selectFrom('scores')
     .selectAll()
     .where('tournament_id', '=', tournament.id)
-    .where(eb => eb.or([
-      eb('golfer_id', 'in', baseIds),
-      eb('golfer_id', 'in', eb.selectFrom('scores as s2')
-        .select('s2.replaced_by_golfer_id')
-        .where('s2.tournament_id', '=', tournament.id)
-        .where('s2.golfer_id', 'in', baseIds)
-        .where('s2.replaced_by_golfer_id', 'is not', null)
-        .$castTo<string>()),
-    ]))
+    .where('golfer_id', 'in', lookupIds)
     .execute();
   const scoreByGolfer = new Map(scoreRows.map(s => [s.golfer_id, s]));
 
-  const nameIds = [...new Set([...baseIds, ...scoreRows.map(s => s.golfer_id)])];
+  const nameIds = lookupIds;
   const nameRows = nameIds.length === 0 ? [] : await db.selectFrom('golfers')
     .select(['id', 'name'])
     .where('id', 'in', nameIds)
@@ -172,16 +169,14 @@ export default async function TeamScorecardPage({ params, searchParams }: Props)
   SLOTS.forEach((slot, i) => {
     const baseId = slotGolferIds[i];
     if (!baseId) return;
-    const base = scoreByGolfer.get(baseId);
-    // Replacement after a WD: the replacement's card counts.
-    const replaced = base?.was_replaced && base.replaced_by_golfer_id
-      ? scoreByGolfer.get(base.replaced_by_golfer_id) ?? null
-      : null;
-    const eff = replaced ?? base;
+    // Replacement after a WD: this player's replacement's card counts.
+    const swapId = swaps[slot] ?? null;
+    const effId = swapId ?? baseId;
+    const eff = scoreByGolfer.get(effId);
     golfers.push({
       slot,
-      name:             nameById.get(eff?.golfer_id ?? baseId) ?? 'Unknown golfer',
-      replacedFromName: replaced ? nameById.get(baseId) ?? null : null,
+      name:             nameById.get(effId) ?? 'Unknown golfer',
+      replacedFromName: swapId ? nameById.get(baseId) ?? null : null,
       status:           eff?.status ?? 'active',
       holesByRound:     [eff?.round_1_holes ?? null, eff?.round_2_holes ?? null,
                          eff?.round_3_holes ?? null, eff?.round_4_holes ?? null],

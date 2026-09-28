@@ -1,33 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
-  findUsersDueForReminder,
-  enabledChannels,
+  planEmailReminders,
+  holdForQuietHours,
   isInsideReminderWindow,
   destinationFor,
-  buildPicksByUserLeague,
-  buildAlreadySentSet,
   type ReminderPreferences,
   type MemberRow,
-  type PickRow,
-  type TournamentRow,
+  type ReminderLeague,
 } from '@/lib/reminders';
+import { pickReminderEmail } from '@/lib/email';
 
 // ─────────────────────────────────────────────────────────────
 // Test fixtures
 // ─────────────────────────────────────────────────────────────
 
 const NOW = new Date('2026-04-09T12:00:00Z');                  // Wed noon UTC
-const DEADLINE = new Date('2026-04-10T11:00:00Z').toISOString(); // Thu 11am
-//   = 23h after NOW
-
-function tournamentUpcoming(extra: Partial<TournamentRow> = {}): TournamentRow {
-  return {
-    id:            'tour1',
-    status:        'upcoming',
-    pick_deadline: DEADLINE,
-    ...extra,
-  };
-}
+const DEADLINE = new Date('2026-04-10T11:00:00Z');             // Thu 11am = 23h after NOW
 
 function defaultPrefs(extra: Partial<ReminderPreferences> = {}): ReminderPreferences {
   return {
@@ -47,27 +35,7 @@ function member(user_id: string, league_id = 'lg1'): MemberRow {
   return { user_id, league_id };
 }
 
-// ─────────────────────────────────────────────────────────────
-// enabledChannels
-// ─────────────────────────────────────────────────────────────
-
-describe('enabledChannels', () => {
-  it('returns [] when no channels enabled', () => {
-    expect(enabledChannels(defaultPrefs({
-      email_enabled: false, sms_enabled: false, push_enabled: false,
-    }))).toEqual([]);
-  });
-
-  it('returns just email when only email is on', () => {
-    expect(enabledChannels(defaultPrefs({ email_enabled: true }))).toEqual(['email']);
-  });
-
-  it('preserves the canonical order email/sms/push', () => {
-    expect(enabledChannels(defaultPrefs({
-      email_enabled: true, sms_enabled: true, push_enabled: true,
-    }))).toEqual(['email', 'sms', 'push']);
-  });
-});
+const LG = (id: string): ReminderLeague => ({ id, name: `League ${id}`, slug: id });
 
 // ─────────────────────────────────────────────────────────────
 // isInsideReminderWindow
@@ -180,269 +148,175 @@ describe('destinationFor', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// findUsersDueForReminder — the core eligibility decider
+// planEmailReminders — who gets a reminder email right now
 // ─────────────────────────────────────────────────────────────
 
-describe('findUsersDueForReminder — basic happy path', () => {
-  it('returns one task for an opted-in user with no pick yet', () => {
-    const tournament = tournamentUpcoming();
-    const tasks = findUsersDueForReminder({
-      tournament,
-      members: [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs()]]),
-      profileEmailByUser: new Map([['u1', 'u1@example.com']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].user_id).toBe('u1');
-    expect(tasks[0].channel).toBe('email');
-    expect(tasks[0].destination).toBe('u1@example.com');
+type PlanArgs = Parameters<typeof planEmailReminders>[0];
+function plan(over: Partial<PlanArgs> = {}) {
+  return planEmailReminders({
+    tournament:     { id: 'tour1', status: 'upcoming', fieldPublished: true, deadline: DEADLINE },
+    leagues:        [LG('lg1')],
+    members:        [member('u1')],
+    pickedKeys:     new Set(),
+    prefsByUser:    new Map([['u1', defaultPrefs()]]),
+    profileByUser:  new Map([['u1', { email: 'u1@x', display_name: 'Una' }]]),
+    alreadyHandled: new Set(),
+    now:            NOW,
+    ...over,
+  });
+}
+
+describe('planEmailReminders — happy path', () => {
+  it('opted-in user with no pick, inside their window → one task', () => {
+    const tasks = plan();
+    expect(tasks).toEqual([{
+      user_id: 'u1', destination: 'u1@x', displayName: 'Una', leagues: [LG('lg1')],
+    }]);
   });
 
-  it('returns one task per enabled channel', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs({
-        email_enabled: true, sms_enabled: true, push_enabled: true,
-        phone_e164: '+15551234567', push_token: 'tok123',
-      })]]),
-      profileEmailByUser: new Map([['u1', 'u1@example.com']]),
-      alreadySent:        new Set(),
-      now:                NOW,
+  it('ONE email for a player missing picks in two leagues, listing both', () => {
+    const tasks = plan({
+      leagues: [LG('b'), LG('a')],
+      members: [member('u1', 'a'), member('u1', 'b')],
     });
-    expect(tasks).toHaveLength(3);
-    expect(tasks.map(t => t.channel)).toEqual(['email', 'sms', 'push']);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].leagues.map(l => l.id)).toEqual(['a', 'b']);
+  });
+
+  it('two leagues, picked in one → reminder lists only the other', () => {
+    const tasks = plan({
+      leagues: [LG('a'), LG('b')],
+      members: [member('u1', 'a'), member('u1', 'b')],
+      pickedKeys: new Set(['u1:a']),
+    });
+    expect(tasks[0].leagues.map(l => l.id)).toEqual(['b']);
   });
 });
 
-describe('findUsersDueForReminder — exclusions', () => {
-  it('excludes users with no prefs row at all', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map(),                   // u1 not in map
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
+describe('planEmailReminders — exclusions', () => {
+  it('already picked → nothing', () => {
+    expect(plan({ pickedKeys: new Set(['u1:lg1']) })).toEqual([]);
   });
 
-  it('excludes users with prefs row but no channels enabled', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs({
-        email_enabled: false, sms_enabled: false, push_enabled: false,
-      })]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
+  it('league without this tournament on its schedule → ignored', () => {
+    expect(plan({ members: [member('u1', 'other-league')] })).toEqual([]);
   });
 
-  it('excludes users who already submitted a pick for this league/tournament', () => {
-    const pick: PickRow = { user_id: 'u1', league_id: 'lg1', tournament_id: 'tour1' };
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1', 'lg1')],
-      picksByUserLeague:  buildPicksByUserLeague([pick]),
-      prefsByUser:        new Map([['u1', defaultPrefs()]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
+  it('field not published yet → nothing (players can\'t pick)', () => {
+    expect(plan({ tournament: { id: 'tour1', status: 'upcoming', fieldPublished: false, deadline: DEADLINE } })).toEqual([]);
   });
 
-  it('still reminds the user in League B if they only picked in League A', () => {
-    // Same person plays in two leagues. Picked in lgA, not lgB.
-    const pickA: PickRow = { user_id: 'u1', league_id: 'lgA', tournament_id: 'tour1' };
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1', 'lgA'), member('u1', 'lgB')],
-      picksByUserLeague:  buildPicksByUserLeague([pickA]),
-      prefsByUser:        new Map([['u1', defaultPrefs()]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
+  it.each(['active', 'cut_made', 'complete'])('tournament %s → nothing', status => {
+    expect(plan({ tournament: { id: 'tour1', status, fieldPublished: true, deadline: DEADLINE } })).toEqual([]);
+  });
+
+  it('no deadline → nothing', () => {
+    expect(plan({ tournament: { id: 'tour1', status: 'upcoming', fieldPublished: true, deadline: null } })).toEqual([]);
+  });
+
+  it('no prefs row → nothing (account page shows reminders off)', () => {
+    expect(plan({ prefsByUser: new Map() })).toEqual([]);
+  });
+
+  it('email reminders turned off → nothing, even with sms/push flags set', () => {
+    expect(plan({ prefsByUser: new Map([['u1', defaultPrefs({
+      email_enabled: false, sms_enabled: true, push_enabled: true, phone_e164: '+15551234567', push_token: 't',
+    })]]) })).toEqual([]);
+  });
+
+  it('outside the player\'s window → nothing; per-player hours_before respected', () => {
+    // NOW is 23h before the deadline.
+    expect(plan({ prefsByUser: new Map([['u1', defaultPrefs({ hours_before: 2 })]]) })).toEqual([]);
+    expect(plan({ prefsByUser: new Map([['u1', defaultPrefs({ hours_before: 48 })]]) })).toHaveLength(1);
+  });
+
+  it('after the deadline → nothing', () => {
+    expect(plan({ now: new Date(DEADLINE.getTime() + 1000) })).toEqual([]);
+  });
+
+  it('already reminded for this tournament → nothing (never twice)', () => {
+    expect(plan({ alreadyHandled: new Set(['u1']) })).toEqual([]);
+  });
+
+  it('no email on file → task with null destination (job logs it as skipped)', () => {
+    const tasks = plan({ profileByUser: new Map([['u1', { email: null, display_name: null }]]) });
     expect(tasks).toHaveLength(1);
-    expect(tasks[0].league_id).toBe('lgB');
-  });
-
-  it('skips entirely when tournament status is not upcoming', () => {
-    for (const status of ['active', 'cut_made', 'complete']) {
-      const tasks = findUsersDueForReminder({
-        tournament: tournamentUpcoming({ status }),
-        members:    [member('u1')],
-        picksByUserLeague:  new Map(),
-        prefsByUser:        new Map([['u1', defaultPrefs()]]),
-        profileEmailByUser: new Map([['u1', 'u1@x']]),
-        alreadySent:        new Set(),
-        now:                NOW,
-      });
-      expect(tasks).toEqual([]);
-    }
-  });
-
-  it('skips when tournament has no pick_deadline', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming({ pick_deadline: null }),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs()]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
-  });
-
-  it('skips when now is outside the user\'s reminder window', () => {
-    // hours_before=2: window starts at deadline-2h. NOW is 23h before.
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs({ hours_before: 2 })]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
-  });
-});
-
-describe('findUsersDueForReminder — idempotency', () => {
-  it('skips a (user, tournament, channel) that is already in alreadySent', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs()]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(['u1:tour1:email']),  // already sent
-      now:                NOW,
-    });
-    expect(tasks).toEqual([]);
-  });
-
-  it('still sends on a NEW channel when only one channel was already sent', () => {
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs({
-        email_enabled: true, sms_enabled: true, phone_e164: '+15551234567',
-      })]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(['u1:tour1:email']),  // email sent, sms hasn't
-      now:                NOW,
-    });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].channel).toBe('sms');
-  });
-
-  it('buildAlreadySentSet builds the right key shape', () => {
-    const set = buildAlreadySentSet([
-      { user_id: 'u1', tournament_id: 'tour1', channel: 'email' },
-      { user_id: 'u1', tournament_id: 'tour1', channel: 'sms' },
-      { user_id: 'u2', tournament_id: 'tour1', channel: 'email' },
-    ]);
-    expect(set.has('u1:tour1:email')).toBe(true);
-    expect(set.has('u1:tour1:sms')).toBe(true);
-    expect(set.has('u2:tour1:email')).toBe(true);
-    expect(set.has('u2:tour1:sms')).toBe(false);
-  });
-});
-
-describe('findUsersDueForReminder — destination handling', () => {
-  it('still emits a task for SMS even when phone is null (so the log captures the skip)', () => {
-    // Design choice: we emit the task with destination=null and let
-    // the notifier mark it as `skipped`. That gives operators a clear
-    // audit trail of "tried to remind, but they hadn't set a phone."
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([['u1', defaultPrefs({
-        email_enabled: false, sms_enabled: true, phone_e164: null,
-      })]]),
-      profileEmailByUser: new Map([['u1', 'u1@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
-    });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].channel).toBe('sms');
     expect(tasks[0].destination).toBeNull();
   });
 });
 
-describe('findUsersDueForReminder — multi-user', () => {
-  it('handles a busy roster: some pickers, some not, mix of channels', () => {
-    const members = [
-      member('alice', 'lg1'),
-      member('bob',   'lg1'),
-      member('carol', 'lg1'),
-      member('dave',  'lg1'),
-    ];
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members,
-      // Bob already picked.
-      picksByUserLeague: buildPicksByUserLeague([
-        { user_id: 'bob', league_id: 'lg1', tournament_id: 'tour1' },
-      ]),
+describe('quiet hours (10 PM – 7 AM Central)', () => {
+  // Typical real deadline: Thu 1:00 AM CDT = 06:00Z.
+  const dl = new Date('2026-10-01T06:00:00Z');
+  const at = (iso: string) => new Date(iso);
+
+  it('holds overnight when 7 AM is still before the deadline', () => {
+    expect(holdForQuietHours(at('2026-09-30T06:00:00Z'), dl)).toBe(true);   // Wed 1:00 AM CDT
+    expect(holdForQuietHours(at('2026-09-30T03:30:00Z'), dl)).toBe(true);   // Tue 10:30 PM CDT
+  });
+  it('sends from 7 AM on', () => {
+    expect(holdForQuietHours(at('2026-09-30T12:00:00Z'), dl)).toBe(false);  // Wed 7:00 AM CDT
+    expect(holdForQuietHours(at('2026-09-30T20:00:00Z'), dl)).toBe(false);  // Wed 3:00 PM CDT
+  });
+  it('sends at night anyway when the deadline comes before 7 AM', () => {
+    expect(holdForQuietHours(at('2026-10-01T03:30:00Z'), dl)).toBe(false);  // Wed 10:30 PM, deadline 1 AM
+  });
+  it('planner: 24h player on a 1 AM deadline → nothing at 1 AM, reminded at 7 AM', () => {
+    const t = { id: 'tour1', status: 'upcoming', fieldPublished: true, deadline: dl };
+    expect(plan({ tournament: t, now: at('2026-09-30T06:05:00Z') })).toEqual([]);
+    expect(plan({ tournament: t, now: at('2026-09-30T12:00:00Z') })).toHaveLength(1);
+  });
+});
+
+describe('planEmailReminders — busy roster', () => {
+  it('only the opted-in, unpicked, in-window players are reminded', () => {
+    const tasks = plan({
+      members: ['alice', 'bob', 'carol', 'dave'].map(u => member(u)),
+      pickedKeys: new Set(['bob:lg1']),
       prefsByUser: new Map([
-        // Alice: email on
-        ['alice', defaultPrefs({ email_enabled: true })],
-        // Bob:   email on (but already picked, should be skipped)
-        ['bob',   defaultPrefs({ email_enabled: true })],
-        // Carol: NO prefs row → should be skipped
-        // Dave:  prefs row but all channels off
-        ['dave',  defaultPrefs({ email_enabled: false })],
+        ['alice', defaultPrefs({ user_id: 'alice' })],
+        ['bob',   defaultPrefs({ user_id: 'bob' })],                       // picked
+        // carol: no prefs row
+        ['dave',  defaultPrefs({ user_id: 'dave', email_enabled: false })], // off
       ]),
-      profileEmailByUser: new Map([
-        ['alice', 'alice@x'], ['bob', 'bob@x'],
-        ['carol', 'carol@x'], ['dave', 'dave@x'],
-      ]),
-      alreadySent: new Set(),
-      now:         NOW,
+      profileByUser: new Map(['alice', 'bob', 'carol', 'dave'].map(u => [u, { email: `${u}@x`, display_name: u }])),
     });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].user_id).toBe('alice');
+    expect(tasks.map(t => t.user_id)).toEqual(['alice']);
   });
 });
 
 // ─────────────────────────────────────────────────────────────
-// Privacy / safety regression — never send when nothing opted in
+// pickReminderEmail — template
 // ─────────────────────────────────────────────────────────────
 
-describe('findUsersDueForReminder — privacy invariant', () => {
-  it('returns no tasks when EVERY user has all channels off (full roster)', () => {
-    const allOff = (id: string): [string, ReminderPreferences] => [
-      id, defaultPrefs({
-        user_id: id,
-        email_enabled: false, sms_enabled: false, push_enabled: false,
-      }),
-    ];
-    const tasks = findUsersDueForReminder({
-      tournament: tournamentUpcoming(),
-      members:    [member('u1'), member('u2'), member('u3')],
-      picksByUserLeague:  new Map(),
-      prefsByUser:        new Map([allOff('u1'), allOff('u2'), allOff('u3')]),
-      profileEmailByUser: new Map([['u1', 'u1@x'], ['u2', 'u2@x'], ['u3', 'u3@x']]),
-      alreadySent:        new Set(),
-      now:                NOW,
+describe('pickReminderEmail', () => {
+  const deadline = new Date('2026-10-01T12:00:00Z');   // 7:00 AM CDT
+  it('one league: league in subject, picks link, deadline in Central time', () => {
+    const e = pickReminderEmail({
+      recipientName: 'Greg', tournamentName: 'Sanderson Farms', pickDeadline: deadline,
+      leagues: [{ name: 'Gunga Galunga', slug: 'gunga-galunga-gang' }], siteUrl: 'https://x.test',
     });
-    expect(tasks).toEqual([]);
+    expect(e.subject).toBe('[Gunga Galunga] Reminder: make your picks for Sanderson Farms');
+    expect(e.text).toContain('https://x.test/league/gunga-galunga-gang/picks');
+    expect(e.text).toMatch(/7:00\s?AM CDT/);
+    expect(e.html).toContain('href="https://x.test/league/gunga-galunga-gang/picks"');
+  });
+  it('several leagues: one link per league, count in subject', () => {
+    const e = pickReminderEmail({
+      recipientName: 'Greg', tournamentName: 'Sanderson Farms', pickDeadline: deadline,
+      leagues: [{ name: 'A', slug: 'a' }, { name: 'B', slug: 'b' }], siteUrl: 'https://x.test',
+    });
+    expect(e.subject).toContain('(2 leagues)');
+    expect(e.text).toContain('A: https://x.test/league/a/picks');
+    expect(e.text).toContain('B: https://x.test/league/b/picks');
+  });
+  it('escapes HTML in names', () => {
+    const e = pickReminderEmail({
+      recipientName: '<b>x</b>', tournamentName: 'T', pickDeadline: deadline,
+      leagues: [{ name: 'A&B', slug: 'ab' }], siteUrl: 'https://x.test',
+    });
+    expect(e.html).not.toContain('<b>x</b>');
+    expect(e.html).toContain('A&amp;B');
   });
 });
+

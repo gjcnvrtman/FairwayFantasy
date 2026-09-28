@@ -161,6 +161,9 @@ export async function POST(req: NextRequest) {
       )
       .returningAll()
       .executeTakeFirstOrThrow();
+    // A re-submitted team replaces any earlier WD swaps outright —
+    // their slots may no longer line up with the new golfers.
+    await db.deleteFrom('pick_replacements').where('pick_id', '=', pick.id).execute();
     return NextResponse.json({ pick, success: true });
   } catch (err) {
     // The partial unique index `picks_unique_complete_foursome`
@@ -202,8 +205,48 @@ export async function PUT(req: NextRequest) {
   // Slots 5/6 are only set on 6-man majors (migration 026).
   const pickGolferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id,
                          pick.golfer_4_id, pick.golfer_5_id, pick.golfer_6_id];
-  if (!pickGolferIds.includes(withdrawnGolferId))
+  const slotIdx = pickGolferIds.indexOf(withdrawnGolferId);
+  if (!withdrawnGolferId || slotIdx < 0)
     return NextResponse.json({ error: 'That golfer is not in your pick.' }, { status: 400 });
+  const slot = slotIdx + 1;
+
+  // Only a golfer who actually withdrew / was DQ'd can be swapped out.
+  const wdScore = await db.selectFrom('scores')
+    .select('status')
+    .where('golfer_id',     '=', withdrawnGolferId)
+    .where('tournament_id', '=', pick.tournament_id)
+    .executeTakeFirst();
+  if (!wdScore || (wdScore.status !== 'withdrawn' && wdScore.status !== 'disqualified'))
+    return NextResponse.json({ error: 'That golfer has not withdrawn.' }, { status: 400 });
+
+  // The replacement can't already be on this team (as a pick or as
+  // another slot's replacement).
+  const existingSwaps = await db.selectFrom('pick_replacements')
+    .select(['slot', 'replacement_golfer_id'])
+    .where('pick_id', '=', pick.id)
+    .execute();
+  const onTeam = new Set<string>([
+    ...pickGolferIds.filter((id): id is string => !!id),
+    ...existingSwaps.filter(r => r.slot !== slot).map(r => r.replacement_golfer_id),
+  ]);
+  if (onTeam.has(replacementGolferId))
+    return NextResponse.json({ error: 'That golfer is already on your team.' }, { status: 400 });
+
+  // A slot's replacement can be changed only until the current
+  // replacement tees off — after that the swap is final.
+  const currentSwap = existingSwaps.find(r => r.slot === slot);
+  if (currentSwap) {
+    const cur = await db.selectFrom('scores')
+      .select('round_1')
+      .where('golfer_id',     '=', currentSwap.replacement_golfer_id)
+      .where('tournament_id', '=', pick.tournament_id)
+      .executeTakeFirst();
+    if (cur?.round_1 != null)
+      return NextResponse.json(
+        { error: 'Your replacement has already teed off — the swap is final.' },
+        { status: 400 },
+      );
+  }
 
   // Replacement must not have teed off AND must still be active.
   // isReplacementEligible (src/lib/scoring.ts) is the single source of
@@ -240,11 +283,21 @@ export async function PUT(req: NextRequest) {
     );
   }
 
-  await db.updateTable('scores')
-    .set({ was_replaced: true, replaced_by_golfer_id: replacementGolferId })
-    .where('golfer_id',     '=', withdrawnGolferId)
-    .where('tournament_id', '=', pick.tournament_id)
+  // Recorded on THIS pick only (migration 028). The old
+  // scores.was_replaced flag was tournament-wide, so one player's swap
+  // silently applied to everyone who had the same golfer.
+  await db.insertInto('pick_replacements')
+    .values({
+      pick_id:               pick.id,
+      slot,
+      original_golfer_id:    withdrawnGolferId,
+      replacement_golfer_id: replacementGolferId,
+    })
+    .onConflict(oc => oc.columns(['pick_id', 'slot']).doUpdateSet({
+      replacement_golfer_id: replacementGolferId,
+      created_at:            new Date().toISOString(),
+    }))
     .execute();
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, slot });
 }

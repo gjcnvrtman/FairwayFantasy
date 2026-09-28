@@ -833,15 +833,13 @@ describe('computeLeagueResults — tied users', () => {
   });
 });
 
-describe('computeLeagueResults — replacement handling', () => {
-  it('uses the replacement\'s fantasy_score when was_replaced=true', () => {
-    const picks = [makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' })];
+describe('computeLeagueResults — replacement handling (per pick, migration 028)', () => {
+  const withSwap = (p: Pick, slot: number, rep: string): Pick => ({ ...p, replacements: { [slot]: rep } });
+
+  it('uses the replacement\'s fantasy_score for the swapped slot', () => {
+    const picks = [withSwap(makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' }), 1, 'rep')];
     const scoreMap = buildScoreMap([
-      // 'orig' withdrew; was_replaced flag points to 'rep'
-      makeScore({
-        golfer_id: 'orig', fantasy_score: null, status: 'withdrawn',
-        was_replaced: true, replaced_by_golfer_id: 'rep',
-      }),
+      makeScore({ golfer_id: 'orig', fantasy_score: null, status: 'withdrawn' }),
       makeScore({ golfer_id: 'rep', fantasy_score: -4 }),  // replacement's score
       makeScore({ golfer_id: 'b',   fantasy_score: -1 }),
       makeScore({ golfer_id: 'c',   fantasy_score: 0 }),
@@ -855,12 +853,9 @@ describe('computeLeagueResults — replacement handling', () => {
   it('a replacement who themselves miss the cut counts as missed-cut', () => {
     // Replacement's status flows through to top-3 eligibility — the
     // slot is excluded from the pool and contributes the flat penalty.
-    const picks = [makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' })];
+    const picks = [withSwap(makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' }), 1, 'rep')];
     const scoreMap = buildScoreMap([
-      makeScore({
-        golfer_id: 'orig', fantasy_score: null, status: 'withdrawn',
-        was_replaced: true, replaced_by_golfer_id: 'rep',
-      }),
+      makeScore({ golfer_id: 'orig', fantasy_score: null, status: 'withdrawn' }),
       // Replacement missed cut — their per-golfer fantasy_score is +1,
       // and the slot becomes a penalty slot (not a top-3 candidate).
       makeScore({ golfer_id: 'rep', fantasy_score: 1, status: 'missed_cut' }),
@@ -874,6 +869,24 @@ describe('computeLeagueResults — replacement handling', () => {
     // Total   = -5 + 1 = -4
     expect(r[0].total_score).toBe(-4);
     expect(r[0].counting_golfers.sort()).toEqual([2, 3, 4]);
+  });
+
+  it('regression: one player\'s swap does NOT change another player who picked the same WD golfer', () => {
+    const swapped = withSwap(makePick({ user_id: 'u1', g1: 'orig', g2: 'b', g3: 'c', g4: 'd' }), 1, 'rep');
+    const other   = makePick({ user_id: 'u2', g1: 'orig', g2: 'b', g3: 'c', g4: 'e' });
+    const scoreMap = buildScoreMap([
+      makeScore({ golfer_id: 'orig', fantasy_score: null, status: 'withdrawn' }),
+      makeScore({ golfer_id: 'rep',  fantasy_score: -6 }),
+      makeScore({ golfer_id: 'b',    fantasy_score: -1 }),
+      makeScore({ golfer_id: 'c',    fantasy_score: 0 }),
+      makeScore({ golfer_id: 'd',    fantasy_score: 2 }),
+      makeScore({ golfer_id: 'e',    fantasy_score: 3 }),
+    ]);
+    const [r1, r2] = computeLeagueResults([swapped, other], scoreMap);
+    expect(r1.golfer_1_score).toBe(-6);
+    expect(r1.total_score).toBe(-6 + -1 + 0);
+    expect(r2.golfer_1_score).toBeNull();          // still the withdrawn golfer
+    expect(r2.total_score).toBe(-1 + 0 + 3);       // best 3 of the remaining
   });
 });
 
@@ -1057,5 +1070,35 @@ describe('computeLeagueResults — per-league missed-cut penalty (migration 025)
     const r = computeLeagueResults(picks(), scoreMap(), { missedCutPenalty: 0 });
     expect(r[0].total_score).toBe(-4);
     expect(r[0].counting_golfers.sort()).toEqual([1, 2]);
+  });
+});
+
+describe('computeLeagueResults — dropouts = missed cut without the penalty (Greg, 2026-09-28)', () => {
+  const picks = () => [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+  const withD = (status: Score['status'], fantasy: number | null) => buildScoreMap([
+    makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+    makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+    makeScore({ golfer_id: 'c', fantasy_score: 2 }),
+    makeScore({ golfer_id: 'd', fantasy_score: fantasy, status }),
+  ]);
+
+  it.each(['withdrawn', 'disqualified'] as const)('%s golfer: left out of best 3, adds nothing', status => {
+    const r = computeLeagueResults(picks(), withD(status, null), { missedCutPenalty: 2 });
+    expect(r[0].total_score).toBe(-3 - 1 + 2);
+    expect(r[0].counting_golfers.sort()).toEqual([1, 2, 3]);
+    expect(r[0].golfer_4_score).toBeNull();
+  });
+
+  it('same team with a missed cut instead differs by exactly the penalty', () => {
+    const wd = computeLeagueResults(picks(), withD('withdrawn', null), { missedCutPenalty: 2 });
+    const mc = computeLeagueResults(picks(), withD('missed_cut', 1), { missedCutPenalty: 2 });
+    expect(mc[0].total_score! - wd[0].total_score!).toBe(2);
+    expect(mc[0].counting_golfers.sort()).toEqual(wd[0].counting_golfers.sort());
+  });
+
+  it('a WD with a good partial score never counts (even if it would beat a finisher)', () => {
+    // Withdrew at −5 through 27 holes: still out of the pool.
+    const r = computeLeagueResults(picks(), withD('withdrawn', null));
+    expect(r[0].counting_golfers).not.toContain(4);
   });
 });

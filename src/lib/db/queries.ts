@@ -284,6 +284,34 @@ export async function getEffectivePayoutsForTournaments(
   return out;
 }
 
+// ── per-pick WD replacements (migration 028) ─────────────────
+
+/** pick_id → { slot → replacement golfer id } for the given picks. */
+export async function loadReplacements(
+  pickIds: string[],
+): Promise<Map<string, Partial<Record<number, string>>>> {
+  const out = new Map<string, Partial<Record<number, string>>>();
+  if (pickIds.length === 0) return out;
+  const rows = await db.selectFrom('pick_replacements')
+    .select(['pick_id', 'slot', 'replacement_golfer_id'])
+    .where('pick_id', 'in', pickIds)
+    .execute();
+  for (const r of rows) {
+    const m = out.get(r.pick_id) ?? {};
+    m[r.slot] = r.replacement_golfer_id;
+    out.set(r.pick_id, m);
+  }
+  return out;
+}
+
+/** Attach `replacements` (slot → replacement golfer id) to each pick. */
+export async function withReplacements<T extends { id: string }>(
+  picks: T[],
+): Promise<Array<T & { replacements: Partial<Record<number, string>> }>> {
+  const map = await loadReplacements(picks.map(p => p.id));
+  return picks.map(p => ({ ...p, replacements: map.get(p.id) ?? {} }));
+}
+
 // ── picks (with embedded golfer rows for every slot) ─────────
 // golfer_5 / golfer_6 are null except on 6-man majors (migration 026).
 

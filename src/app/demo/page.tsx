@@ -329,7 +329,7 @@ export default function DemoPage({
                 <li><strong>Missed cut</strong> → MC golfers are <strong>excluded from your top-3 counting pool entirely</strong> AND <strong>+1 stroke is added to your team total</strong> per MC. The player score is shown capped at the cut line, but only the +1 team penalty actually moves your total. (Hambone above: two MCs → top-3 has only 2 contributors and the team total picks up +2.)</li>
                 <li><strong>Made cut, played badly</strong> → score is capped at the cut line. No team penalty. (Si Woo Kim above: capped at +3 even if he plays poorly.)</li>
                 <li><strong>Withdrawal before teeing off</strong> → swap in any golfer who hasn&rsquo;t teed off yet. (Jon P. above swapped Tom Kim for Bhatia.)</li>
-                <li><strong>Withdrawal mid-round</strong> → no replacement, that slot stays at WD with no score.</li>
+                <li><strong>Withdrawal or DQ with no swap</strong> (any round, or no eligible golfer left) → treated like a missed cut without the penalty: the slot drops out of your best 3 and adds nothing.</li>
                 <li><strong>Missed the pick deadline?</strong> We auto-assign a random foursome — excluding the top-4 of each tier so you don&rsquo;t accidentally luck into the optimal lineup — and add a <strong>2-stroke penalty</strong> to your team total. Better than getting zero, much worse than picking on time.</li>
                 <li><strong>No copycats</strong> — no two players in your league can pick the identical 4.</li>
               </ul>

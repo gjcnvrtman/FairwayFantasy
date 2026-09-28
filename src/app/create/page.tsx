@@ -7,6 +7,9 @@ import {
   LEAGUE_LIMITS,
   type FieldErrors,
 } from '@/lib/validation';
+import SeasonBetsFields, {
+  DEFAULT_SEASON_BETS, seasonBetsPayload, type SeasonBetsValue,
+} from '@/components/league/SeasonBetsFields';
 
 interface CreatedLeague {
   id:        string;
@@ -47,6 +50,9 @@ export default function CreateLeaguePage() {
     majorBetInput.trim() === '' ? null : parseFloat(majorBetInput);
   // Team size on majors (migration 026): 4 = same as regular events.
   const [majorTeamSize, setMajorTeamSize] = useState<4 | 6>(4);
+  // Seasons + season bets (migration 027).
+  const [seasonBets, setSeasonBets] = useState<SeasonBetsValue>(DEFAULT_SEASON_BETS);
+  const seasonPayload = useMemo(() => seasonBetsPayload(seasonBets), [seasonBets]);
 
   const [touched, setTouched]         = useState<Set<keyof FieldErrors>>(new Set());
   const [submitting, setSubmitting]   = useState(false);
@@ -71,9 +77,15 @@ export default function CreateLeaguePage() {
       majorBetAmount,
       payoutPct1: payoutPcts[0], payoutPct2: payoutPcts[1], payoutPct3: payoutPcts[2],
       missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
+      seasonCount:            seasonPayload.seasonCount,
+      betTeamCumulative:      seasonPayload.betTeamCumulative,
+      betTopTierCumulative:   seasonPayload.betTopTierCumulative,
+      betDarkHorseCumulative: seasonPayload.betDarkHorseCumulative,
+      betAceBounty:           seasonPayload.betAceBounty,
     }),
     [name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
-     majorBetAmount, payoutPcts, missedCutPenalty, missedDeadlinePenalty, majorTeamSize]
+     majorBetAmount, payoutPcts, missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
+     seasonPayload]
   );
 
   // Merge server errors over client errors so a server-side rejection
@@ -141,6 +153,7 @@ export default function CreateLeaguePage() {
     setTouched(new Set([
       'name', 'slug', 'maxPlayers', 'startDate', 'endDate', 'weeklyBetAmount',
       'majorBetAmount', 'payout', 'missedCutPenalty', 'missedDeadlinePenalty',
+      'seasonCount', 'seasonBets',
     ]));
 
     if (Object.keys(clientErrors).length > 0) {
@@ -159,6 +172,7 @@ export default function CreateLeaguePage() {
           majorBetAmount,
           payoutPct1: payoutPcts[0], payoutPct2: payoutPcts[1], payoutPct3: payoutPcts[2],
           missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
+          ...seasonPayload,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -212,6 +226,7 @@ export default function CreateLeaguePage() {
     setMissedCutPenalty(LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT);
     setMissedDeadlinePenalty(LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT);
     setMajorTeamSize(4);
+    setSeasonBets(DEFAULT_SEASON_BETS);
     setTouched(new Set());
     setServerErrors({}); setGeneralError('');
     setCreated(null); setCopied(false);
@@ -602,6 +617,15 @@ export default function CreateLeaguePage() {
                 Added to a player&rsquo;s total. Defaults: missed cut {LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT},
                 missed deadline {LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT}.
               </p>
+            </div>
+
+            {/* ── Seasons + season bets ─────────────────── */}
+            <div className="field">
+              <span className="label">Seasons &amp; Season Bets</span>
+              <SeasonBetsFields value={seasonBets} onChange={v => { setSeasonBets(v); markTouched('seasonBets'); }} />
+              {(errors.seasonCount || (shouldShow('seasonBets') && errors.seasonBets)) && (
+                <p className="hint" style={{ color: 'var(--red)' }}>{errors.seasonCount ?? errors.seasonBets}</p>
+              )}
             </div>
 
             <div className="alert alert-info" style={{ marginTop: '0.5rem' }}>

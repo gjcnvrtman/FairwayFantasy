@@ -50,7 +50,8 @@ for unit in fairway-rankings.service        fairway-rankings.timer        \
             fairway-field.service           fairway-field.timer           \
             fairway-field-alert.service     fairway-field-alert.timer     \
             fairway-daily-scorecard.service fairway-daily-scorecard.timer \
-            fairway-datagolf.service        fairway-datagolf.timer; do
+            fairway-datagolf.service        fairway-datagolf.timer        \
+            fairway-reminders.service       fairway-reminders.timer; do
   src="$HERE/$unit"
   dst="/etc/systemd/system/$unit"
   cp "$src" "$dst"
@@ -65,6 +66,7 @@ systemctl enable --now fairway-field.timer
 systemctl enable --now fairway-field-alert.timer
 systemctl enable --now fairway-daily-scorecard.timer
 systemctl enable --now fairway-datagolf.timer
+systemctl enable --now fairway-reminders.timer
 
 echo
 echo "▸ Timer status:"
@@ -94,4 +96,5 @@ echo "    systemctl start fairway-field.service             # fire manually"
 echo "    systemctl start fairway-field-alert.service       # fire manually"
 echo "    systemctl start fairway-daily-scorecard.service   # fire manually"
 echo "    systemctl start fairway-datagolf.service          # fire manually"
+echo "    systemctl start fairway-reminders.service         # fire manually"
 echo "                                                       # (requires DATAGOLF_API_KEY in .env.local)"

@@ -4,7 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { getLeagueBySlug } from '@/lib/db/queries';
+import { getLeagueBySlug, loadReplacements } from '@/lib/db/queries';
 import { computeTopTierIds } from '@/lib/field-tiers';
 import { teamShapeFor } from '@/lib/team-shape';
 
@@ -80,6 +80,11 @@ export async function GET(req: NextRequest) {
     .where('user_id',       '=', user.id)
     .executeTakeFirst() ?? null;
 
+  // This player's WD swaps, slot → replacement golfer id (migration 028).
+  const replacements = existingPick
+    ? (await loadReplacements([existingPick.id])).get(existingPick.id) ?? {}
+    : {};
+
   // We only truly block identical foursomes — not individual golfers —
   // so `alreadyPickedIds` is informational only and currently empty.
   const alreadyPickedIds: string[] = [];
@@ -113,6 +118,7 @@ export async function GET(req: NextRequest) {
     golfers,
     topTierIds,
     existingPick,
+    replacements,
     alreadyPickedIds,
     scores,
     // Per-league rules for the scoring-rules card (migration 025).

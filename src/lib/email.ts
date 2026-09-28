@@ -1168,6 +1168,94 @@ ${picksUrl}
 }
 
 // ============================================================
+// PICK REMINDER — "picks lock soon and you haven't submitted"
+// ============================================================
+//
+// Sent by runReminderJob (src/lib/reminder-job.ts) inside each
+// player's chosen window before the pick deadline. One email per
+// player per tournament, listing every league where they still have
+// no team.
+
+export function pickReminderEmail(params: {
+  recipientName:  string;
+  tournamentName: string;
+  /** Effective deadline (override > computed). */
+  pickDeadline:   Date;
+  leagues:        Array<{ name: string; slug: string }>;
+  siteUrl:        string;
+}): { subject: string; text: string; html: string } {
+  const { recipientName, tournamentName, pickDeadline, leagues, siteUrl } = params;
+  const dlPretty = pickDeadline.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago',
+    timeZoneName: 'short',
+  });
+  const one = leagues.length === 1;
+  const picksUrl = (slug: string) => `${siteUrl}/league/${slug}/picks`;
+
+  const subject = one
+    ? `[${leagues[0].name}] Reminder: make your picks for ${tournamentName}`
+    : `Reminder: make your picks for ${tournamentName} (${leagues.length} leagues)`;
+
+  const text = `
+Hi ${recipientName},
+
+Picks for ${tournamentName} lock ${dlPretty}, and you haven't submitted a team yet${one ? ` in ${leagues[0].name}` : ' in these leagues'}.
+
+${leagues.map(l => `${one ? '' : `${l.name}: `}${picksUrl(l.slug)}`).join('\n')}
+
+If you miss the deadline you'll be given a random team, plus any missed-deadline penalty your league uses.
+
+— Fairway Fantasy
+
+(You're receiving this because pick reminders are on in your account. Change the timing or turn them off at ${siteUrl}/account.)
+`.trim();
+
+  const buttons = leagues.map(l => `
+    <div style="text-align:center; margin:${one ? '28px 0 8px' : '10px 0'};">
+      <a href="${escapeHtml(picksUrl(l.slug))}" style="display:inline-block; padding:12px 22px; background:#2d6a4f; color:#fff; text-decoration:none; border-radius:6px; font-weight:700; font-size:14px;">
+        ${one ? 'Make your picks' : `Make your picks — ${escapeHtml(l.name)}`}
+      </a>
+    </div>`).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width:640px; margin:0 auto; padding:24px; color:#2c2c2c;">
+  <div style="text-align:center; margin-bottom:20px;">
+    <div style="font-size:36px;">⛳</div>
+    <h1 style="font-family:Georgia, serif; font-weight:700; font-size:22px; margin:6px 0 0;">Fairway Fantasy</h1>
+    <p style="color:#777; font-size:13px; margin:4px 0 0;">Pick reminder</p>
+  </div>
+
+  <p style="font-size:15px; line-height:1.5;">
+    Hi ${escapeHtml(recipientName)},<br>
+    You haven&rsquo;t submitted a team for <strong>${escapeHtml(tournamentName)}</strong> yet${one
+      ? ` in <strong>${escapeHtml(leagues[0].name)}</strong>.`
+      : ` in ${leagues.length} of your leagues.`}
+  </p>
+
+  <p style="font-size:15px; line-height:1.5; margin-top:16px;
+            background:#fdf1dc; padding:10px 14px; border-radius:6px;">
+    <strong>Picks lock:</strong> ${escapeHtml(dlPretty)}
+  </p>
+${buttons}
+  <p style="font-size:13px; color:#666; line-height:1.5; margin-top:18px;">
+    Miss the deadline and you&rsquo;ll be given a random team, plus any missed-deadline penalty your league uses.
+  </p>
+
+  <p style="font-size:11px; color:#aaa; margin-top:24px; padding-top:14px; border-top:1px solid #e6e6e6; text-align:center;">
+    You're receiving this because pick reminders are on in your account.
+    Change the timing or turn them off at <a href="${escapeHtml(siteUrl)}/account" style="color:#888;">your account</a>.
+  </p>
+</body>
+</html>
+`.trim();
+
+  return { subject, text, html };
+}
+
+// ============================================================
 // LEAGUE BROADCAST — commissioner-authored email to every league member
 // ============================================================
 

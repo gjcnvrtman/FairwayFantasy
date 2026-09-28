@@ -111,6 +111,112 @@ export async function fetchLiveLeaderboard(espnEventId: string): Promise<{
   };
 }
 
+// ── Per-golfer status (core API) ─────────────────────────────
+// The scoreboard has no per-golfer status, so missed cuts used to be
+// inferred from a cut rule — which wrongly cut golfers at no-cut
+// events (FedEx St. Jude 2026) and missed most of Wyndham's cut. The
+// core API has the real status per golfer:
+//   sports.core.api.espn.com/v2/sports/golf/leagues/pga/events/{e}/
+//     competitions/{e}/competitors/{id}/status
+// Observed 2026-09-28:
+//   missed cut → type.name STATUS_CUT, description "Missed Cut"
+//   withdrew   → type.name STATUS_CUT, description "Withdrawn"  (!)
+//   finished   → type.name STATUS_FINISH, position "T58"
+// A golfer who withdraws before teeing off 404s here (and drops out
+// of the scoreboard) — syncTournament's absence check covers that.
+
+export interface CompetitorStatus {
+  typeName:    string;         // e.g. STATUS_CUT, STATUS_FINISH, STATUS_IN_PROGRESS
+  description: string;         // e.g. "Missed Cut", "Withdrawn", "Finish"
+  period:      number | null;  // last round the golfer played
+  position:    string | null;  // "T58", "1"; null when ESPN shows "-"
+  thru:        number | null;  // holes completed in the current round
+}
+
+const ESPN_CORE = 'https://sports.core.api.espn.com/v2/sports/golf/leagues/pga';
+
+export function parseCompetitorStatus(d: any): CompetitorStatus | null {
+  if (!d || typeof d !== 'object' || !d.type) return null;
+  const pos = d.position?.displayName;
+  return {
+    typeName:    String(d.type.name ?? ''),
+    description: String(d.type.description ?? ''),
+    period:      typeof d.period === 'number' ? d.period : null,
+    position:    pos && pos !== '-' ? String(pos) : null,
+    thru:        typeof d.thru === 'number' ? d.thru : null,
+  };
+}
+
+/**
+ * Fetch per-golfer status for a set of competitors, `concurrency` at a
+ * time. Golfers whose request fails or 404s are left out of the map;
+ * callers fall back to inference for them.
+ */
+export async function fetchCompetitorStatuses(
+  eventId: string,
+  competitorIds: string[],
+  opts: { concurrency?: number; timeoutMs?: number } = {},
+): Promise<Map<string, CompetitorStatus>> {
+  const concurrency = opts.concurrency ?? 8;
+  const timeoutMs   = opts.timeoutMs ?? 8000;
+  const out = new Map<string, CompetitorStatus>();
+  let next = 0;
+  async function worker() {
+    while (next < competitorIds.length) {
+      const id = competitorIds[next++];
+      try {
+        const res = await fetch(
+          `${ESPN_CORE}/events/${eventId}/competitions/${eventId}/competitors/${id}/status`,
+          { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) } as RequestInit,
+        );
+        if (!res.ok) continue;
+        const s = parseCompetitorStatus(await res.json());
+        if (s) out.set(id, s);
+      } catch {
+        // timeout / network — leave this golfer to the fallback
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, competitorIds.length) }, worker));
+  return out;
+}
+
+/**
+ * Collapse an ESPN status into a token mapESPNStatus understands.
+ *
+ * Dropouts (Greg, 2026-09-28): a withdrawal is treated like a missed
+ * cut without the penalty, whenever it happens. 'wd_late' = withdrew
+ * after making the cut (played round 3+). It is stored as 'withdrawn'
+ * like any WD, but deriveCutLine still counts the golfer's 36-hole
+ * score toward the cut line because they made it.
+ */
+export function competitorStatusToken(s: CompetitorStatus): 'cut' | 'wd' | 'wd_late' | 'dq' | 'complete' | 'active' {
+  const desc = s.description.toLowerCase();
+  const name = s.typeName.toUpperCase();
+  if (desc.includes('withdr') || name.includes('WITHDR')) return (s.period ?? 0) >= 3 ? 'wd_late' : 'wd';
+  if (desc.includes('disqual') || name.includes('DQ') || name.includes('DISQUAL')) return 'dq';
+  if (name === 'STATUS_CUT' || desc.includes('missed cut')) return 'cut';
+  if (name.includes('FINISH')) return 'complete';
+  return 'active';
+}
+
+/**
+ * Cut line (to par) from real statuses: the worst 36-hole score among
+ * golfers who made it. null when nobody missed the cut — a no-cut
+ * event, or the cut hasn't been made yet — so no made-cut cap applies.
+ */
+export function deriveCutLine(entries: Array<{
+  token: ReturnType<typeof competitorStatusToken> | null;
+  r1: number | null; r2: number | null;
+}>): number | null {
+  if (!entries.some(e => e.token === 'cut')) return null;
+  const made = entries
+    .filter(e => e.token !== null && e.token !== 'cut' && e.token !== 'wd' && e.token !== 'dq')
+    .filter(e => e.r1 != null && e.r2 != null)
+    .map(e => (e.r1 as number) + (e.r2 as number));
+  return made.length ? Math.max(...made) : null;
+}
+
 // Convert a /pga/scoreboard competitor into an ESPNCompetitor so the
 // rest of the pipeline (`sync.ts`) doesn't have to branch on shape.
 // Returns null if the row lacks a name we can match against `golfers`.
@@ -349,8 +455,8 @@ export function mapESPNStatus(espnStatus: string): Score['status'] {
   const s = espnStatus.toLowerCase();
   if (s === 'mdf')                                       return 'active';
   if (s.includes('cut') || s === 'mc')                   return 'missed_cut';
-  if (s.includes('wd') || s.includes('withdrew'))         return 'withdrawn';
-  if (s.includes('dq'))                                  return 'disqualified';
+  if (s.includes('wd') || s.includes('withdr'))          return 'withdrawn';
+  if (s.includes('dq') || s.includes('disqual'))         return 'disqualified';
   if (s.includes('complete') || s.includes('final') || s === 'f')
                                                          return 'complete';
   return 'active';

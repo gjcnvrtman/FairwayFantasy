@@ -4,7 +4,10 @@ import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { getLeagueBySlug, getLeagueMembers } from '@/lib/db/queries';
 import { resolveSetupStatus, nextAutoLock } from '@/lib/league-setup';
+import { loadSeasonBets } from '@/lib/db/season-data';
+import AceAdjustmentsCard from './AceAdjustmentsCard';
 import Nav from '@/components/layout/Nav';
+import { hasSeasonBets, seasonBetConfigFromLeague } from '@/lib/season-bets';
 import AdminPanel from './AdminPanel';
 import type { Metadata } from 'next';
 
@@ -103,9 +106,54 @@ export default async function AdminPage({ params }: Props) {
   const setupStatus = await resolveSetupStatus(league);
   const autoLock = setupStatus === 'setup' ? await nextAutoLock(league.id) : null;
 
+  // Hole-in-one corrections (migration 027) — only when the league has
+  // an ace bounty. Candidates = golfers on a team in each started event.
+  let aceCard: React.ReactNode = null;
+  if (league.bet_ace_bounty != null) {
+    const seasonBets = await loadSeasonBets(league);
+    const started = tournaments.filter(t => scheduleIds.includes(t.id) && t.status !== 'upcoming');
+    const startedIds = started.map(t => t.id);
+    const pickRows = startedIds.length === 0 ? [] : await db.selectFrom('picks')
+      .select(['tournament_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id',
+               'golfer_4_id', 'golfer_5_id', 'golfer_6_id'])
+      .where('league_id', '=', league.id)
+      .where('tournament_id', 'in', startedIds)
+      .execute();
+    const golferIds = [...new Set(pickRows.flatMap(p =>
+      [p.golfer_1_id, p.golfer_2_id, p.golfer_3_id, p.golfer_4_id, p.golfer_5_id, p.golfer_6_id]
+        .filter((id): id is string => !!id)))];
+    const names = golferIds.length === 0 ? [] : await db.selectFrom('golfers')
+      .select(['id', 'name']).where('id', 'in', golferIds).execute();
+    const nameOf = new Map(names.map(g => [g.id, g.name]));
+    const tName = new Map(tournaments.map(t => [t.id, t.name]));
+    const candidates = started.map(t => {
+      const ids = new Set(pickRows.filter(p => p.tournament_id === t.id).flatMap(p =>
+        [p.golfer_1_id, p.golfer_2_id, p.golfer_3_id, p.golfer_4_id, p.golfer_5_id, p.golfer_6_id]
+          .filter((id): id is string => !!id)));
+      return {
+        tournamentId: t.id, tournamentName: t.name,
+        golfers: [...ids].map(id => ({ id, name: nameOf.get(id) ?? 'Unknown' }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      };
+    }).reverse();   // most recent first
+    aceCard = (
+      <AceAdjustmentsCard
+        slug={league.slug}
+        aces={seasonBets?.aces ?? []}
+        voided={(seasonBets?.voidedAces ?? []).map(v => ({
+          ...v,
+          tournamentName: tName.get(v.tournamentId) ?? 'Tournament',
+          golferName: nameOf.get(v.golferId) ?? 'Golfer',
+        }))}
+        candidates={candidates}
+      />
+    );
+  }
+
   return (
     <div className="page-shell">
-      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
+      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name}
+           showSeasons={hasSeasonBets(seasonBetConfigFromLeague(league))} />
 
       <div className="t-hero" style={{ padding: '2.5rem 1.5rem' }}>
         <div className="container">
@@ -134,6 +182,7 @@ export default async function AdminPage({ params }: Props) {
               at: autoLock.at.toISOString(),
             } : null}
             viewerRole={viewerRole}
+            extraSections={aceCard}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />
         </div>

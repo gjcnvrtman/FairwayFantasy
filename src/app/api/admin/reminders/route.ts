@@ -1,11 +1,12 @@
-// /api/admin/reminders — manual + scheduled reminder cycle trigger.
+// /api/admin/reminders — pick-reminder cycle trigger.
 //
 // Auth: TWO modes accepted, in order of preference:
-//   1. Bearer CRON_SECRET — for the systemd timer (server-to-server).
-//   2. Commissioner session — for the admin "Send reminders now" button
-//      (manual cycle).
+//   1. Bearer CRON_SECRET — fairway-reminders.timer (every 15 min).
+//   2. Co-commissioner-or-above session — manual run (POST only).
 //
-// Either way the actual work is done by `runReminderJob()`.
+// Either way the actual work is done by `runReminderJob()`, which only
+// emails players who are inside their own reminder window and haven't
+// been reminded for that tournament yet — so a manual run can't spam.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runReminderJob } from '@/lib/reminder-job';
@@ -43,5 +44,14 @@ export async function POST(req: NextRequest) {
   });
 }
 
-// GET aliased to POST for compatibility with simple curl/timer invocations.
-export async function GET(req: NextRequest) { return POST(req); }
+// GET kept for simple curl/timer invocations, but ONLY with the cron
+// secret. A session-authed GET would be a one-click CSRF (SameSite=Lax
+// sends the cookie on top-level navigations, and requireSameOrigin
+// fails open when a no-referrer link strips Origin + Referer), so the
+// commissioner button must use POST.
+export async function GET(req: NextRequest) {
+  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: 'Use POST.' }, { status: 405, headers: { Allow: 'POST' } });
+  }
+  return POST(req);
+}

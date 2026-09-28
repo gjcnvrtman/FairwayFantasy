@@ -1,0 +1,29 @@
+# /etc/systemd/system/fairway-reminders.service
+#
+# Pick-deadline reminder sweep. Emails each player who hasn't picked
+# once they're inside their own window (reminder_preferences.hours_before,
+# set on /account) before the pick deadline. One email per player per
+# tournament, listing every league still missing a team.
+#
+# Idempotent: reminder_log is UNIQUE (user, tournament, channel) and the
+# job claims that row before sending, so re-runs never double-send.
+#
+# Schedule: every 15 min via fairway-reminders.timer.
+
+[Unit]
+Description=Fairway Fantasy — pick-deadline reminder emails
+After=fairway-fantasy.service network-online.target
+Wants=network-online.target
+Requires=fairway-fantasy.service
+
+[Service]
+Type=oneshot
+User=greg
+EnvironmentFile=/opt/fairway-fantasy/.env.local
+
+ExecStart=/usr/bin/curl -fsS --max-time 120 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  http://127.0.0.1:3000/api/admin/reminders
+
+SuccessExitStatus=0

@@ -64,6 +64,13 @@ export interface LeaguesTable {
   setup_locked_at:         Timestamp | null;
   // 4 (default) or 6 — team size on majors (migration 026).
   major_team_size:         Generated<number>;
+  // Seasons + season bets (migration 027). NULL bet = off.
+  season_count:              Generated<number>;
+  bet_team_cumulative:       string | null;   // NUMERIC(10,2) bet per player, per season
+  bet_top_tier_cumulative:   string | null;
+  bet_dark_horse_cumulative: string | null;
+  bets_add_penalties:        Generated<boolean>;
+  bet_ace_bounty:            string | null;   // $ per ace, per other member
   created_at:      Generated<Timestamp>;
 }
 
@@ -352,6 +359,8 @@ export interface Database {
   tournament_recap_log:  TournamentRecapLogTable;
   league_tournament_bets:LeagueTournamentBetsTable;
   league_tournament_payouts: LeagueTournamentPayoutsTable;
+  league_ace_adjustments: LeagueAceAdjustmentsTable;
+  pick_replacements:     PickReplacementsTable;
   league_messages:       LeagueMessagesTable;
   league_broadcasts:     LeagueBroadcastsTable;
   // ── predictions / phase 3 ─────────────────────────────────
@@ -640,6 +649,32 @@ export interface LeagueTournamentBetsTable {
 // already past its pick_deadline. Missing row = tournament was
 // pre-lock at the time of every edit so far → money math falls
 // back to the current leagues.payout_pct_*.
+// ── pick_replacements (migration 028) ────────────────────────
+// A player's own WD swap for one slot of their pick. Replaces the old
+// tournament-wide scores.was_replaced flags (no longer read).
+export interface PickReplacementsTable {
+  pick_id:               string;   // PK part 1, FK picks ON DELETE CASCADE
+  slot:                  number;   // PK part 2, 1..6
+  original_golfer_id:    string;
+  replacement_golfer_id: string;
+  created_at:            Generated<Timestamp>;
+}
+
+// ── league_ace_adjustments (migration 027) ───────────────────
+// Commissioner corrections to auto-detected hole-in-ones for the
+// ace-bounty bet. 'add' credits a missed ace; 'void' removes one.
+export interface LeagueAceAdjustmentsTable {
+  id:             Generated<string>;
+  league_id:      string;
+  tournament_id:  string;
+  golfer_id:      string;
+  round_num:      number;
+  hole_num:       number;
+  action:         'add' | 'void';
+  created_by:     string | null;
+  created_at:     Generated<Timestamp>;
+}
+
 export interface LeagueTournamentPayoutsTable {
   league_id:      string;        // PK part 1, FK leagues(id) ON DELETE CASCADE
   tournament_id:  string;        // PK part 2, FK tournaments(id) ON DELETE CASCADE

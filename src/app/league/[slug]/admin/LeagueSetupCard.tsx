@@ -10,6 +10,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import SeasonBetsFields, {
+  seasonBetsFromLeague, seasonBetsPayload, type SeasonBetsValue,
+} from '@/components/league/SeasonBetsFields';
 
 export interface SetupRules {
   slug:                    string;
@@ -23,6 +26,13 @@ export interface SetupRules {
   missed_cut_penalty:      number;
   missed_deadline_penalty: number;
   major_team_size:         number;   // 4 or 6 (migration 026)
+  // Seasons + season bets (migration 027).
+  season_count:              number;
+  bet_team_cumulative:       string | null;
+  bet_top_tier_cumulative:   string | null;
+  bet_dark_horse_cumulative: string | null;
+  bet_ace_bounty:            string | null;
+  bets_add_penalties:        boolean;
   setup_locked_at:         string | Date | null;
 }
 
@@ -61,6 +71,7 @@ export default function LeagueSetupCard({ league, status, autoLock, isCommission
   const [mcPen, setMcPen] = useState(String(league.missed_cut_penalty));
   const [mdPen, setMdPen] = useState(String(league.missed_deadline_penalty));
   const [teamSize, setTeamSize] = useState<number>(league.major_team_size === 6 ? 6 : 4);
+  const [seasonBets, setSeasonBets] = useState<SeasonBetsValue>(() => seasonBetsFromLeague(league));
 
   const [busy, setBusy] = useState<'' | 'save' | 'lock' | 'import'>('');
   const [msg,  setMsg]  = useState('');
@@ -90,6 +101,7 @@ export default function LeagueSetupCard({ league, status, autoLock, isCommission
         missedCutPenalty:      parseInt(mcPen, 10),
         missedDeadlinePenalty: parseInt(mdPen, 10),
         majorTeamSize:         teamSize,
+        ...seasonBetsPayload(seasonBets),
       });
       setMsg('Saved.');
       router.refresh();
@@ -213,6 +225,11 @@ export default function LeagueSetupCard({ league, status, autoLock, isCommission
           ) : league.major_team_size === 6
             ? '6 golfers — 3 top + 3 dark horse, best 4 count'
             : '4 golfers (same as regular events)'}
+        </dd>
+
+        <dt style={{ color: 'var(--slate-mid)', alignSelf: 'start' }}>Seasons &amp; bets</dt>
+        <dd>
+          <SeasonBetsFields value={seasonBets} onChange={setSeasonBets} readOnly={!editable} />
         </dd>
 
         <dt style={{ color: 'var(--slate-mid)' }}>Payout split</dt>

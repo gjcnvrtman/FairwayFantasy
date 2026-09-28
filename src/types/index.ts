@@ -66,6 +66,9 @@ export interface Pick {
   // 6-man majors only (migration 026). NULL/absent for 4-man teams.
   golfer_5_id?: string | null;
   golfer_6_id?: string | null;
+  /** WD swaps on this pick: slot (1-based) → replacement golfer id.
+   *  Loaded from pick_replacements (migration 028). */
+  replacements?: Partial<Record<number, string>>;
   is_locked: boolean;
   submitted_at: string;
   // Added strokes at scoring time. Default 0. Set to 2 by the

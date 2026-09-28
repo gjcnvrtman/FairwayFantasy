@@ -1,27 +1,27 @@
 // ============================================================
 // PICK REMINDERS — eligibility logic
-// (Prompt 9. Pure functions — no I/O. Caller fetches state and
-//  passes it in, then calls the notifier with the result.)
+// (Pure functions — no I/O. `runReminderJob()` in
+//  `src/lib/reminder-job.ts` fetches state, calls planEmailReminders,
+//  then sends + logs.)
 // ============================================================
 //
-// "Find users who need a pick reminder" is the only non-trivial
-// piece of this feature, and it's the part most likely to break
-// silently — sending the same reminder twice, or never sending one
-// at all. Keeping it pure + tested guards against that.
+// "Who needs a pick reminder right now" is the part most likely to
+// break silently — sending the same reminder twice, or never sending
+// one at all. Keeping it pure + tested guards against that.
 //
-// Architecture (read first):
-//   1. A scheduled job (systemd timer or admin button) calls
-//      runReminderJob() in `src/lib/reminder-job.ts`.
-//   2. That collects state from the DB and passes it to
-//      `findUsersDueForReminder()` (this file).
-//   3. The eligibility result is fed to the notifier
-//      (`src/lib/notifier.ts`), which dispatches per channel.
-//   4. The notifier writes a `reminder_log` row per attempt;
-//      the next job cycle reads those rows so we don't send twice.
+// Flow:
+//   1. fairway-reminders.timer (every 15 min) calls
+//      /api/admin/reminders with the cron secret → runReminderJob().
+//   2. The job collects state and calls planEmailReminders() (here).
+//   3. For each task it claims a reminder_log row (unique per user +
+//      tournament + channel), then sends the email. The claim is what
+//      makes a second send impossible.
+//
+// Email is the only delivered channel. The account page only offers
+// email; sms/push columns exist in reminder_preferences but nothing
+// delivers them, so they are ignored here.
 
 export type Channel = 'email' | 'sms' | 'push';
-
-export const ALL_CHANNELS: readonly Channel[] = ['email', 'sms', 'push'] as const;
 
 export interface ReminderPreferences {
   user_id:       string;
@@ -39,26 +39,14 @@ export interface MemberRow {
   league_id: string;
 }
 
-export interface PickRow {
-  league_id:     string;
-  tournament_id: string;
-  user_id:       string;
+export interface ReminderLeague {
+  id:   string;
+  name: string;
+  slug: string;
 }
 
-export interface TournamentRow {
-  id:            string;
-  status:        string;             // 'upcoming' | 'active' | 'cut_made' | 'complete'
-  pick_deadline: string | null;      // ISO 8601
-}
-
-/** What channels a user has opted into, given their prefs row. */
-export function enabledChannels(prefs: ReminderPreferences): Channel[] {
-  const out: Channel[] = [];
-  if (prefs.email_enabled) out.push('email');
-  if (prefs.sms_enabled)   out.push('sms');
-  if (prefs.push_enabled)  out.push('push');
-  return out;
-}
+/** Longest reminder window a user can choose (reminder_preferences CHECK). */
+export const MAX_HOURS_BEFORE = 168;
 
 /**
  * Is "now" inside the user's reminder window for this tournament?
@@ -86,9 +74,7 @@ export function isInsideReminderWindow(args: {
 /**
  * Pick the right delivery address for a channel, falling back to
  * the user's profile email when no per-channel override is set.
- *
- * Returns null when no destination is configured at all (the caller
- * should log a `skipped` reminder_log row, not throw).
+ * Returns null when no destination is configured at all.
  */
 export function destinationFor(args: {
   channel:      Channel;
@@ -103,117 +89,110 @@ export function destinationFor(args: {
   }
 }
 
-/** A single reminder we'd like to deliver. */
-export interface ReminderTask {
-  user_id:       string;
-  league_id:     string;
-  tournament_id: string;
-  channel:       Channel;
-  /** Resolved per-channel destination or null when missing (we still
-   *  enqueue so the log captures the skip — see destinationFor). */
-  destination:   string | null;
+/** Quiet hours (Central): no reminder emails from 10 PM to 7 AM. */
+export const QUIET_START_HOUR = 22;
+export const QUIET_END_HOUR   = 7;
+
+function centralClock(d: Date): { hour: number; minute: number; second: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(d);
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0) % 24;
+  return { hour: get('hour'), minute: get('minute'), second: get('second') };
 }
 
 /**
- * Compute the list of reminders to attempt for one tournament.
- *
- * Inputs:
- *   - tournament      — the candidate tournament (must be 'upcoming')
- *   - members         — every league member across every league
- *                       picking on this tournament (typically union
- *                       of all league_members.user_id since the
- *                       tournament is global). Each carries the
- *                       league_id we want to log against.
- *   - picksByUserLeague — map of `${user_id}:${league_id}` → pick
- *                       (presence = user has picked, no reminder needed)
- *   - prefsByUser     — map of user_id → ReminderPreferences
- *   - profileEmailByUser — map of user_id → profile email (fallback)
- *   - alreadySent     — set of `${user_id}:${tournament_id}:${channel}`
- *                       keys for past reminder_log entries (idempotency)
- *   - now             — clock injection so tests are deterministic
- *
- * Returns the FULL list of (user × channel) tasks to attempt. The
- * caller then hands the list to the notifier. The notifier records
- * a log row per task so the next cycle's `alreadySent` includes it.
+ * Hold reminders during quiet hours (10 PM–7 AM Central) and send them
+ * at 7 AM — unless the deadline comes before 7 AM, in which case send
+ * now (late at night beats not at all). Pick deadlines are often ~1 AM
+ * Thursday, so a 24-hour window would otherwise open at 1 AM.
+ * (DST-change nights can be off by an hour; harmless.)
  */
-export function findUsersDueForReminder(args: {
-  tournament:           TournamentRow;
-  members:              MemberRow[];
-  picksByUserLeague:    Map<string, PickRow>;
-  prefsByUser:          Map<string, ReminderPreferences>;
-  profileEmailByUser:   Map<string, string | null>;
-  alreadySent:          Set<string>;
-  now:                  Date;
-}): ReminderTask[] {
-  const {
-    tournament, members, picksByUserLeague, prefsByUser,
-    profileEmailByUser, alreadySent, now,
-  } = args;
+export function holdForQuietHours(now: Date, deadline: Date): boolean {
+  const { hour, minute, second } = centralClock(now);
+  const quiet = hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
+  if (!quiet) return false;
+  const hoursTo7 = (QUIET_END_HOUR - hour + 24) % 24;
+  const next7am = now.getTime() + hoursTo7 * 3600_000 - minute * 60_000 - second * 1000;
+  return deadline.getTime() > next7am;
+}
 
-  // Tournament gate: only `upcoming` tournaments get reminders.
+/** One reminder email: one per user per tournament, listing every
+ *  league where they still haven't picked. */
+export interface EmailReminderTask {
+  user_id:     string;
+  /** null → no address on file; the job logs it as 'skipped'. */
+  destination: string | null;
+  displayName: string | null;
+  /** Leagues (with this tournament on their schedule) missing a pick. */
+  leagues:     ReminderLeague[];
+}
+
+/**
+ * Compute the reminder emails to attempt for one tournament.
+ *
+ *   - tournament.deadline must be the EFFECTIVE deadline (commissioner
+ *     override > computed) — that's when picks actually lock.
+ *   - No reminders until the field is published: before that nobody
+ *     can pick, so "make your picks" would be wrong.
+ *   - `leagues` = leagues with this tournament on their schedule;
+ *     members of any other league are ignored.
+ *   - `pickedKeys` = `${user_id}:${league_id}` for submitted picks.
+ *   - `alreadyHandled` = user_ids whose email reminder for this
+ *     tournament is already logged as sent/skipped (a 'failed' row is
+ *     NOT in here, so it is retried).
+ *   - A user with no prefs row, or email_enabled=false, gets nothing
+ *     (matches what the account page shows: no row = off).
+ *   - Nothing goes out during quiet hours (see holdForQuietHours).
+ */
+export function planEmailReminders(args: {
+  tournament:     { id: string; status: string; fieldPublished: boolean; deadline: Date | null };
+  leagues:        ReminderLeague[];
+  members:        MemberRow[];
+  pickedKeys:     Set<string>;
+  prefsByUser:    Map<string, ReminderPreferences>;
+  profileByUser:  Map<string, { email: string | null; display_name: string | null }>;
+  alreadyHandled: Set<string>;
+  now:            Date;
+}): EmailReminderTask[] {
+  const { tournament, leagues, members, pickedKeys, prefsByUser, profileByUser, alreadyHandled, now } = args;
+
   if (tournament.status !== 'upcoming') return [];
-  if (!tournament.pick_deadline) return [];
+  if (!tournament.fieldPublished) return [];
+  const deadline = tournament.deadline;
+  if (!deadline || Number.isNaN(deadline.getTime())) return [];
+  // Anyone whose window opens overnight is picked up by the 7 AM run
+  // (their window is still open then).
+  if (holdForQuietHours(now, deadline)) return [];
 
-  const pickDeadline = new Date(tournament.pick_deadline);
-  if (Number.isNaN(pickDeadline.getTime())) return [];
+  const leagueById = new Map(leagues.map(l => [l.id, l]));
 
-  const tasks: ReminderTask[] = [];
-
-  for (const member of members) {
-    // Skip if user has picked already in this league.
-    const pickKey = `${member.user_id}:${member.league_id}`;
-    if (picksByUserLeague.has(pickKey)) continue;
-
-    // Skip if user has no prefs row OR no channels opted in.
-    const prefs = prefsByUser.get(member.user_id);
-    if (!prefs) continue;
-
-    // Skip if not yet inside the user's window.
-    if (!isInsideReminderWindow({
-      pickDeadline, hoursBefore: prefs.hours_before, now,
-    })) continue;
-
-    const channels = enabledChannels(prefs);
-    if (channels.length === 0) continue;
-
-    for (const channel of channels) {
-      // Idempotency — never send same (user, tournament, channel) twice.
-      const sentKey = `${member.user_id}:${tournament.id}:${channel}`;
-      if (alreadySent.has(sentKey)) continue;
-
-      tasks.push({
-        user_id:       member.user_id,
-        league_id:     member.league_id,
-        tournament_id: tournament.id,
-        channel,
-        destination:   destinationFor({
-          channel,
-          prefs,
-          profileEmail: profileEmailByUser.get(member.user_id) ?? null,
-        }),
-      });
-    }
+  // Group by user so a player in several leagues gets ONE email.
+  const missingByUser = new Map<string, ReminderLeague[]>();
+  for (const m of members) {
+    const lg = leagueById.get(m.league_id);
+    if (!lg) continue;                                   // tournament not on this league's schedule
+    if (pickedKeys.has(`${m.user_id}:${m.league_id}`)) continue;
+    const list = missingByUser.get(m.user_id) ?? [];
+    if (!list.some(l => l.id === lg.id)) list.push(lg);
+    missingByUser.set(m.user_id, list);
   }
 
-  return tasks;
-}
+  const tasks: EmailReminderTask[] = [];
+  for (const [userId, missing] of missingByUser) {
+    if (alreadyHandled.has(userId)) continue;
+    const prefs = prefsByUser.get(userId);
+    if (!prefs || !prefs.email_enabled) continue;
+    if (!isInsideReminderWindow({ pickDeadline: deadline, hoursBefore: prefs.hours_before, now })) continue;
 
-// ── Helpers for building the input maps from raw DB rows ─────
-
-/** Build the "user has already picked" map keyed by `${user}:${league}`. */
-export function buildPicksByUserLeague(picks: PickRow[]): Map<string, PickRow> {
-  const m = new Map<string, PickRow>();
-  for (const p of picks) m.set(`${p.user_id}:${p.league_id}`, p);
-  return m;
-}
-
-/** Build the "already-sent" idempotency set from reminder_log rows. */
-export function buildAlreadySentSet(rows: Array<{
-  user_id:       string;
-  tournament_id: string;
-  channel:       string;
-}>): Set<string> {
-  const s = new Set<string>();
-  for (const r of rows) s.add(`${r.user_id}:${r.tournament_id}:${r.channel}`);
-  return s;
+    const profile = profileByUser.get(userId);
+    tasks.push({
+      user_id:     userId,
+      destination: destinationFor({ channel: 'email', prefs, profileEmail: profile?.email ?? null }),
+      displayName: profile?.display_name ?? null,
+      leagues:     [...missing].sort((a, b) => a.name.localeCompare(b.name)),
+    });
+  }
+  return tasks.sort((a, b) => a.user_id.localeCompare(b.user_id));
 }

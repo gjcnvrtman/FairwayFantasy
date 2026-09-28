@@ -102,94 +102,106 @@ export async function POST(req: NextRequest) {
   const unmatchedNames: string[] = [];
   const fuzzyDeferred: { raw: string; suggestion: string; distance: number }[] = [];
 
-  for (const o of outcomes) {
-    const linkedGolfer =
-      o.kind === 'exact' ? o.golfer.id :
-      (o.kind === 'fuzzy' && autoLinkFuzzy) ? o.golfer.id :
-      null;
+  // All-or-nothing: one transaction for the whole file. Previously each
+  // row auto-committed, so a failure mid-file left a half-imported
+  // snapshot that predictions would silently run against.
+  try {
+    await db.transaction().execute(async trx => {
+      for (const o of outcomes) {
+        const linkedGolfer =
+          o.kind === 'exact' ? o.golfer.id :
+          (o.kind === 'fuzzy' && autoLinkFuzzy) ? o.golfer.id :
+          null;
 
-    if (o.kind === 'none') unmatchedNames.push(o.parsed.golferNameRaw);
-    if (o.kind === 'fuzzy' && !autoLinkFuzzy) {
-      fuzzyDeferred.push({
-        raw: o.parsed.golferNameRaw,
-        suggestion: o.golfer.name,
-        distance: o.distance,
-      });
-    }
+        if (o.kind === 'none') unmatchedNames.push(o.parsed.golferNameRaw);
+        if (o.kind === 'fuzzy' && !autoLinkFuzzy) {
+          fuzzyDeferred.push({
+            raw: o.parsed.golferNameRaw,
+            suggestion: o.golfer.name,
+            distance: o.distance,
+          });
+        }
 
-    const s = o.parsed.stats;
-    if (linkedGolfer) {
-      // Match → upsert.
-      const res = await sql<{ inserted: boolean }>`
-        INSERT INTO golfer_stat_snapshots (
-          golfer_id, golfer_name_raw, as_of_date, source,
-          sg_total, sg_ott, sg_app, sg_arg, sg_putt,
-          driving_distance, driving_accuracy_pct, gir_pct,
-          scoring_avg, birdie_avg, bogey_avg, made_cut_pct,
-          raw_json, uploaded_by
-        ) VALUES (
-          ${linkedGolfer}, ${o.parsed.golferNameRaw}, ${asOfDate}::date, 'csv_upload',
-          ${numStrOrNull(s, 'sg_total')}::numeric, ${numStrOrNull(s, 'sg_ott')}::numeric,
-          ${numStrOrNull(s, 'sg_app')}::numeric, ${numStrOrNull(s, 'sg_arg')}::numeric,
-          ${numStrOrNull(s, 'sg_putt')}::numeric,
-          ${numStrOrNull(s, 'driving_distance')}::numeric,
-          ${numStrOrNull(s, 'driving_accuracy_pct')}::numeric,
-          ${numStrOrNull(s, 'gir_pct')}::numeric,
-          ${numStrOrNull(s, 'scoring_avg')}::numeric,
-          ${numStrOrNull(s, 'birdie_avg')}::numeric,
-          ${numStrOrNull(s, 'bogey_avg')}::numeric,
-          ${numStrOrNull(s, 'made_cut_pct')}::numeric,
-          ${JSON.stringify(o.parsed.rawJson)}::jsonb,
-          ${user.id}::uuid
-        )
-        ON CONFLICT (golfer_id, as_of_date) WHERE golfer_id IS NOT NULL DO UPDATE SET
-          golfer_name_raw      = EXCLUDED.golfer_name_raw,
-          source               = EXCLUDED.source,
-          sg_total             = EXCLUDED.sg_total,
-          sg_ott               = EXCLUDED.sg_ott,
-          sg_app               = EXCLUDED.sg_app,
-          sg_arg               = EXCLUDED.sg_arg,
-          sg_putt              = EXCLUDED.sg_putt,
-          driving_distance     = EXCLUDED.driving_distance,
-          driving_accuracy_pct = EXCLUDED.driving_accuracy_pct,
-          gir_pct              = EXCLUDED.gir_pct,
-          scoring_avg          = EXCLUDED.scoring_avg,
-          birdie_avg           = EXCLUDED.birdie_avg,
-          bogey_avg            = EXCLUDED.bogey_avg,
-          made_cut_pct         = EXCLUDED.made_cut_pct,
-          raw_json             = EXCLUDED.raw_json,
-          uploaded_at          = NOW()
-        RETURNING (xmax = 0) AS inserted
-      `.execute(db);
-      if (res.rows[0]?.inserted) inserted++; else upserted++;
-    } else {
-      // Unmatched → plain insert. Partial unique only fires for
-      // NOT-NULL golfer_id, so duplicates coexist safely.
-      await sql`
-        INSERT INTO golfer_stat_snapshots (
-          golfer_id, golfer_name_raw, as_of_date, source,
-          sg_total, sg_ott, sg_app, sg_arg, sg_putt,
-          driving_distance, driving_accuracy_pct, gir_pct,
-          scoring_avg, birdie_avg, bogey_avg, made_cut_pct,
-          raw_json, uploaded_by
-        ) VALUES (
-          NULL, ${o.parsed.golferNameRaw}, ${asOfDate}::date, 'csv_upload',
-          ${numStrOrNull(s, 'sg_total')}::numeric, ${numStrOrNull(s, 'sg_ott')}::numeric,
-          ${numStrOrNull(s, 'sg_app')}::numeric, ${numStrOrNull(s, 'sg_arg')}::numeric,
-          ${numStrOrNull(s, 'sg_putt')}::numeric,
-          ${numStrOrNull(s, 'driving_distance')}::numeric,
-          ${numStrOrNull(s, 'driving_accuracy_pct')}::numeric,
-          ${numStrOrNull(s, 'gir_pct')}::numeric,
-          ${numStrOrNull(s, 'scoring_avg')}::numeric,
-          ${numStrOrNull(s, 'birdie_avg')}::numeric,
-          ${numStrOrNull(s, 'bogey_avg')}::numeric,
-          ${numStrOrNull(s, 'made_cut_pct')}::numeric,
-          ${JSON.stringify(o.parsed.rawJson)}::jsonb,
-          ${user.id}::uuid
-        )
-      `.execute(db);
-      inserted++;
-    }
+        const s = o.parsed.stats;
+        if (linkedGolfer) {
+          // Match → upsert.
+          const res = await sql<{ inserted: boolean }>`
+            INSERT INTO golfer_stat_snapshots (
+              golfer_id, golfer_name_raw, as_of_date, source,
+              sg_total, sg_ott, sg_app, sg_arg, sg_putt,
+              driving_distance, driving_accuracy_pct, gir_pct,
+              scoring_avg, birdie_avg, bogey_avg, made_cut_pct,
+              raw_json, uploaded_by
+            ) VALUES (
+              ${linkedGolfer}, ${o.parsed.golferNameRaw}, ${asOfDate}::date, 'csv_upload',
+              ${numStrOrNull(s, 'sg_total')}::numeric, ${numStrOrNull(s, 'sg_ott')}::numeric,
+              ${numStrOrNull(s, 'sg_app')}::numeric, ${numStrOrNull(s, 'sg_arg')}::numeric,
+              ${numStrOrNull(s, 'sg_putt')}::numeric,
+              ${numStrOrNull(s, 'driving_distance')}::numeric,
+              ${numStrOrNull(s, 'driving_accuracy_pct')}::numeric,
+              ${numStrOrNull(s, 'gir_pct')}::numeric,
+              ${numStrOrNull(s, 'scoring_avg')}::numeric,
+              ${numStrOrNull(s, 'birdie_avg')}::numeric,
+              ${numStrOrNull(s, 'bogey_avg')}::numeric,
+              ${numStrOrNull(s, 'made_cut_pct')}::numeric,
+              ${JSON.stringify(o.parsed.rawJson)}::jsonb,
+              ${user.id}::uuid
+            )
+            ON CONFLICT (golfer_id, as_of_date) WHERE golfer_id IS NOT NULL DO UPDATE SET
+              golfer_name_raw      = EXCLUDED.golfer_name_raw,
+              source               = EXCLUDED.source,
+              sg_total             = EXCLUDED.sg_total,
+              sg_ott               = EXCLUDED.sg_ott,
+              sg_app               = EXCLUDED.sg_app,
+              sg_arg               = EXCLUDED.sg_arg,
+              sg_putt              = EXCLUDED.sg_putt,
+              driving_distance     = EXCLUDED.driving_distance,
+              driving_accuracy_pct = EXCLUDED.driving_accuracy_pct,
+              gir_pct              = EXCLUDED.gir_pct,
+              scoring_avg          = EXCLUDED.scoring_avg,
+              birdie_avg           = EXCLUDED.birdie_avg,
+              bogey_avg            = EXCLUDED.bogey_avg,
+              made_cut_pct         = EXCLUDED.made_cut_pct,
+              raw_json             = EXCLUDED.raw_json,
+              uploaded_at          = NOW()
+            RETURNING (xmax = 0) AS inserted
+          `.execute(trx);
+          if (res.rows[0]?.inserted) inserted++; else upserted++;
+        } else {
+          // Unmatched → plain insert. Partial unique only fires for
+          // NOT-NULL golfer_id, so duplicates coexist safely.
+          await sql`
+            INSERT INTO golfer_stat_snapshots (
+              golfer_id, golfer_name_raw, as_of_date, source,
+              sg_total, sg_ott, sg_app, sg_arg, sg_putt,
+              driving_distance, driving_accuracy_pct, gir_pct,
+              scoring_avg, birdie_avg, bogey_avg, made_cut_pct,
+              raw_json, uploaded_by
+            ) VALUES (
+              NULL, ${o.parsed.golferNameRaw}, ${asOfDate}::date, 'csv_upload',
+              ${numStrOrNull(s, 'sg_total')}::numeric, ${numStrOrNull(s, 'sg_ott')}::numeric,
+              ${numStrOrNull(s, 'sg_app')}::numeric, ${numStrOrNull(s, 'sg_arg')}::numeric,
+              ${numStrOrNull(s, 'sg_putt')}::numeric,
+              ${numStrOrNull(s, 'driving_distance')}::numeric,
+              ${numStrOrNull(s, 'driving_accuracy_pct')}::numeric,
+              ${numStrOrNull(s, 'gir_pct')}::numeric,
+              ${numStrOrNull(s, 'scoring_avg')}::numeric,
+              ${numStrOrNull(s, 'birdie_avg')}::numeric,
+              ${numStrOrNull(s, 'bogey_avg')}::numeric,
+              ${numStrOrNull(s, 'made_cut_pct')}::numeric,
+              ${JSON.stringify(o.parsed.rawJson)}::jsonb,
+              ${user.id}::uuid
+            )
+          `.execute(trx);
+          inserted++;
+        }
+      }
+    });
+  } catch (err) {
+    return NextResponse.json({
+      error: 'Import failed — nothing was saved (the whole file is rolled back): '
+        + (err instanceof Error ? err.message : String(err)),
+    }, { status: 500 });
   }
 
   return NextResponse.json({

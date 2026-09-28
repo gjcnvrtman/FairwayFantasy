@@ -120,7 +120,10 @@ export function applyFantasyRules(params: {
 
     case 'withdrawn':
     case 'disqualified':
-      // Rule 3d: no score; flag for replacement window.
+      // Rule 3d — dropouts (Greg, 2026-09-28): treated like a missed
+      // cut WITHOUT the penalty, at any point in the event. No score, so
+      // computeLeagueResults leaves the slot out of the best-N pool and
+      // adds nothing. A WD before teeing off can still be swapped.
       return { fantasyScore: null, status };
 
     default:
@@ -187,10 +190,11 @@ export function calculateTop3(
  * Compute fantasy results for all picks in a league for a tournament.
  * Pure — caller supplies the pre-built scoreMap (keyed by golfer UUID).
  *
- * Replacement handling: if a slot's primary golfer was replaced
- * (`was_replaced` + `replaced_by_golfer_id`), uses the replacement's
- * fantasy_score AND status (so a replaced-by-missed-cut golfer is
- * scored as missed-cut, not as the original WD/DQ).
+ * Replacement handling: if this player swapped a withdrawn golfer
+ * (`pick.replacements[slot]`, migration 028), the replacement's
+ * fantasy_score AND status count for that slot — so a replacement who
+ * misses the cut is scored as missed-cut. Swaps are per pick: another
+ * player who picked the same withdrawn golfer is unaffected.
  *
  * Total math (revised 2026-05-17):
  *   total = top-3 sum + (missed-cut count × MISSED_CUT_PENALTY_STROKES)
@@ -225,16 +229,11 @@ export function computeLeagueResults(
   const results = picks.map(pick => {
     const golferIds = pickGolferIds(pick, shape);
 
-    const slotEntries = golferIds.map(id => {
+    const slotEntries = golferIds.map((id, i) => {
       if (!id) return { fantasy: null as number | null, missedCut: false };
-      const score = scoreMap.get(id);
-      if (!score) return { fantasy: null as number | null, missedCut: false };
-      // If the slot's primary golfer was replaced, the replacement's
-      // score AND status take over — both need to flow through so a
-      // replacement who themselves miss the cut counts as missed-cut.
-      const effective = (score.was_replaced && score.replaced_by_golfer_id)
-        ? scoreMap.get(score.replaced_by_golfer_id) ?? null
-        : score;
+      // This player's own WD swap for the slot, if any.
+      const effectiveId = pick.replacements?.[i + 1] ?? id;
+      const effective = scoreMap.get(effectiveId);
       if (!effective) return { fantasy: null as number | null, missedCut: false };
       const missedCut = effective.status === 'missed_cut';
       // scores.fantasy_score is shared across leagues and holds the

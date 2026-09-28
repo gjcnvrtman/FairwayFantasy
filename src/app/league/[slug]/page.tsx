@@ -17,9 +17,11 @@ import {
   getEffectivePayoutsForTournaments,
   betDefaultsFromLeague,
   isoOrNull,
+  loadReplacements,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
 import { teamShapeFor } from '@/lib/team-shape';
+import { loadSeasonBets, withSideBets } from '@/lib/db/season-data';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { formatScore, formatThruIndicator } from '@/lib/scoring';
 import {
@@ -119,6 +121,9 @@ export default async function LeaguePage({ params }: Props) {
       results:   resultsByTourn.get(t.id) ?? [],
     })),
   });
+  // Season bets (migration 027) — null for leagues without them.
+  // Settled side-bet $ is added to the money card totals.
+  const seasonBets = await loadSeasonBets(league);
 
   const [leaderboard, allPicks, scoresRows, tournamentLeaders] = activeTournament
     ? await Promise.all([
@@ -131,8 +136,26 @@ export default async function LeaguePage({ params }: Props) {
 
   // Build a per-user pick map so the leaderboard rows can render the
   // foursome inline (post-lock) without an extra query per row.
+  // Each player's own WD swaps (migration 028) are shown in place of
+  // the withdrawn golfer — that slot's fantasy score is the
+  // replacement's. `replaced_from_N` keeps the original's name.
+  const swaps = await loadReplacements(allPicks.map((p: any) => p.id));
+  const swapIds = [...new Set([...swaps.values()].flatMap(m => Object.values(m)))]
+    .filter((id): id is string => !!id);
+  const swapGolfers = swapIds.length === 0 ? [] : await db.selectFrom('golfers')
+    .selectAll().where('id', 'in', swapIds).execute();
+  const swapGolferById = new Map(swapGolfers.map(g => [g.id, g]));
   const picksByUser = new Map<string, any>();
-  for (const p of allPicks) picksByUser.set(p.user_id, p);
+  for (const p of allPicks as any[]) {
+    const eff: any = { ...p };
+    for (const [slot, gid] of Object.entries(swaps.get(p.id) ?? {})) {
+      const rep = gid ? swapGolferById.get(gid) : undefined;
+      if (!rep) continue;
+      eff[`replaced_from_${slot}`] = p[`golfer_${slot}`]?.name ?? null;
+      eff[`golfer_${slot}`] = rep;
+    }
+    picksByUser.set(p.user_id, eff);
+  }
   const myPick = picksByUser.get(user.id) ?? null;
 
   // Build a per-golfer scores map so the leaderboard can show each
@@ -185,7 +208,8 @@ export default async function LeaguePage({ params }: Props) {
 
   return (
     <div className="page-shell">
-      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
+      <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name}
+           showSeasons={!!seasonBets} />
 
       {/* ── Hero ─────────────────────────────────────────────── */}
       <div className="t-hero" style={{ padding: '2.5rem 1.5rem' }}>
@@ -306,12 +330,27 @@ export default async function LeaguePage({ params }: Props) {
                   window. Always rendered when the league has played
                   at least one tournament; empty-state copy otherwise. */}
               <LeagueMoneyCard
-                totals={moneySummary.totals}
+                totals={withSideBets(moneySummary.totals, seasonBets)}
                 membersById={Object.fromEntries(members.map((m: any) => [m.user_id, m]))}
                 currentUserId={user.id}
                 betAmount={betAmount}
                 tournamentCount={completedTournaments.length}
+                includesSideBets={!!seasonBets}
               />
+
+              {seasonBets && (
+                <Link href={`/league/${params.slug}/seasons`} className="card"
+                      style={{ display: 'block', textDecoration: 'none', color: 'inherit' }}>
+                  <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1rem',
+                               fontWeight: 700, marginBottom: '0.25rem' }}>
+                    Season bets →
+                  </h3>
+                  <p style={{ color: 'var(--slate-mid)', fontSize: '0.8rem', margin: 0 }}>
+                    {seasonBets.seasons.length} season{seasonBets.seasons.length === 1 ? '' : 's'}
+                    {' · '}standings, payouts and hole-in-ones
+                  </p>
+                </Link>
+              )}
 
 
               {/* Invite — client component, lifted out of the server tree
@@ -659,6 +698,11 @@ function LeaderboardRow({
                   flex: '1 1 auto', minWidth: 0,
                 }}>
                   {g.name}
+                  {pick[`replaced_from_${slot}`] && (
+                    <span style={{ color: 'var(--slate-mid)', fontWeight: 400, fontSize: '0.72rem', marginLeft: '0.35rem' }}>
+                      (for {pick[`replaced_from_${slot}`]}, WD)
+                    </span>
+                  )}
                 </span>
                 <span style={{ color: 'var(--slate-mid)', fontSize: '0.72rem', flexShrink: 0 }}>
                   {g.owgr_rank ? `#${g.owgr_rank}` : 'Unranked'}
@@ -1104,13 +1148,15 @@ interface MoneyTotal { user_id: string; amount: number; }
 interface MemberLite { user_id: string; profile?: { display_name?: string } | null; }
 
 function LeagueMoneyCard({
-  totals, membersById, currentUserId, betAmount, tournamentCount,
+  totals, membersById, currentUserId, betAmount, tournamentCount, includesSideBets,
 }: {
   totals:          MoneyTotal[];
   membersById:     Record<string, MemberLite>;
   currentUserId:   string;
   betAmount:       number;
   tournamentCount: number;
+  /** Totals include settled season bets (migration 027). */
+  includesSideBets?: boolean;
 }) {
   const ranked = [...totals].sort((a, b) => b.amount - a.amount);
   return (
@@ -1125,6 +1171,7 @@ function LeagueMoneyCard({
         {tournamentCount === 0
           ? `No tournaments completed yet · $${betAmount.toFixed(2)} per event`
           : `${tournamentCount} tournament${tournamentCount === 1 ? '' : 's'} completed · $${betAmount.toFixed(2)} per event`}
+        {includesSideBets && ' · includes settled season bets'}
       </p>
       {tournamentCount === 0 ? (
         <p style={{ color: 'var(--slate-mid)', fontSize: '0.85rem', fontStyle: 'italic' }}>

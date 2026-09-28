@@ -461,8 +461,9 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-(Reminder timer is analogous — `POST /api/admin/reminders` with the
-same `Bearer CRON_SECRET`.)
+(Pick reminders: `infra/systemd/fairway-reminders.{service,timer}` —
+every 15 min, `POST /api/admin/reminders` with the same
+`Bearer CRON_SECRET`. Installed by `infra/systemd/install.sh`.)
 
 ### Verify
 
@@ -485,8 +486,8 @@ curl -I http://192.168.1.160:3000
 | `SUPABASE_SERVICE_ROLE_KEY` | **YES** | server only | Bypasses RLS — keep secret. |
 | `CRON_SECRET` | **YES** for sync/reminders | server only | systemd timer Bearer auth. NOT prefixed `NEXT_PUBLIC_`. |
 | `NEXT_PUBLIC_SITE_URL` | **YES** for invites/reminders | client + server | Used to build absolute URLs. Set to the LAN URL in prod. |
-| `REMINDERS_LIVE` | NO (default unset) | server only | Set to `true` ONLY after wiring a real ChannelDriver. Without it, every reminder is logged to console + `reminder_log` with `status='console'`. **No real messages sent.** |
-| `SMTP_*` / `TWILIO_*` | NO | server only | Future: real reminder drivers. Placeholder lines in `.env.local.example`. |
+| `SMTP_*` | **YES** for any email | server only | All outbound email (verification, field set, pick reminders, recaps) goes through `sendEmail`. Without it, sends are skipped and pick reminders are logged `failed` (and retried). |
+| `TWILIO_*` | NO | server only | Unused — SMS reminders are not implemented (email only). |
 | `DATAGOLF_API_KEY` | NO | unused | Legacy reference — current code uses ESPN's free API. Leave blank. |
 
 Anything starting with `NEXT_PUBLIC_` is shipped to the client — don't

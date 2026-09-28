@@ -1,0 +1,20 @@
+# /etc/systemd/system/fairway-reminders.timer
+#
+# Fires fairway-reminders.service every 15 minutes, every day. Players
+# choose 1–168 hours of notice, so a reminder lands at most ~15 min
+# after their window opens. The run is a few cheap queries and only
+# looks at upcoming tournaments whose pick deadline is within a week,
+# so most runs do nothing.
+#
+# No Persistent=: a missed run is simply picked up by the next one
+# (the window stays open until the deadline).
+
+[Unit]
+Description=Every 15 min: send Fairway pick-deadline reminders
+
+[Timer]
+OnCalendar=*:0/15
+Unit=fairway-reminders.service
+
+[Install]
+WantedBy=timers.target

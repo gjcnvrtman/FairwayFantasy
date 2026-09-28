@@ -32,6 +32,7 @@ import {
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, payoutFromLeague } from '@/lib/money';
+import { loadSeasonBets, withSideBets } from '@/lib/db/season-data';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
@@ -151,7 +152,7 @@ export async function POST(req: NextRequest) {
       `commissioner=${auth.user.id} member_count=${members.length} ` +
       `completed_tournaments=${withResults.length} ` +
       `bet_amount=$${betAmount.toFixed(2)} ` +
-      `totals=${JSON.stringify(moneySummary.totals)}`,
+      `totals=${JSON.stringify(withSideBets(moneySummary.totals, await loadSeasonBets(auth.league)))}`,
     );
   } catch (e) {
     // Audit failure must not block the delete itself — log it but

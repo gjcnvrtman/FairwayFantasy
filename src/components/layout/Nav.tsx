@@ -9,9 +9,11 @@ interface NavProps {
   leagueSlug?: string;
   leagueName?: string;
   userName?: string;
+  /** Show the Seasons tab — only leagues with season bets (migration 027). */
+  showSeasons?: boolean;
 }
 
-export default function Nav({ leagueSlug, leagueName, userName }: NavProps) {
+export default function Nav({ leagueSlug, leagueName, userName, showSeasons }: NavProps) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -52,6 +54,9 @@ export default function Nav({ leagueSlug, leagueName, userName }: NavProps) {
     { href: `/league/${leagueSlug}/schedule`, label: 'Schedule',    match: (p: string) => p.includes('/schedule') },
     { href: `/league/${leagueSlug}/history`,  label: 'History',     match: (p: string) => p.includes('/history') },
     { href: `/league/${leagueSlug}/stats`,    label: 'Stats',       match: (p: string) => p.includes('/stats') },
+    ...(showSeasons
+      ? [{ href: `/league/${leagueSlug}/seasons`, label: 'Seasons', match: (p: string) => p.includes('/seasons') }]
+      : []),
   ] : [];
 
   return (

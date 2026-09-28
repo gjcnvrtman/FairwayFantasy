@@ -5,8 +5,8 @@
 // both the result AND the insert/mark calls the orchestrator made.
 // No real DB, no Kysely — just typed inputs in, typed assertions out.
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { runPredictions, OrchestratorError } from '../src/lib/predictions-orchestrator';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { runPredictions, OrchestratorError, mapBounded } from '../src/lib/predictions-orchestrator';
 import type {
   PredictionsQueries,
   RunPersistInput,
@@ -317,12 +317,49 @@ describe('runPredictions — per-golfer load failures', () => {
     expect(seen.has('d-A')).toBe(false);
   });
 
+  it('records the drop instead of hiding it: result + persisted run missing_inputs', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stub = makeStubQueries({ throwOnLoadFor: ['d-A', 't-B'] });
+    const result = await runPredictions({ tournamentId: 't-1' }, stub.queries);
+    expect(result.droppedGolfers.map(d => d.golferId).sort()).toEqual(['d-A', 't-B']);
+    expect(result.droppedGolfers.every(d => d.error === 'boom')).toBe(true);
+    expect(result.missingInputsSummary.load_failed).toBe(2);
+    expect(stub.captured.run?.missingInputs.load_failed).toBe(2);
+    expect(err).toHaveBeenCalledTimes(2);
+    err.mockRestore();
+  });
+
+  it('clean run: no droppedGolfers, no load_failed key', async () => {
+    const result = await runPredictions({ tournamentId: 't-1' }, makeStubQueries().queries);
+    expect(result.droppedGolfers).toEqual([]);
+    expect(result.missingInputsSummary).not.toHaveProperty('load_failed');
+  });
+
   it('errors with FIELD_TOO_SMALL when too many golfers drop', async () => {
     // Drop everyone except 3 — under the 4 minimum.
     const allIds = smallField().map(g => g.golferId);
     const stub = makeStubQueries({ throwOnLoadFor: allIds.slice(3) });
     await expect(runPredictions({ tournamentId: 't-1' }, stub.queries))
       .rejects.toMatchObject({ code: 'FIELD_TOO_SMALL' });
+  });
+});
+
+// ── Bounded per-golfer loading ─────────────────────────────
+
+describe('mapBounded', () => {
+  it('never exceeds the limit and keeps input order', async () => {
+    let inFlight = 0, peak = 0;
+    const out = await mapBounded([5, 1, 4, 2, 3], 2, async n => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(r => setTimeout(r, n));
+      inFlight--;
+      return n * 10;
+    });
+    expect(out).toEqual([50, 10, 40, 20, 30]);
+    expect(peak).toBe(2);
+  });
+  it('empty input → empty output', async () => {
+    expect(await mapBounded([], 3, async x => x)).toEqual([]);
   });
 });
 

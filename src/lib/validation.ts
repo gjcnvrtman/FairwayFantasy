@@ -48,6 +48,14 @@ export interface CreateLeagueInput {
   missedDeadlinePenalty?: number;
   /** Team size on majors: 4 (default) or 6 (migration 026). */
   majorTeamSize?: number;
+  /** Seasons 1..4 (migration 027). Default 1. */
+  seasonCount?: number;
+  /** Season bets ($ per player, per season). null/undefined = bet off. */
+  betTeamCumulative?:     number | null;
+  betTopTierCumulative?:  number | null;
+  betDarkHorseCumulative?: number | null;
+  /** $ per ace every other member pays the owner. null = off. */
+  betAceBounty?:          number | null;
 }
 
 export interface FieldErrors {
@@ -62,6 +70,8 @@ export interface FieldErrors {
   missedCutPenalty?:      string;
   missedDeadlinePenalty?: string;
   majorTeamSize?:         string;
+  seasonCount?:           string;
+  seasonBets?:            string;
   /** Cross-cutting issues that aren't tied to a single field. */
   general?:         string;
 }
@@ -188,6 +198,26 @@ export function validateCreateLeague(input: CreateLeagueInput): FieldErrors {
   if (input.majorTeamSize !== undefined && input.majorTeamSize !== 4 && input.majorTeamSize !== 6) {
     errors.majorTeamSize = 'Majors team size must be 4 or 6.';
   }
+
+  // ── seasons + season bets (migration 027) ──
+  if (input.seasonCount !== undefined &&
+      (!Number.isInteger(input.seasonCount) || input.seasonCount < 1 || input.seasonCount > 4)) {
+    errors.seasonCount = 'Seasons must be a whole number from 1 to 4.';
+  }
+  const seasonBetErr = (label: string, v: number | null | undefined, max: number): string | undefined => {
+    if (v == null) return undefined;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return `${label} must be a number.`;
+    if (v < 0 || v > max) return `${label} must be between $0 and $${max}.`;
+    if (Math.round(v * 100) !== v * 100) return `${label} cannot have more than 2 decimal places.`;
+    return undefined;
+  };
+  // Per-player season bets use the same cap as the weekly bet.
+  const sbErr =
+    seasonBetErr('Team bet', input.betTeamCumulative, LEAGUE_LIMITS.BET_MAX) ??
+    seasonBetErr('Top-tier bet', input.betTopTierCumulative, LEAGUE_LIMITS.BET_MAX) ??
+    seasonBetErr('Dark-horse bet', input.betDarkHorseCumulative, LEAGUE_LIMITS.BET_MAX) ??
+    seasonBetErr('Hole-in-one bounty', input.betAceBounty, LEAGUE_LIMITS.BET_MAX);
+  if (sbErr) errors.seasonBets = sbErr;
 
   return errors;
 }

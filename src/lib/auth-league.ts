@@ -47,6 +47,13 @@ export interface LeagueRow {
   setup_status:            'legacy' | 'setup' | 'locked';
   setup_locked_at:         string | null;
   major_team_size:         number;   // 4 or 6 (migration 026)
+  // Seasons + season bets (migration 027). NULL bet = off.
+  season_count:              number;
+  bet_team_cumulative:       string | null;
+  bet_top_tier_cumulative:   string | null;
+  bet_dark_horse_cumulative: string | null;
+  bets_add_penalties:        boolean;
+  bet_ace_bounty:            string | null;
   created_at:        string;
 }
 

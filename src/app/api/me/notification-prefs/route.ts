@@ -104,8 +104,8 @@ export async function PUT(req: NextRequest) {
   const pushToken = typeof body.push_token === 'string' && body.push_token.trim() !== ''
     ? body.push_token.trim() : null;
 
-  // SMS-without-phone is a configuration error worth surfacing — the
-  // notifier would mark every attempt as 'skipped'.
+  // SMS-without-phone is a configuration error worth surfacing.
+  // (SMS/push aren't delivered today — the reminder job sends email only.)
   if (smsEnabled && !phoneE164) {
     errors.phone_e164 = 'Phone number required to enable SMS reminders.';
   }

@@ -104,6 +104,9 @@ export default function PicksPage() {
   const [replaceSearch, setReplaceSearch] = useState('');
   const [replacing,     setReplacing]     = useState(false);
   const [replaceError,  setReplaceError]  = useState('');
+  // This player's WD swaps, slot (1-based) → replacement golfer id
+  // (migration 028).
+  const [replacements, setReplacements] = useState<Record<number, string>>({});
 
   // ── Initial data load ─────────────────────────────────────
   useEffect(() => {
@@ -128,6 +131,7 @@ export default function PicksPage() {
         setLeagueId(data.leagueId);
         setAlreadyPicked(data.alreadyPickedIds ?? []);
         setScores(data.scores ?? []);
+        setReplacements(data.replacements ?? {});
         if (data.rules) setRules(data.rules);
         const teamShape: TeamShape = data.teamShape ?? TEAM_4;
         setShape(teamShape);
@@ -249,6 +253,12 @@ export default function PicksPage() {
   function getStatusFor(golferId: string): string {
     return scores.find(s => s.golfer_id === golferId)?.status ?? 'active';
   }
+  const isOut = (status: string | null) => status === 'withdrawn' || status === 'disqualified';
+  // Slot i (0-based) still needs a replacement: its golfer is out and
+  // this player hasn't swapped it yet.
+  const needsReplacement = (g: Golfer | null, i: number) =>
+    !!g && isOut(getStatusFor(g.id)) && !replacements[i + 1];
+  const golferName = (id: string) => golfers.find(g => g.id === id)?.name ?? 'Unknown golfer';
 
   // Eligible replacements: golfers in the field who haven't teed
   // off yet (round_1 still null) AND aren't already in this user's
@@ -260,7 +270,10 @@ export default function PicksPage() {
     const inFieldNotTeedOff = new Set(
       scores.filter(s => s.round_1 === null).map(s => s.golfer_id),
     );
-    const pickedIds = new Set(selected.map(g => g?.id).filter(Boolean) as string[]);
+    const pickedIds = new Set([
+      ...(selected.map(g => g?.id).filter(Boolean) as string[]),
+      ...Object.values(replacements),
+    ]);
     const targetIsTopTier = topTierIds.has(replaceTarget.id);
     const q = replaceSearch.toLowerCase().trim();
     return golfers.filter(g =>
@@ -269,7 +282,7 @@ export default function PicksPage() {
       topTierIds.has(g.id) === targetIsTopTier &&
       (q === '' || g.name.toLowerCase().includes(q)),
     );
-  }, [replaceTarget, scores, selected, golfers, replaceSearch, topTierIds]);
+  }, [replaceTarget, scores, selected, replacements, golfers, replaceSearch, topTierIds]);
 
   async function handleReplace(replacementGolferId: string) {
     if (!replaceTarget || !existingPickId) return;
@@ -290,8 +303,8 @@ export default function PicksPage() {
         return;
       }
       // Success — close modal and refresh so the new substitution
-      // shows. PUT marks the withdrawn golfer's score row as replaced;
-      // a re-fetch picks up the new state.
+      // shows. PUT records the swap on this pick only; a re-fetch
+      // picks up the new state.
       setReplaceTarget(null);
       setReplaceSearch('');
       router.refresh();
@@ -362,7 +375,7 @@ export default function PicksPage() {
                   action at the top of the slot list so the user sees
                   it before scrolling. */}
               {isLocked && existingPickId &&
-                selected.some(g => g && getStatusFor(g.id) === 'withdrawn') && (
+                selected.some((g, i) => needsReplacement(g, i)) && (
                   <div className="alert alert-warn" style={{ marginBottom: '1rem' }}>
                     <strong>⚠ Withdrawal detected.</strong>{' '}
                     One or more of your golfers has withdrawn from the tournament.
@@ -375,6 +388,7 @@ export default function PicksPage() {
                              gap: '0.75rem', marginBottom: '1.25rem' }}>
                 {selected.map((g, i) => {
                   const status = g && isLocked ? getStatusFor(g.id) : null;
+                  const swapId = replacements[i + 1];
                   return (
                     <div key={i}>
                       <PickSlot
@@ -393,7 +407,13 @@ export default function PicksPage() {
                           fontSize: '0.78rem',
                         }}>
                           <StatusBadge status={status} />
-                          {status === 'withdrawn' && existingPickId && (
+                          {swapId && (
+                            <span style={{ color: 'var(--slate-mid)' }}>
+                              ↳ Replaced by <strong>{golferName(swapId)}</strong>
+                              {getStatusFor(swapId) !== 'active' && <> · <StatusBadge status={getStatusFor(swapId)} /></>}
+                            </span>
+                          )}
+                          {needsReplacement(g, i) && existingPickId && (
                             <button
                               type="button"
                               className="btn btn-outline btn-sm"
@@ -831,6 +851,7 @@ function ScoringRulesCard({ missedCutPenalty, missedDeadlinePenalty, shape }: {
         <li>Made cut = score capped at the cut line</li>
         <li>Missed the pick deadline = random lineup plus a {strokes(missedDeadlinePenalty)} penalty</li>
         <li>Withdrawal = swap with any golfer who hasn&rsquo;t teed off</li>
+        <li>Withdrawal or DQ with no swap = like a missed cut, but no penalty</li>
         <li>No two players in the league may pick the same exact {shape.size}</li>
       </ul>
     </div>

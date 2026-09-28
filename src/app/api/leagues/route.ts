@@ -40,6 +40,14 @@ export async function POST(req: NextRequest) {
     : LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT;
   // Team size on majors (migration 026). 4 = same as regular events.
   const majorTeamSize = typeof body.majorTeamSize === 'number' ? body.majorTeamSize : 4;
+  // Seasons + season bets (migration 027). null = bet off.
+  const numOrNull = (v: unknown) => (typeof v === 'number' ? v : null);
+  const seasonCount            = typeof body.seasonCount === 'number' ? body.seasonCount : 1;
+  const betTeamCumulative      = numOrNull(body.betTeamCumulative);
+  const betTopTierCumulative   = numOrNull(body.betTopTierCumulative);
+  const betDarkHorseCumulative = numOrNull(body.betDarkHorseCumulative);
+  const betAceBounty           = numOrNull(body.betAceBounty);
+  const betsAddPenalties       = body.betsAddPenalties === true;
 
   // Same validation the form uses client-side — single source of truth.
   // Errors come back as a field-keyed object so the form can highlight
@@ -48,6 +56,7 @@ export async function POST(req: NextRequest) {
     name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
     majorBetAmount, payoutPct1, payoutPct2, payoutPct3,
     missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
+    seasonCount, betTeamCumulative, betTopTierCumulative, betDarkHorseCumulative, betAceBounty,
   });
   if (Object.keys(fieldErrors).length > 0) {
     return NextResponse.json({ fieldErrors }, { status: 400 });
@@ -88,6 +97,12 @@ export async function POST(req: NextRequest) {
         missed_cut_penalty:      missedCutPenalty,
         missed_deadline_penalty: missedDeadlinePenalty,
         major_team_size:         majorTeamSize,
+        season_count:              seasonCount,
+        bet_team_cumulative:       betTeamCumulative?.toFixed(2) ?? null,
+        bet_top_tier_cumulative:   betTopTierCumulative?.toFixed(2) ?? null,
+        bet_dark_horse_cumulative: betDarkHorseCumulative?.toFixed(2) ?? null,
+        bet_ace_bounty:            betAceBounty?.toFixed(2) ?? null,
+        bets_add_penalties:        betsAddPenalties,
         // Setup mode: commissioner can adjust rules + prune the schedule
         // until they lock it, or until the first pick deadline passes
         // (src/lib/league-setup.ts).

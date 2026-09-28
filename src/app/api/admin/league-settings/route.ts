@@ -54,6 +54,14 @@ export async function POST(req: NextRequest) {
   const mcPenaltyRaw     = body.missedCutPenalty;
   const mdPenaltyRaw     = body.missedDeadlinePenalty;
   const teamSizeRaw      = body.majorTeamSize;
+  // Seasons + season bets (migration 027). null bet = off.
+  const seasonCountRaw   = body.seasonCount;
+  const betTeamRaw       = body.betTeamCumulative;
+  const betTopRaw        = body.betTopTierCumulative;
+  const betDarkRaw       = body.betDarkHorseCumulative;
+  const betAceRaw        = body.betAceBounty;
+  const addPenaltiesRaw  = body.betsAddPenalties;
+  const seasonFields = [seasonCountRaw, betTeamRaw, betTopRaw, betDarkRaw, betAceRaw, addPenaltiesRaw];
 
   const auth = await requireCommissioner({ slug });
   if (isAuthFail(auth)) return auth.response;
@@ -65,7 +73,7 @@ export async function POST(req: NextRequest) {
     const lockedFields = [
       startDateRaw, endDateRaw, weeklyBetAmtRaw,
       payoutPct1Raw, payoutPct2Raw, payoutPct3Raw,
-      majorBetRaw, mcPenaltyRaw, mdPenaltyRaw, teamSizeRaw,
+      majorBetRaw, mcPenaltyRaw, mdPenaltyRaw, teamSizeRaw, ...seasonFields,
     ];
     if (lockedFields.some(v => v !== undefined)) {
       return NextResponse.json(
@@ -78,19 +86,46 @@ export async function POST(req: NextRequest) {
   // ── Collect updates ──
   // Any field that's absent (undefined) stays untouched. Explicit null
   // on a date field means "clear the column".
-  const updates: Record<string, number | string | null> = {};
+  const updates: Record<string, number | string | boolean | null> = {};
 
-  // Setup-only rules (majors bet + penalties). Legacy leagues keep
-  // their pre-025 behavior and never expose these.
+  // Setup-only rules (majors bet, team size, penalties, seasons, season
+  // bets). Legacy leagues keep their pre-025 behavior and never expose
+  // these.
   const setupRuleTouched =
     majorBetRaw !== undefined || mcPenaltyRaw !== undefined ||
-    mdPenaltyRaw !== undefined || teamSizeRaw !== undefined;
+    mdPenaltyRaw !== undefined || teamSizeRaw !== undefined ||
+    seasonFields.some(v => v !== undefined);
   if (setupRuleTouched) {
     if (setupStatus !== 'setup') {
       return NextResponse.json(
-        { error: 'Majors bet, team size and penalties can only be set on leagues created with the new setup.' },
+        { error: 'These rules can only be set on leagues created with the new setup.' },
         { status: 400 },
       );
+    }
+    if (seasonFields.some(v => v !== undefined)) {
+      const errs = validateCreateLeague({
+        name: auth.league.name, slug: auth.league.slug,
+        maxPlayers: auth.league.max_players,
+        startDate: '2000-01-01', endDate: '2000-01-01',
+        weeklyBetAmount: Number(auth.league.weekly_bet_amount),
+        seasonCount:            seasonCountRaw as number | undefined,
+        betTeamCumulative:      betTeamRaw as number | null | undefined,
+        betTopTierCumulative:   betTopRaw as number | null | undefined,
+        betDarkHorseCumulative: betDarkRaw as number | null | undefined,
+        betAceBounty:           betAceRaw as number | null | undefined,
+      });
+      const e = errs.seasonCount ?? errs.seasonBets;
+      if (e) return NextResponse.json({ error: e }, { status: 400 });
+      if (addPenaltiesRaw !== undefined && typeof addPenaltiesRaw !== 'boolean') {
+        return NextResponse.json({ error: 'betsAddPenalties must be true or false.' }, { status: 400 });
+      }
+      const money = (v: unknown) => (v === null ? null : (v as number).toFixed(2));
+      if (seasonCountRaw !== undefined) updates.season_count              = seasonCountRaw as number;
+      if (betTeamRaw     !== undefined) updates.bet_team_cumulative       = money(betTeamRaw);
+      if (betTopRaw      !== undefined) updates.bet_top_tier_cumulative   = money(betTopRaw);
+      if (betDarkRaw     !== undefined) updates.bet_dark_horse_cumulative = money(betDarkRaw);
+      if (betAceRaw      !== undefined) updates.bet_ace_bounty            = money(betAceRaw);
+      if (addPenaltiesRaw !== undefined) updates.bets_add_penalties       = addPenaltiesRaw as boolean;
     }
     if (teamSizeRaw !== undefined) {
       if (teamSizeRaw !== 4 && teamSizeRaw !== 6) {

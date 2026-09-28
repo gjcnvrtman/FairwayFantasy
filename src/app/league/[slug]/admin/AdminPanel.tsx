@@ -23,6 +23,13 @@ interface League {
   missed_cut_penalty:      number;
   missed_deadline_penalty: number;
   major_team_size:         number;   // 4 or 6 (migration 026)
+  // Seasons + season bets (migration 027).
+  season_count:              number;
+  bet_team_cumulative:       string | null;
+  bet_top_tier_cumulative:   string | null;
+  bet_dark_horse_cumulative: string | null;
+  bet_ace_bounty:            string | null;
+  bets_add_penalties:        boolean;
   setup_locked_at:         string | null;
   created_at:          string;
 }
@@ -82,6 +89,8 @@ interface Props {
   setupStatus:      'legacy' | 'setup' | 'locked';
   /** When a setup-mode league will auto-lock (first pick deadline). */
   autoLock:         { tournamentName: string; at: string } | null;
+  /** Server-rendered sections shown under League Rules (e.g. ace corrections). */
+  extraSections?:   React.ReactNode;
   /** The current viewer's role in this league. The admin page only
    *  renders this component for commissioners + co_commissioners.
    *  Used here to hide structural sections (Danger Zone, role
@@ -93,7 +102,7 @@ interface Props {
 export default function AdminPanel({
   league, members, tournaments, activeTournament,
   tournamentIdsWithPicks, tournamentBets, scheduleIds,
-  setupStatus, autoLock,
+  setupStatus, autoLock, extraSections,
   viewerRole, inviteUrl,
 }: Props) {
   const isCommissioner = viewerRole === 'commissioner';
@@ -765,6 +774,7 @@ export default function AdminPanel({
           scheduleCount={scheduleIdSet.size}
         />
       )}
+      {extraSections}
 
       {/* ── League settings ─────────────────────────────────────
            Commissioner-only — co-commissioners cannot edit structural
