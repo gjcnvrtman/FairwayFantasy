@@ -40,6 +40,13 @@ export interface LeagueRow {
   payout_pct_1:      number;
   payout_pct_2:      number;
   payout_pct_3:      number;
+  // Setup-time rules (migration 025).
+  major_bet_amount:        string | null;
+  missed_cut_penalty:      number;
+  missed_deadline_penalty: number;
+  setup_status:            'legacy' | 'setup' | 'locked';
+  setup_locked_at:         string | null;
+  major_team_size:         number;   // 4 or 6 (migration 026)
   created_at:        string;
 }
 

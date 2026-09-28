@@ -54,6 +54,16 @@ export interface LeaguesTable {
   payout_pct_1:    Generated<number>;
   payout_pct_2:    Generated<number>;
   payout_pct_3:    Generated<number>;
+  // Setup-time rules (migration 025). Defaults match pre-025 behavior.
+  major_bet_amount:        string | null;       // NUMERIC(10,2); NULL = same as weekly
+  missed_cut_penalty:      Generated<number>;
+  missed_deadline_penalty: Generated<number>;
+  // 'legacy' = pre-025 league (unchanged behavior); 'setup' = new
+  // league, rules editable; 'locked' = rules frozen.
+  setup_status:            Generated<'legacy' | 'setup' | 'locked'>;
+  setup_locked_at:         Timestamp | null;
+  // 4 (default) or 6 — team size on majors (migration 026).
+  major_team_size:         Generated<number>;
   created_at:      Generated<Timestamp>;
 }
 
@@ -186,6 +196,9 @@ export interface PicksTable {
   golfer_2_id:        string;
   golfer_3_id:        string;
   golfer_4_id:        string;
+  // 6-man majors only (migration 026). Set together or not at all.
+  golfer_5_id:        ColumnType<string | null, string | null | undefined, string | null>;
+  golfer_6_id:        ColumnType<string | null, string | null | undefined, string | null>;
   golfer_tuple_hash:  ColumnType<string | null, never, never>;
   is_locked:          Generated<boolean>;
   submitted_at:       Generated<Timestamp>;
@@ -253,6 +266,8 @@ export interface FantasyResultsTable {
   golfer_2_score:    number | null;
   golfer_3_score:    number | null;
   golfer_4_score:    number | null;
+  golfer_5_score:    ColumnType<number | null, number | null | undefined, number | null>;  // migration 026
+  golfer_6_score:    ColumnType<number | null, number | null | undefined, number | null>;
   counting_golfers:  IntArray | null;
   total_score:       number | null;
   rank:              number | null;

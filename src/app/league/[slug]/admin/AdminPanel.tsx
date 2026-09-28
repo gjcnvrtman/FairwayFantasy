@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import InviteCard from '@/components/league/InviteCard';
+import LeagueSetupCard from './LeagueSetupCard';
 
 interface League {
   id:                  string;
@@ -17,6 +18,12 @@ interface League {
   payout_pct_1:        number;
   payout_pct_2:        number;
   payout_pct_3:        number;
+  // Setup-time rules (migration 025).
+  major_bet_amount:        string | null;
+  missed_cut_penalty:      number;
+  missed_deadline_penalty: number;
+  major_team_size:         number;   // 4 or 6 (migration 026)
+  setup_locked_at:         string | null;
   created_at:          string;
 }
 
@@ -70,6 +77,11 @@ interface Props {
    *  section: in-set → shows a Remove button; not-in-set (and inside
    *  the league date window) → shows an Add button. */
   scheduleIds:      string[];
+  /** Setup lifecycle (migration 025), resolved server-side with
+   *  auto-lock applied. 'legacy' leagues render exactly as before. */
+  setupStatus:      'legacy' | 'setup' | 'locked';
+  /** When a setup-mode league will auto-lock (first pick deadline). */
+  autoLock:         { tournamentName: string; at: string } | null;
   /** The current viewer's role in this league. The admin page only
    *  renders this component for commissioners + co_commissioners.
    *  Used here to hide structural sections (Danger Zone, role
@@ -81,9 +93,12 @@ interface Props {
 export default function AdminPanel({
   league, members, tournaments, activeTournament,
   tournamentIdsWithPicks, tournamentBets, scheduleIds,
+  setupStatus, autoLock,
   viewerRole, inviteUrl,
 }: Props) {
   const isCommissioner = viewerRole === 'commissioner';
+  const isLegacy       = setupStatus === 'legacy';
+  const scheduleLocked = setupStatus === 'locked';
   const router = useRouter();
 
   // ── Per-league schedule (migration 022) ──────────────────────
@@ -738,6 +753,19 @@ export default function AdminPanel({
       maxWidth: 920, margin: '0 auto',
     }}>
 
+      {/* ── League rules + setup lock (migration 025) ────────────
+           New-flow leagues only. Legacy leagues keep the editors in
+           League Settings below, unchanged. */}
+      {!isLegacy && (
+        <LeagueSetupCard
+          league={league}
+          status={setupStatus as 'setup' | 'locked'}
+          autoLock={autoLock}
+          isCommissioner={isCommissioner}
+          scheduleCount={scheduleIdSet.size}
+        />
+      )}
+
       {/* ── League settings ─────────────────────────────────────
            Commissioner-only — co-commissioners cannot edit structural
            settings (max players, date window, weekly bet amount).
@@ -821,6 +849,9 @@ export default function AdminPanel({
             </>
           )}
 
+          {/* Window / bet / payout editors — legacy leagues only; new-flow
+              leagues edit these in the League Rules card above. */}
+          {isLegacy && (<>
           <dt style={{ color: 'var(--slate-mid)' }}>Tournament window</dt>
           <dd style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
             <input
@@ -1000,6 +1031,7 @@ export default function AdminPanel({
               </dd>
             </>
           )}
+          </>)}
 
           <dt style={{ color: 'var(--slate-mid)' }}>Created</dt>
           <dd>{new Date(league.created_at).toLocaleDateString('en-US', {
@@ -1559,7 +1591,9 @@ export default function AdminPanel({
               </h2>
               <p style={{ margin: '0.4rem 0 0', fontSize: '0.85rem', color: 'var(--slate-mid)' }}>
                 Only tournaments in this list appear on the Schedule tab and count toward picks + money math.
-                Removing a tournament is blocked once picks or results exist for it.
+                {scheduleLocked
+                  ? ' 🔒 League setup is locked — the schedule is final.'
+                  : ' Removing a tournament is blocked once picks or results exist for it.'}
               </p>
             </div>
 
@@ -1579,7 +1613,7 @@ export default function AdminPanel({
                       <th>Tournament</th>
                       <th className="hide-mobile">Starts</th>
                       <th className="hide-mobile">Status</th>
-                      <th style={{ textAlign: 'right' }}>Remove</th>
+                      {!scheduleLocked && <th style={{ textAlign: 'right' }}>Remove</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -1601,7 +1635,7 @@ export default function AdminPanel({
                               {t.status}
                             </span>
                           </td>
-                          <td style={{ textAlign: 'right' }}>
+                          {!scheduleLocked && <td style={{ textAlign: 'right' }}>
                             <button
                               type="button"
                               className="btn btn-sm"
@@ -1619,7 +1653,7 @@ export default function AdminPanel({
                             >
                               {busy ? '…' : 'Remove'}
                             </button>
-                          </td>
+                          </td>}
                         </tr>
                       );
                     })}
@@ -1629,7 +1663,7 @@ export default function AdminPanel({
             </div>
 
             {/* Add tournament */}
-            <div style={{
+            {!scheduleLocked && <div style={{
               padding: '1rem 1.5rem 1.25rem',
               borderTop: '1px solid var(--cream-dark)',
               background: 'var(--cream)',
@@ -1681,7 +1715,7 @@ export default function AdminPanel({
               {scheduleMsg && !scheduleErr && (
                 <p style={{ marginTop: '0.6rem', color: 'var(--green-mid)', fontSize: '0.82rem' }}>✓ {scheduleMsg}</p>
               )}
-            </div>
+            </div>}
           </section>
         );
       })()}
@@ -1743,12 +1777,17 @@ export default function AdminPanel({
             <tbody>
               {visibleTourns.map(t => {
                 const savedOverride = tournBetSaved[t.id];
-                const effective     = savedOverride ?? leagueDefaultBet;
+                // New-flow leagues (migration 025): weekly bet, or the
+                // majors bet on majors. No per-tournament overrides.
+                const leagueBetForT = !isLegacy && t.type === 'major' && league.major_bet_amount != null
+                  ? Number(league.major_bet_amount)
+                  : leagueDefaultBet;
+                const effective     = savedOverride ?? leagueBetForT;
                 const inputVal      = tournBetInputs[t.id] ?? effective.toFixed(2);
                 const busy          = !!tournBetBusy[t.id];
                 const msg           = tournBetMsg[t.id] ?? '';
                 const err           = tournBetErr[t.id] ?? '';
-                const editable      = t.status === 'upcoming';
+                const editable      = isLegacy && t.status === 'upcoming';
                 return (
                   <tr key={t.id}>
                     <td><strong style={{ fontSize: '0.875rem' }}>{t.name}</strong></td>

@@ -63,6 +63,9 @@ export interface Pick {
   golfer_2_id: string;
   golfer_3_id: string;
   golfer_4_id: string;
+  // 6-man majors only (migration 026). NULL/absent for 4-man teams.
+  golfer_5_id?: string | null;
+  golfer_6_id?: string | null;
   is_locked: boolean;
   submitted_at: string;
   // Added strokes at scoring time. Default 0. Set to 2 by the
@@ -75,6 +78,8 @@ export interface Pick {
   golfer_2?: Golfer;
   golfer_3?: Golfer;
   golfer_4?: Golfer;
+  golfer_5?: Golfer | null;
+  golfer_6?: Golfer | null;
 }
 
 export interface Score {
@@ -114,6 +119,9 @@ export interface FantasyResult {
   golfer_2_score: number | null;
   golfer_3_score: number | null;
   golfer_4_score: number | null;
+  // 6-man majors only (migration 026).
+  golfer_5_score?: number | null;
+  golfer_6_score?: number | null;
   counting_golfers: number[];
   total_score: number | null;
   rank: number | null;

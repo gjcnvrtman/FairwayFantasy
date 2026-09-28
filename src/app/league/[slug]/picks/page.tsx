@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { TEAM_4, type TeamShape } from '@/lib/team-shape';
 
 interface Golfer {
   id:            string;
@@ -31,6 +32,8 @@ interface ExistingPick {
   golfer_2_id:  string;
   golfer_3_id:  string;
   golfer_4_id:  string;
+  golfer_5_id?: string | null;   // 6-man majors only (migration 026)
+  golfer_6_id?: string | null;
   is_locked:    boolean;
   submitted_at: string;
 }
@@ -42,14 +45,20 @@ interface ScoreRow {
   score_to_par: number | null;
 }
 
-type Slot = 0 | 1 | 2 | 3;
-const SLOT_LABELS = ['Top Tier #1', 'Top Tier #2', 'Dark Horse #1', 'Dark Horse #2'];
-const SLOT_HELP   = [
-  'Top 24 OWGR-ranked golfers in this tournament',
-  'Top 24 OWGR-ranked golfers in this tournament',
-  'Everyone else in the field',
-  'Everyone else in the field',
-];
+/** 0-based slot index. Slots 0..shape.topTier-1 are top tier. */
+type Slot = number;
+
+// Labels depend on the team shape: 4-man = 2 + 2, 6-man majors = 3 + 3.
+function slotLabel(slot: Slot, shape: TeamShape): string {
+  return slot < shape.topTier
+    ? `Top Tier #${slot + 1}`
+    : `Dark Horse #${slot - shape.topTier + 1}`;
+}
+function slotHelp(slot: Slot, shape: TeamShape): string {
+  return slot < shape.topTier
+    ? 'Top 24 OWGR-ranked golfers in this tournament'
+    : 'Everyone else in the field';
+}
 
 // ─────────────────────────────────────────────────────────────
 // Render
@@ -82,6 +91,12 @@ export default function PicksPage() {
   const [alreadyPicked, setAlreadyPicked] = useState<string[]>([]);
   const [existingPickId, setExistingPickId] = useState<string | null>(null);
   const [scores, setScores]         = useState<ScoreRow[]>([]);
+  // League penalties (migration 025). Defaults match pre-025 rules
+  // until /api/picks/setup responds.
+  const [rules, setRules] = useState({ missedCutPenalty: 1, missedDeadlinePenalty: 2 });
+  // Team shape for this tournament (migration 026): 6-man on majors
+  // when the league chose it, otherwise 4-man.
+  const [shape, setShape] = useState<TeamShape>(TEAM_4);
   // Withdrawal-replacement state. `replaceTarget` = the WD'd golfer the
   // user clicked Replace on; `replaceSearch` filters the candidate
   // panel; `replacing` blocks double-submit while PUT is in flight.
@@ -113,16 +128,19 @@ export default function PicksPage() {
         setLeagueId(data.leagueId);
         setAlreadyPicked(data.alreadyPickedIds ?? []);
         setScores(data.scores ?? []);
+        if (data.rules) setRules(data.rules);
+        const teamShape: TeamShape = data.teamShape ?? TEAM_4;
+        setShape(teamShape);
+        setSelected(Array(teamShape.size).fill(null));
 
         if (data.existingPick) {
           const ep: ExistingPick = data.existingPick;
           setExistingPickId(ep.id ?? null);
-          const findG = (id: string) =>
+          const findG = (id: string | null | undefined) =>
             (data.golfers ?? []).find((g: Golfer) => g.id === id) ?? null;
-          setSelected([
-            findG(ep.golfer_1_id), findG(ep.golfer_2_id),
-            findG(ep.golfer_3_id), findG(ep.golfer_4_id),
-          ]);
+          const ids = [ep.golfer_1_id, ep.golfer_2_id, ep.golfer_3_id,
+                       ep.golfer_4_id, ep.golfer_5_id, ep.golfer_6_id];
+          setSelected(ids.slice(0, teamShape.size).map(findG));
         }
         setLoading(false);
       } catch (err) {
@@ -145,17 +163,17 @@ export default function PicksPage() {
       if (q && !g.name.toLowerCase().includes(q)) return false;
       if (activeSlot !== null) {
         const isTop = topTierIds.has(g.id);
-        // Slots 0,1 = top tier; slots 2,3 = dark horse.
-        if (activeSlot < 2  && !isTop) return false;
-        if (activeSlot >= 2 &&  isTop) return false;
+        // Slots 0..topTier-1 = top tier; the rest = dark horse.
+        if (activeSlot <  shape.topTier && !isTop) return false;
+        if (activeSlot >= shape.topTier &&  isTop) return false;
       }
       return true;
     });
-  }, [golfers, search, activeSlot, topTierIds]);
+  }, [golfers, search, activeSlot, topTierIds, shape]);
 
   // ── Derived state ─────────────────────────────────────────
   const selectedCount = selected.filter(Boolean).length;
-  const allSelected   = selectedCount === 4;
+  const allSelected   = selectedCount === shape.size;
   const isLocked      = tournament?.status !== 'upcoming';
   const lockDeadline  = useMemo(
     () => {
@@ -295,6 +313,7 @@ export default function PicksPage() {
         <SavedConfirmation
           tournament={tournament}
           golfers={savedGolfers}
+          shape={shape}
           slug={String(slug)}
           savedAt={savedAt}
           onEdit={() => { setSavedAt(null); setSavedGolfers([]); }}
@@ -331,7 +350,7 @@ export default function PicksPage() {
 
             {/* ── Slots column ─────────────────────────────── */}
             <div style={{ flex: '1 1 380px', minWidth: 0 }}>
-              <PickCounter selectedCount={selectedCount} />
+              <PickCounter selectedCount={selectedCount} size={shape.size} />
 
               {errors.length > 0 && (
                 <div className="alert alert-error" style={{ marginBottom: '1rem' }}>
@@ -359,7 +378,8 @@ export default function PicksPage() {
                   return (
                     <div key={i}>
                       <PickSlot
-                        slot={i as Slot}
+                        slot={i}
+                        shape={shape}
                         golfer={g}
                         isActive={activeSlot === i}
                         locked={isLocked}
@@ -397,12 +417,16 @@ export default function PicksPage() {
                   aria-disabled={saving || !allSelected}
                 >
                   {saving      ? 'Saving picks…'
-                  : !allSelected ? `Select all 4 golfers (${selectedCount}/4 done)`
+                  : !allSelected ? `Select all ${shape.size} golfers (${selectedCount}/${shape.size} done)`
                   :                  'Submit picks ✓'}
                 </button>
               )}
 
-              <ScoringRulesCard />
+              <ScoringRulesCard
+                missedCutPenalty={rules.missedCutPenalty}
+                missedDeadlinePenalty={rules.missedDeadlinePenalty}
+                shape={shape}
+              />
             </div>
 
             {/* ── Search panel — only when a slot is active ─ */}
@@ -418,10 +442,10 @@ export default function PicksPage() {
                                   justifyContent: 'space-between',
                                   marginBottom: '0.7rem' }}>
                       <p style={{ fontWeight: 700, fontSize: '0.85rem', minWidth: 0 }}>
-                        Select {SLOT_LABELS[activeSlot]}
-                        <span className={activeSlot >= 2 ? 'badge badge-brass' : 'badge badge-green'}
+                        Select {slotLabel(activeSlot, shape)}
+                        <span className={activeSlot >= shape.topTier ? 'badge badge-brass' : 'badge badge-green'}
                               style={{ marginLeft: '0.5rem', fontSize: '0.62rem' }}>
-                          {activeSlot >= 2 ? 'Dark Horse' : 'Top Tier'}
+                          {activeSlot >= shape.topTier ? 'Dark Horse' : 'Top Tier'}
                         </span>
                       </p>
                       <button className="btn btn-ghost btn-sm"
@@ -515,9 +539,9 @@ export default function PicksPage() {
                       ? 'Picks are locked — view-only mode.'
                       : `Tap a slot ${selectedCount === 0 ? 'on the left' : 'above'} to search for a golfer.`}
                   </p>
-                  {!isLocked && selectedCount > 0 && selectedCount < 4 && (
+                  {!isLocked && selectedCount > 0 && selectedCount < shape.size && (
                     <p style={{ fontSize: '0.78rem', color: 'var(--slate-light)' }}>
-                      {4 - selectedCount} more to go.
+                      {shape.size - selectedCount} more to go.
                     </p>
                   )}
                 </div>
@@ -673,22 +697,22 @@ function LockStatusRow({ isLocked, lockDeadline }: {
   );
 }
 
-function PickCounter({ selectedCount }: { selectedCount: number }) {
+function PickCounter({ selectedCount, size }: { selectedCount: number; size: number }) {
   return (
     <div style={{ marginBottom: '1rem' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
                      gap: '0.5rem', marginBottom: '0.5rem' }}>
         <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.25rem', fontWeight: 700 }}>
-          Your Foursome
+          {size === 4 ? 'Your Foursome' : `Your ${size}-Golfer Team`}
         </h2>
         <span style={{ fontSize: '0.85rem', fontWeight: 700,
-                        color: selectedCount === 4 ? 'var(--green-mid)' : 'var(--slate-mid)' }}>
-          {selectedCount} of 4 selected
+                        color: selectedCount === size ? 'var(--green-mid)' : 'var(--slate-mid)' }}>
+          {selectedCount} of {size} selected
         </span>
       </div>
-      {/* progress dots — 4 circles, filled = picked */}
+      {/* progress dots — one per slot, filled = picked */}
       <div style={{ display: 'flex', gap: '0.4rem' }} aria-hidden="true">
-        {[0, 1, 2, 3].map(i => (
+        {Array.from({ length: size }, (_, i) => i).map(i => (
           <span key={i}
                 style={{
                   flex: 1, height: 6, borderRadius: 3,
@@ -701,15 +725,16 @@ function PickCounter({ selectedCount }: { selectedCount: number }) {
   );
 }
 
-function PickSlot({ slot, golfer, isActive, locked, onOpen, onRemove }: {
+function PickSlot({ slot, shape, golfer, isActive, locked, onOpen, onRemove }: {
   slot: Slot;
+  shape: TeamShape;
   golfer: Golfer | null;
   isActive: boolean;
   locked: boolean;
   onOpen: () => void;
   onRemove: () => void;
 }) {
-  const isDH = slot >= 2;
+  const isDH = slot >= shape.topTier;
   return (
     <div
       className={`golfer-slot ${golfer ? 'slot-filled' : ''} ${isDH && golfer ? 'slot-dark-horse' : ''}`}
@@ -752,7 +777,7 @@ function PickSlot({ slot, golfer, isActive, locked, onOpen, onRemove }: {
                   className="btn btn-ghost btn-sm"
                   onClick={e => { e.stopPropagation(); onOpen(); }}
                   style={{ padding: '0.3rem 0.6rem' }}
-                  aria-label={`Change ${SLOT_LABELS[slot]}`}
+                  aria-label={`Change ${slotLabel(slot, shape)}`}
                 >
                   Edit
                 </button>
@@ -771,9 +796,9 @@ function PickSlot({ slot, golfer, isActive, locked, onOpen, onRemove }: {
           <div>
             <div style={{ fontWeight: 600, fontSize: '0.9rem',
                            color: isActive ? 'var(--green-mid)' : 'var(--slate-mid)' }}>
-              {isActive ? '🔍 Searching…' : `Tap to select ${SLOT_LABELS[slot]}`}
+              {isActive ? '🔍 Searching…' : `Tap to select ${slotLabel(slot, shape)}`}
             </div>
-            <div className="slot-meta">{SLOT_HELP[slot]}</div>
+            <div className="slot-meta">{slotHelp(slot, shape)}</div>
           </div>
         )}
       </div>
@@ -781,7 +806,12 @@ function PickSlot({ slot, golfer, isActive, locked, onOpen, onRemove }: {
   );
 }
 
-function ScoringRulesCard() {
+function ScoringRulesCard({ missedCutPenalty, missedDeadlinePenalty, shape }: {
+  missedCutPenalty:      number;
+  missedDeadlinePenalty: number;
+  shape:                 TeamShape;
+}) {
+  const strokes = (n: number) => `${n} stroke${n === 1 ? '' : 's'}`;
   return (
     <div className="card" style={{ marginTop: '1.25rem',
                                      background: 'var(--green-pale)',
@@ -793,11 +823,15 @@ function ScoringRulesCard() {
       </p>
       <ul style={{ fontSize: '0.82rem', color: 'var(--slate)', lineHeight: 1.75,
                     paddingLeft: '1rem' }}>
-        <li>Top 3 of your 4 golfers count toward your score</li>
-        <li>Missed cut = cut score + 1 stroke penalty</li>
+        {shape.size === 6 && (
+          <li><strong>Major:</strong> pick {shape.topTier} top-tier and {shape.size - shape.topTier} dark-horse golfers</li>
+        )}
+        <li>Top {shape.counting} of your {shape.size} golfers count toward your score</li>
+        <li>Missed cut = golfer drops out of your top {shape.counting} and adds a {strokes(missedCutPenalty)} penalty</li>
         <li>Made cut = score capped at the cut line</li>
+        <li>Missed the pick deadline = random lineup plus a {strokes(missedDeadlinePenalty)} penalty</li>
         <li>Withdrawal = swap with any golfer who hasn&rsquo;t teed off</li>
-        <li>No two players in the league may pick the same exact 4</li>
+        <li>No two players in the league may pick the same exact {shape.size}</li>
       </ul>
     </div>
   );
@@ -861,9 +895,10 @@ function NoTournamentState({ slug }: { slug: string }) {
   );
 }
 
-function SavedConfirmation({ tournament, golfers, slug, savedAt, onEdit }: {
+function SavedConfirmation({ tournament, golfers, shape, slug, savedAt, onEdit }: {
   tournament: Tournament;
   golfers: Golfer[];
+  shape: TeamShape;
   slug: string;
   savedAt: Date;
   onEdit: () => void;
@@ -884,10 +919,12 @@ function SavedConfirmation({ tournament, golfers, slug, savedAt, onEdit }: {
         </div>
 
         <div className="card" style={{ marginBottom: '1.25rem' }}>
-          <p className="label" style={{ marginBottom: '0.75rem' }}>Your foursome</p>
+          <p className="label" style={{ marginBottom: '0.75rem' }}>
+            {shape.size === 4 ? 'Your foursome' : `Your ${shape.size}-golfer team`}
+          </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {golfers.map((g, i) => {
-              const isDH = i >= 2;
+              const isDH = i >= shape.topTier;
               return (
                 <div key={g.id} style={{
                   display: 'flex', alignItems: 'center', gap: '0.75rem',

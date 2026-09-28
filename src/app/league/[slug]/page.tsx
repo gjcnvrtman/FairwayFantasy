@@ -15,9 +15,11 @@ import {
   getFantasyResultsForTournaments,
   getEffectiveBetsForTournaments,
   getEffectivePayoutsForTournaments,
+  betDefaultsFromLeague,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
+import { teamShapeFor } from '@/lib/team-shape';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import { formatScore, formatThruIndicator } from '@/lib/scoring';
 import {
@@ -81,10 +83,10 @@ export default async function LeaguePage({ params }: Props) {
     league.id, completedIds,
   );
   const betAmount      = Number(league.weekly_bet_amount ?? 0);
-  // Per-tournament bet overrides (migration 010). Tournaments without
-  // an override resolve to the league default `betAmount`.
+  // Per-tournament stake: override (migration 010) > majors bet
+  // (migration 025) > weekly bet.
   const effectiveBets  = await getEffectiveBetsForTournaments(
-    league.id, completedIds, betAmount,
+    league.id, completedTournaments, betDefaultsFromLeague(league),
   );
   // Per-tournament payout snapshots (migration 024). Frozen for
   // tournaments that were past pick-lock at the time of a payout edit;
@@ -251,6 +253,8 @@ export default async function LeaguePage({ params }: Props) {
                   revealPicks={revealPicks}
                   currentUserId={user.id}
                   slug={params.slug}
+                  missedCutPenalty={league.missed_cut_penalty}
+                  topTierSlots={teamShapeFor(league, activeTournament).topTier}
                 />
               ) : (
                 <NoActiveTournamentSection
@@ -408,6 +412,8 @@ function ActiveTournamentSection({
   revealPicks,
   currentUserId,
   slug,
+  missedCutPenalty,
+  topTierSlots,
 }: {
   tournament: any;
   myPick: any;
@@ -417,6 +423,10 @@ function ActiveTournamentSection({
   revealPicks: boolean;
   currentUserId: string;
   slug: string;
+  /** leagues.missed_cut_penalty (migration 025). */
+  missedCutPenalty: number;
+  /** Top-tier slot count for this tournament's team shape (migration 026). */
+  topTierSlots: number;
 }) {
   return (
     <div>
@@ -497,6 +507,10 @@ function ActiveTournamentSection({
                   scoresByGolferId={scoresByGolferId}
                   postCut={postCut}
                   tournamentStatus={tournament.status}
+                  missedCutPenalty={missedCutPenalty}
+                  slug={slug}
+                  tournamentId={tournament.id}
+                  topTierSlots={topTierSlots}
                 />
               );
             });
@@ -515,6 +529,7 @@ function ActiveTournamentSection({
 
 function LeaderboardRow({
   result, pick, index, isMe, reveal, scoresByGolferId, postCut, tournamentStatus,
+  missedCutPenalty, slug, tournamentId, topTierSlots,
 }: {
   result: any;
   pick:   any;
@@ -528,6 +543,13 @@ function LeaderboardRow({
   /** Tournament status string passed through so the thru-indicator
    *  formatter can return empty once the event is complete. */
   tournamentStatus: string;
+  /** Strokes shown on each "Missed cut · <golfer>" row. */
+  missedCutPenalty: number;
+  /** For the "View scorecard" link to /league/[slug]/team/[userId]. */
+  slug:             string;
+  tournamentId:     string;
+  /** Slots 1..N are top tier: 2 for 4-man teams, 3 on 6-man majors. */
+  topTierSlots:     number;
 }) {
   const totalClass =
     result.total_score < 0 ? 'score-under'
@@ -583,7 +605,8 @@ function LeaderboardRow({
           borderTop: '1px solid var(--cream-dark)',
           display: 'flex', flexDirection: 'column', gap: '0.3rem',
         }}>
-          {[1, 2, 3, 4]
+          {/* Slots 5/6 exist only on 6-man majors; empty slots drop out below. */}
+          {[1, 2, 3, 4, 5, 6]
             .map(slot => ({
               slot,
               g: pick[`golfer_${slot}`],
@@ -627,8 +650,8 @@ function LeaderboardRow({
                 }} aria-label={isCounting ? 'counting' : 'dropped'}>
                   {isCounting ? '✓' : '·'}
                 </span>
-                <span className={`badge ${slot <= 2 ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.58rem', flexShrink: 0 }}>
-                  {slot <= 2 ? 'Top' : 'DH'}
+                <span className={`badge ${slot <= topTierSlots ? 'badge-green' : 'badge-brass'}`} style={{ fontSize: '0.58rem', flexShrink: 0 }}>
+                  {slot <= topTierSlots ? 'Top' : 'DH'}
                 </span>
                 <span style={{
                   fontWeight: 600, color: 'var(--slate)',
@@ -719,7 +742,7 @@ function LeaderboardRow({
                 + (missed-cut rows × +1)
                 + missed-deadline penalty (shown above when applicable). */}
           {reveal && pick && postCut && (() => {
-            const mcPicks = [1, 2, 3, 4]
+            const mcPicks = [1, 2, 3, 4, 5, 6]
               .map(slot => ({ slot, g: pick[`golfer_${slot}`] }))
               .filter(e => {
                 if (!e.g) return false;
@@ -757,7 +780,7 @@ function LeaderboardRow({
                         Missed cut · {g.name}
                       </span>
                       <strong className="score-over" style={{ fontSize: '0.9rem', flexShrink: 0, width: '3rem', textAlign: 'right' }}>
-                        +1
+                        {`+${missedCutPenalty}`}
                       </strong>
                     </div>
                   ))
@@ -765,6 +788,17 @@ function LeaderboardRow({
               </div>
             );
           })()}
+
+          <Link
+            href={`/league/${slug}/team/${result.user_id}?t=${tournamentId}`}
+            style={{
+              alignSelf: 'flex-end', marginTop: '0.4rem',
+              fontSize: '0.82rem', fontWeight: 600,
+              color: 'var(--green-mid)', textDecoration: 'none',
+            }}
+          >
+            View scorecard →
+          </Link>
         </div>
       )}
     </div>

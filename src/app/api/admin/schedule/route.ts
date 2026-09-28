@@ -17,8 +17,12 @@ import { requireCoCommissionerOrAbove, isAuthFail } from '@/lib/auth-league';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
+import { resolveSetupStatus } from '@/lib/league-setup';
 
 export const dynamic = 'force-dynamic';
+
+const SCHEDULE_LOCKED_ERROR =
+  'This league’s setup is locked — the schedule can’t be changed.';
 
 async function parseBody(req: NextRequest) {
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
@@ -41,6 +45,9 @@ export async function POST(req: NextRequest) {
 
   const auth = await requireCoCommissionerOrAbove({ slug });
   if (isAuthFail(auth)) return auth.response;
+  if (await resolveSetupStatus(auth.league) === 'locked') {
+    return NextResponse.json({ error: SCHEDULE_LOCKED_ERROR }, { status: 409 });
+  }
 
   // Refuse to add a hidden tournament — hidden means "we've decided
   // this event doesn't belong on anyone's schedule." Commissioner can
@@ -81,6 +88,9 @@ export async function DELETE(req: NextRequest) {
 
   const auth = await requireCoCommissionerOrAbove({ slug });
   if (isAuthFail(auth)) return auth.response;
+  if (await resolveSetupStatus(auth.league) === 'locked') {
+    return NextResponse.json({ error: SCHEDULE_LOCKED_ERROR }, { status: 409 });
+  }
 
   // Block the delete if picks or fantasy_results already exist for
   // this (league, tournament). Removing the join row wouldn't cascade

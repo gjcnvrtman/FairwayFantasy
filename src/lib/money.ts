@@ -38,6 +38,24 @@ export const PAYOUT_WINNER_TAKE_ALL: PayoutStructure = {
   pct1: 100, pct2: 0, pct3: 0,
 };
 
+/**
+ * Stake for one tournament. Precedence:
+ *   1. per-tournament override (league_tournament_bets — pre-025
+ *      leagues only; new leagues never create one)
+ *   2. majors bet, when the tournament is a major AND the league set one
+ *   3. weekly bet
+ */
+export function resolveTournamentBet(args: {
+  override: number | null | undefined;
+  isMajor:  boolean;
+  weekly:   number;
+  major:    number | null;
+}): number {
+  if (args.override != null) return args.override;
+  if (args.isMajor && args.major != null) return args.major;
+  return args.weekly;
+}
+
 /** Extract a PayoutStructure from a league row. Convenience for the
  *  four money-math callers so they don't repeat the same 3-line
  *  destructure. `payout_pct_*` columns are INTEGER (migration 023),

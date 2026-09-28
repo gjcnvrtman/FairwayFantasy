@@ -286,3 +286,50 @@ describe('deriveSlugFromName', () => {
     expect(deriveSlugFromName('Boys 2026')).toBe('boys-2026');
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// validateCreateLeague — setup-time rules (migration 025)
+// ─────────────────────────────────────────────────────────────
+
+describe('validateCreateLeague — setup rules', () => {
+  const valid = {
+    name: 'The Boys Golf Club', slug: 'the-boys', maxPlayers: 12,
+    startDate: '2027-01-01', endDate: '2027-12-31', weeklyBetAmount: 10,
+  };
+
+  it('accepts a full rule set', () => {
+    expect(validateCreateLeague({
+      ...valid, majorBetAmount: 20,
+      payoutPct1: 50, payoutPct2: 30, payoutPct3: 20,
+      missedCutPenalty: 1, missedDeadlinePenalty: 2,
+    })).toEqual({});
+  });
+
+  it('majors bet null or absent = same as weekly, no error', () => {
+    expect(validateCreateLeague({ ...valid, majorBetAmount: null })).toEqual({});
+    expect(validateCreateLeague(valid)).toEqual({});
+  });
+
+  it('rejects a negative / oversize / 3-decimal majors bet', () => {
+    expect(validateCreateLeague({ ...valid, majorBetAmount: -1 }).majorBetAmount).toBeDefined();
+    expect(validateCreateLeague({ ...valid, majorBetAmount: 1001 }).majorBetAmount).toBeDefined();
+    expect(validateCreateLeague({ ...valid, majorBetAmount: 10.005 }).majorBetAmount).toBeDefined();
+  });
+
+  it('rejects a payout split that does not sum to 100', () => {
+    const r = validateCreateLeague({ ...valid, payoutPct1: 50, payoutPct2: 30, payoutPct3: 10 });
+    expect(r.payout).toMatch(/add up to 100/);
+  });
+
+  it('rejects a partial or fractional payout split', () => {
+    expect(validateCreateLeague({ ...valid, payoutPct1: 100 }).payout).toBeDefined();
+    expect(validateCreateLeague({ ...valid, payoutPct1: 50.5, payoutPct2: 29.5, payoutPct3: 20 }).payout).toBeDefined();
+  });
+
+  it('penalties must be whole strokes within 0..10', () => {
+    expect(validateCreateLeague({ ...valid, missedCutPenalty: 0 })).toEqual({});
+    expect(validateCreateLeague({ ...valid, missedCutPenalty: 1.5 }).missedCutPenalty).toBeDefined();
+    expect(validateCreateLeague({ ...valid, missedCutPenalty: 11 }).missedCutPenalty).toBeDefined();
+    expect(validateCreateLeague({ ...valid, missedDeadlinePenalty: -1 }).missedDeadlinePenalty).toBeDefined();
+  });
+});

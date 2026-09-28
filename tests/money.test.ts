@@ -4,8 +4,27 @@ import {
   computeLeagueMoney,
   formatMoney,
   PAYOUT_WINNER_TAKE_ALL,
+  resolveTournamentBet,
   type PayoutStructure,
 } from '@/lib/money';
+
+describe('resolveTournamentBet — override > majors > weekly (migration 025)', () => {
+  it('regular event uses weekly', () => {
+    expect(resolveTournamentBet({ override: null, isMajor: false, weekly: 10, major: 25 })).toBe(10);
+  });
+  it('major uses majors bet when set', () => {
+    expect(resolveTournamentBet({ override: null, isMajor: true, weekly: 10, major: 25 })).toBe(25);
+  });
+  it('major falls back to weekly when no majors bet', () => {
+    expect(resolveTournamentBet({ override: undefined, isMajor: true, weekly: 10, major: null })).toBe(10);
+  });
+  it('per-tournament override wins over both (pre-025 leagues)', () => {
+    expect(resolveTournamentBet({ override: 5, isMajor: true, weekly: 10, major: 25 })).toBe(5);
+  });
+  it('override of 0 is honored (free week), not treated as missing', () => {
+    expect(resolveTournamentBet({ override: 0, isMajor: false, weekly: 10, major: null })).toBe(0);
+  });
+});
 
 // All baseline-everyone-eligible tests use a single shared lock time;
 // members all "joined" before it so the new joined_at filter is a

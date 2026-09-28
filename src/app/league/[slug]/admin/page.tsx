@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { getLeagueBySlug, getLeagueMembers } from '@/lib/db/queries';
+import { resolveSetupStatus, nextAutoLock } from '@/lib/league-setup';
 import Nav from '@/components/layout/Nav';
 import AdminPanel from './AdminPanel';
 import type { Metadata } from 'next';
@@ -97,6 +98,11 @@ export default async function AdminPage({ params }: Props) {
     tournamentBets[r.tournament_id] = r.bet_amount;
   }
 
+  // Setup lifecycle (migration 025). Resolving applies auto-lock, so
+  // the panel never shows editable rules past the first pick deadline.
+  const setupStatus = await resolveSetupStatus(league);
+  const autoLock = setupStatus === 'setup' ? await nextAutoLock(league.id) : null;
+
   return (
     <div className="page-shell">
       <Nav leagueSlug={params.slug} leagueName={league.name} userName={profile?.display_name} />
@@ -122,6 +128,11 @@ export default async function AdminPage({ params }: Props) {
             tournamentIdsWithPicks={tournamentIdsWithPicks}
             tournamentBets={tournamentBets}
             scheduleIds={scheduleIds}
+            setupStatus={setupStatus}
+            autoLock={autoLock ? {
+              tournamentName: autoLock.tournamentName,
+              at: autoLock.at.toISOString(),
+            } : null}
             viewerRole={viewerRole}
             inviteUrl={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/join/${league.slug}/${league.invite_code}`}
           />

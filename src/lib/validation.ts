@@ -15,6 +15,11 @@ export const LEAGUE_LIMITS = {
   BET_MIN:         0,         // free leagues allowed
   BET_MAX:         1_000,     // sanity cap on stakes per tournament
   BET_DEFAULT:     10,
+  // Setup-time penalties (migration 025). Whole strokes.
+  PENALTY_MIN:                     0,
+  PENALTY_MAX:                     10,
+  MISSED_CUT_PENALTY_DEFAULT:      1,
+  MISSED_DEADLINE_PENALTY_DEFAULT: 2,
 } as const;
 
 const SLUG_RE = /^[a-z0-9-]+$/;
@@ -31,6 +36,18 @@ export interface CreateLeagueInput {
   endDate:     string;
   /** Per-tournament stake in dollars. Default $10. Free leagues allowed (0). */
   weeklyBetAmount: number;
+  /** Stake for major tournaments. null/undefined = same as weekly. */
+  majorBetAmount?: number | null;
+  /** Top-3 payout split, integers summing to 100. Default 100/0/0. */
+  payoutPct1?: number;
+  payoutPct2?: number;
+  payoutPct3?: number;
+  /** Strokes per missed-cut golfer. Default 1. */
+  missedCutPenalty?: number;
+  /** Strokes added to an auto-assigned lineup. Default 2. */
+  missedDeadlinePenalty?: number;
+  /** Team size on majors: 4 (default) or 6 (migration 026). */
+  majorTeamSize?: number;
 }
 
 export interface FieldErrors {
@@ -40,8 +57,29 @@ export interface FieldErrors {
   startDate?:       string;
   endDate?:         string;
   weeklyBetAmount?: string;
+  majorBetAmount?:  string;
+  payout?:          string;
+  missedCutPenalty?:      string;
+  missedDeadlinePenalty?: string;
+  majorTeamSize?:         string;
   /** Cross-cutting issues that aren't tied to a single field. */
   general?:         string;
+}
+
+function betError(label: string, v: unknown): string | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return `${label} must be a number.`;
+  if (v < LEAGUE_LIMITS.BET_MIN) return `${label} cannot be negative.`;
+  if (v > LEAGUE_LIMITS.BET_MAX) return `${label} cannot exceed $${LEAGUE_LIMITS.BET_MAX}.`;
+  if (Math.round(v * 100) !== v * 100) return `${label} cannot have more than 2 decimal places.`;
+  return undefined;
+}
+
+function penaltyError(label: string, v: unknown): string | undefined {
+  if (typeof v !== 'number' || !Number.isInteger(v)) return `${label} must be a whole number of strokes.`;
+  if (v < LEAGUE_LIMITS.PENALTY_MIN || v > LEAGUE_LIMITS.PENALTY_MAX) {
+    return `${label} must be between ${LEAGUE_LIMITS.PENALTY_MIN} and ${LEAGUE_LIMITS.PENALTY_MAX}.`;
+  }
+  return undefined;
 }
 
 /**
@@ -116,14 +154,39 @@ export function validateCreateLeague(input: CreateLeagueInput): FieldErrors {
   }
 
   // ── weekly_bet_amount ──
-  if (typeof weeklyBetAmount !== 'number' || !Number.isFinite(weeklyBetAmount)) {
-    errors.weeklyBetAmount = 'Weekly bet amount must be a number.';
-  } else if (weeklyBetAmount < LEAGUE_LIMITS.BET_MIN) {
-    errors.weeklyBetAmount = `Weekly bet amount cannot be negative.`;
-  } else if (weeklyBetAmount > LEAGUE_LIMITS.BET_MAX) {
-    errors.weeklyBetAmount = `Weekly bet amount cannot exceed $${LEAGUE_LIMITS.BET_MAX}.`;
-  } else if (Math.round(weeklyBetAmount * 100) !== weeklyBetAmount * 100) {
-    errors.weeklyBetAmount = 'Weekly bet amount cannot have more than 2 decimal places.';
+  const weeklyErr = betError('Weekly bet amount', weeklyBetAmount);
+  if (weeklyErr) errors.weeklyBetAmount = weeklyErr;
+
+  // ── major_bet_amount (optional; null = same as weekly) ──
+  if (input.majorBetAmount !== undefined && input.majorBetAmount !== null) {
+    const majorErr = betError('Majors bet amount', input.majorBetAmount);
+    if (majorErr) errors.majorBetAmount = majorErr;
+  }
+
+  // ── payout split (optional as a set; all three or none) ──
+  const pcts = [input.payoutPct1, input.payoutPct2, input.payoutPct3];
+  const anyPct = pcts.some(p => p !== undefined);
+  if (anyPct) {
+    if (pcts.some(p => typeof p !== 'number' || !Number.isInteger(p) || p < 0 || p > 100)) {
+      errors.payout = 'Each payout percentage must be a whole number from 0 to 100.';
+    } else if ((pcts as number[]).reduce((s, p) => s + p, 0) !== 100) {
+      errors.payout = 'Payout percentages must add up to 100.';
+    }
+  }
+
+  // ── penalties (optional; defaults applied by the API) ──
+  if (input.missedCutPenalty !== undefined) {
+    const e = penaltyError('Missed-cut penalty', input.missedCutPenalty);
+    if (e) errors.missedCutPenalty = e;
+  }
+  if (input.missedDeadlinePenalty !== undefined) {
+    const e = penaltyError('Missed-deadline penalty', input.missedDeadlinePenalty);
+    if (e) errors.missedDeadlinePenalty = e;
+  }
+
+  // ── majors team size (optional; default 4) ──
+  if (input.majorTeamSize !== undefined && input.majorTeamSize !== 4 && input.majorTeamSize !== 6) {
+    errors.majorTeamSize = 'Majors team size must be 4 or 6.';
   }
 
   return errors;

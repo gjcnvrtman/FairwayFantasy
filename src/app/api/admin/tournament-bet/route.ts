@@ -41,6 +41,15 @@ export async function POST(req: NextRequest) {
   const auth = await requireCoCommissionerOrAbove({ slug });
   if (isAuthFail(auth)) return auth.response;
 
+  // Leagues created with the setup flow (migration 025) use only the
+  // weekly + majors bets — no per-tournament overrides.
+  if (auth.league.setup_status !== 'legacy') {
+    return NextResponse.json(
+      { error: 'This league uses its weekly and majors bets — per-tournament bets aren’t available.' },
+      { status: 409 },
+    );
+  }
+
   // Validate the tournament exists AND is in 'upcoming' status. The
   // upcoming-only gate is Greg's call so settled / in-flight bets
   // never shift. Status check has to come first — a 400 for a real

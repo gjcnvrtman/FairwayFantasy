@@ -15,6 +15,11 @@
 //   - payoutPct1/2/3 — integers 0..100 that must sum to 100. Must be
 //     supplied as a set (all three or none); we don't allow updating
 //     one at a time since the sum invariant would break mid-write.
+//   - majorBetAmount (number | null), missedCutPenalty,
+//     missedDeadlinePenalty — setup-mode leagues only (migration 025).
+//
+// Setup lifecycle (src/lib/league-setup.ts): once a league is locked
+// only maxPlayers can change.
 //
 // Returns 200 with the updated league row on success, 400 with a
 // human-readable error on validation failure.
@@ -22,12 +27,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireCommissioner, isAuthFail } from '@/lib/auth-league';
 import { db } from '@/lib/db';
-import { LEAGUE_LIMITS } from '@/lib/validation';
+import { LEAGUE_LIMITS, validateCreateLeague } from '@/lib/validation';
 import { requireSameOrigin } from '@/lib/same-origin';
+import { resolveSetupStatus } from '@/lib/league-setup';
 
 export const dynamic = 'force-dynamic';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+class SetupLockedError extends Error {}
 
 export async function POST(req: NextRequest) {
   const csrf = requireSameOrigin(req);
@@ -42,14 +50,72 @@ export async function POST(req: NextRequest) {
   const payoutPct1Raw    = body.payoutPct1;
   const payoutPct2Raw    = body.payoutPct2;
   const payoutPct3Raw    = body.payoutPct3;
+  const majorBetRaw      = body.majorBetAmount;
+  const mcPenaltyRaw     = body.missedCutPenalty;
+  const mdPenaltyRaw     = body.missedDeadlinePenalty;
+  const teamSizeRaw      = body.majorTeamSize;
 
   const auth = await requireCommissioner({ slug });
   if (isAuthFail(auth)) return auth.response;
+
+  const setupStatus = await resolveSetupStatus(auth.league);
+
+  // Locked leagues: only max players stays editable.
+  if (setupStatus === 'locked') {
+    const lockedFields = [
+      startDateRaw, endDateRaw, weeklyBetAmtRaw,
+      payoutPct1Raw, payoutPct2Raw, payoutPct3Raw,
+      majorBetRaw, mcPenaltyRaw, mdPenaltyRaw, teamSizeRaw,
+    ];
+    if (lockedFields.some(v => v !== undefined)) {
+      return NextResponse.json(
+        { error: 'This league’s setup is locked — rules can’t be changed.' },
+        { status: 409 },
+      );
+    }
+  }
 
   // ── Collect updates ──
   // Any field that's absent (undefined) stays untouched. Explicit null
   // on a date field means "clear the column".
   const updates: Record<string, number | string | null> = {};
+
+  // Setup-only rules (majors bet + penalties). Legacy leagues keep
+  // their pre-025 behavior and never expose these.
+  const setupRuleTouched =
+    majorBetRaw !== undefined || mcPenaltyRaw !== undefined ||
+    mdPenaltyRaw !== undefined || teamSizeRaw !== undefined;
+  if (setupRuleTouched) {
+    if (setupStatus !== 'setup') {
+      return NextResponse.json(
+        { error: 'Majors bet, team size and penalties can only be set on leagues created with the new setup.' },
+        { status: 400 },
+      );
+    }
+    if (teamSizeRaw !== undefined) {
+      if (teamSizeRaw !== 4 && teamSizeRaw !== 6) {
+        return NextResponse.json({ error: 'Majors team size must be 4 or 6.' }, { status: 400 });
+      }
+      updates.major_team_size = teamSizeRaw;
+    }
+    // Reuse the create-form validator for these three fields.
+    const errs = validateCreateLeague({
+      name: auth.league.name, slug: auth.league.slug,
+      maxPlayers: auth.league.max_players,
+      startDate: '2000-01-01', endDate: '2000-01-01',
+      weeklyBetAmount: Number(auth.league.weekly_bet_amount),
+      majorBetAmount: majorBetRaw === undefined ? undefined : majorBetRaw as number | null,
+      missedCutPenalty: mcPenaltyRaw === undefined ? undefined : mcPenaltyRaw as number,
+      missedDeadlinePenalty: mdPenaltyRaw === undefined ? undefined : mdPenaltyRaw as number,
+    });
+    const firstErr = errs.majorBetAmount ?? errs.missedCutPenalty ?? errs.missedDeadlinePenalty;
+    if (firstErr) return NextResponse.json({ error: firstErr }, { status: 400 });
+    if (majorBetRaw !== undefined) {
+      updates.major_bet_amount = majorBetRaw === null ? null : (majorBetRaw as number).toFixed(2);
+    }
+    if (mcPenaltyRaw !== undefined) updates.missed_cut_penalty      = mcPenaltyRaw as number;
+    if (mdPenaltyRaw !== undefined) updates.missed_deadline_penalty = mdPenaltyRaw as number;
+  }
 
   // maxPlayers
   if (maxPlayersRaw !== undefined) {
@@ -227,7 +293,7 @@ export async function POST(req: NextRequest) {
     (updates.payout_pct_3 as number) !== auth.league.payout_pct_3
   );
 
-  await db.transaction().execute(async (trx) => {
+  const lockedMidRequest = await db.transaction().execute(async (trx) => {
     if (payoutChanged) {
       // Snapshot OLD values for every past-lock tournament in this
       // league's schedule that doesn't already have a snapshot.
@@ -260,16 +326,36 @@ export async function POST(req: NextRequest) {
         .execute();
     }
 
-    await trx.updateTable('leagues')
+    // Setup-mode rule edits only apply while the league is STILL in
+    // setup — closes the race with a lock landing mid-request. A miss
+    // throws, rolling back the whole transaction.
+    const ruleEdit = setupStatus === 'setup'
+      && Object.keys(updates).some(k => k !== 'max_players');
+    const res = await trx.updateTable('leagues')
       .set(updates as any)
       .where('id', '=', auth.league.id)
-      .execute();
+      .$if(ruleEdit, qb => qb.where('setup_status', '=', 'setup'))
+      .executeTakeFirst();
+    if (ruleEdit && Number(res.numUpdatedRows) === 0) throw new SetupLockedError();
+    return 'ok' as const;
+  }).catch(err => {
+    if (err instanceof SetupLockedError) return 'locked' as const;
+    throw err;
   });
+
+  if (lockedMidRequest === 'locked') {
+    return NextResponse.json(
+      { error: 'This league’s setup just locked — rules can’t be changed.' },
+      { status: 409 },
+    );
+  }
 
   const updated = await db.selectFrom('leagues')
     .select(['id', 'slug', 'name', 'max_players',
              'start_date', 'end_date', 'weekly_bet_amount',
-             'payout_pct_1', 'payout_pct_2', 'payout_pct_3'])
+             'payout_pct_1', 'payout_pct_2', 'payout_pct_3',
+             'major_bet_amount', 'missed_cut_penalty',
+             'missed_deadline_penalty', 'major_team_size', 'setup_status'])
     .where('id', '=', auth.league.id)
     .executeTakeFirstOrThrow();
 

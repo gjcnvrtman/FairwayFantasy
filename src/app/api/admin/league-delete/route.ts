@@ -28,6 +28,7 @@ import {
   getCompletedTournamentsInRange,
   getEffectiveBetsForTournaments,
   getEffectivePayoutsForTournaments,
+  betDefaultsFromLeague,
   isoOrNull,
 } from '@/lib/db/queries';
 import { computeLeagueMoney, payoutFromLeague } from '@/lib/money';
@@ -126,10 +127,10 @@ export async function POST(req: NextRequest) {
       user_id:   m.user_id,
       joined_at: m.joined_at,
     }));
-    // Per-tournament bet overrides (migration 010); fall back to the
-    // league default for any tournament without an explicit override.
+    // Per-tournament stake: override (migration 010) > majors bet
+    // (migration 025) > weekly bet.
     const effectiveBets = await getEffectiveBetsForTournaments(
-      auth.league.id, withResults.map(t => t.tournament.id), betAmount,
+      auth.league.id, withResults.map(t => t.tournament), betDefaultsFromLeague(auth.league),
     );
     const effectivePayouts = await getEffectivePayoutsForTournaments(
       auth.league.id, withResults.map(t => t.tournament.id), payoutFromLeague(auth.league),

@@ -555,19 +555,22 @@ export function missedDeadlineEmail(params: {
   tournamentName: string;
   golfers:        Array<{ slot: number; name: string }>;
   penaltyStrokes: number;
+  /** Slots 1..N are top tier — 2 for 4-man teams, 3 for 6-man majors. */
+  topTierSlots?:  number;
   siteUrl:        string;
 }): { subject: string; text: string; html: string } {
   const {
     displayName, leagueName, leagueSlug, tournamentName,
     golfers, penaltyStrokes, siteUrl,
   } = params;
+  const topTierSlots = params.topTierSlots ?? 2;
 
   const picksUrl = `${siteUrl}/league/${leagueSlug}/picks`;
 
   // Plain-text bullet list with slot label.
   const golfersTextList = golfers
     .map(g => {
-      const tierLabel = g.slot <= 2 ? 'Top tier' : 'Dark horse';
+      const tierLabel = g.slot <= topTierSlots ? 'Top tier' : 'Dark horse';
       return `  ${g.slot}. ${g.name}  (${tierLabel})`;
     })
     .join('\n');
@@ -575,8 +578,8 @@ export function missedDeadlineEmail(params: {
   // HTML rows for the same. Slot column + tier badge.
   const golfersHtmlList = golfers
     .map(g => {
-      const tierLabel = g.slot <= 2 ? 'Top tier' : 'Dark horse';
-      const tierBg    = g.slot <= 2 ? '#2d6a4f' : '#a47148';
+      const tierLabel = g.slot <= topTierSlots ? 'Top tier' : 'Dark horse';
+      const tierBg    = g.slot <= topTierSlots ? '#2d6a4f' : '#a47148';
       return `<li style="margin-bottom: 6px;">
         <strong>${escapeHtml(g.name)}</strong>
         <span style="display: inline-block; margin-left: 8px;
@@ -704,14 +707,17 @@ export function dailyScorecardEmail(params: {
   dateLabel:      string;
   /** League standings as of end-of-round, ordered by rank ascending. */
   leaderboard:    DailyScorecardLeaderboardRow[];
-  /** Recipient's own 4 golfers for the round breakdown table. */
+  /** Recipient's own golfers (4, or 6 on 6-man majors) for the round table. */
   myFoursome:     DailyScorecardMyGolfer[];
+  /** Slots 1..N are top tier — 2 for 4-man teams, 3 for 6-man majors. */
+  topTierSlots?:  number;
   siteUrl:        string;
 }): { subject: string; text: string; html: string } {
   const {
     displayName, leagueName, leagueSlug, tournamentName, roundNum,
     dateLabel, leaderboard, myFoursome, siteUrl,
   } = params;
+  const topTierSlots = params.topTierSlots ?? 2;
 
   const leagueUrl = `${siteUrl}/league/${leagueSlug}`;
 
@@ -722,7 +728,7 @@ export function dailyScorecardEmail(params: {
     .join('\n');
   const foursomeText = myFoursome
     .map(g => {
-      const tier = g.slot <= 2 ? 'Top' : 'DH';
+      const tier = g.slot <= topTierSlots ? 'Top' : 'DH';
       const badge = g.statusBadge ? `  [${g.statusBadge}]` : '';
       const counted = g.countedSlot ? '  ✓ counted' : '';
       return `  ${g.slot}. ${tier}  ${g.name.padEnd(24)}  ` +
@@ -764,8 +770,8 @@ ${leagueUrl}
 
   const foursomeHtml = myFoursome
     .map(g => {
-      const tier = g.slot <= 2 ? 'Top' : 'DH';
-      const tierBg = g.slot <= 2 ? '#2d6a4f' : '#a47148';
+      const tier = g.slot <= topTierSlots ? 'Top' : 'DH';
+      const tierBg = g.slot <= topTierSlots ? '#2d6a4f' : '#a47148';
       const badge = g.statusBadge
         ? `<span style="display:inline-block; margin-left:6px; padding:1px 6px; font-size:10px; color:#92400e; background:#fef3c7; border-radius:3px;">${g.statusBadge}</span>`
         : '';

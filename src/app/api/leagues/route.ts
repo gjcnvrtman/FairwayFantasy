@@ -25,12 +25,29 @@ export async function POST(req: NextRequest) {
   const weeklyBetAmount = typeof body.weeklyBetAmount === 'number'
     ? body.weeklyBetAmount
     : LEAGUE_LIMITS.BET_DEFAULT;
+  // Setup-time rules (migration 025). Absent → defaults that match the
+  // pre-025 behavior. Majors bet: null means "same as weekly".
+  const majorBetAmount: number | null =
+    typeof body.majorBetAmount === 'number' ? body.majorBetAmount : null;
+  const payoutPct1 = typeof body.payoutPct1 === 'number' ? body.payoutPct1 : 100;
+  const payoutPct2 = typeof body.payoutPct2 === 'number' ? body.payoutPct2 : 0;
+  const payoutPct3 = typeof body.payoutPct3 === 'number' ? body.payoutPct3 : 0;
+  const missedCutPenalty = typeof body.missedCutPenalty === 'number'
+    ? body.missedCutPenalty
+    : LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT;
+  const missedDeadlinePenalty = typeof body.missedDeadlinePenalty === 'number'
+    ? body.missedDeadlinePenalty
+    : LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT;
+  // Team size on majors (migration 026). 4 = same as regular events.
+  const majorTeamSize = typeof body.majorTeamSize === 'number' ? body.majorTeamSize : 4;
 
   // Same validation the form uses client-side — single source of truth.
   // Errors come back as a field-keyed object so the form can highlight
   // the specific input(s) that failed.
   const fieldErrors = validateCreateLeague({
     name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
+    majorBetAmount, payoutPct1, payoutPct2, payoutPct3,
+    missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
   });
   if (Object.keys(fieldErrors).length > 0) {
     return NextResponse.json({ fieldErrors }, { status: 400 });
@@ -64,6 +81,17 @@ export async function POST(req: NextRequest) {
         // NUMERIC(10,2) — pg adapter accepts string or number; format
         // here so the stored value is exactly the validated number.
         weekly_bet_amount: weeklyBetAmount.toFixed(2),
+        major_bet_amount:  majorBetAmount === null ? null : majorBetAmount.toFixed(2),
+        payout_pct_1:      payoutPct1,
+        payout_pct_2:      payoutPct2,
+        payout_pct_3:      payoutPct3,
+        missed_cut_penalty:      missedCutPenalty,
+        missed_deadline_penalty: missedDeadlinePenalty,
+        major_team_size:         majorTeamSize,
+        // Setup mode: commissioner can adjust rules + prune the schedule
+        // until they lock it, or until the first pick deadline passes
+        // (src/lib/league-setup.ts).
+        setup_status:      'setup',
       })
       .returningAll()
       .executeTakeFirstOrThrow();

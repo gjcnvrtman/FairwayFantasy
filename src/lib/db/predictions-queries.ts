@@ -416,7 +416,8 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       const out = new Map<string, number>();
       if (totalPicks === 0) return out;
 
-      // Union the 4 slots into a single per-golfer count via SQL.
+      // Union every slot into a single per-golfer count via SQL.
+      // Slots 5/6 are NULL except on 6-man majors (migration 026).
       const counts = await sql<{ golfer_id: string; cnt: string }>`
         SELECT golfer_id, COUNT(*) AS cnt FROM (
           SELECT golfer_1_id AS golfer_id FROM picks WHERE tournament_id = ${tournamentId}
@@ -426,6 +427,10 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
           SELECT golfer_3_id FROM picks WHERE tournament_id = ${tournamentId}
           UNION ALL
           SELECT golfer_4_id FROM picks WHERE tournament_id = ${tournamentId}
+          UNION ALL
+          SELECT golfer_5_id FROM picks WHERE tournament_id = ${tournamentId}
+          UNION ALL
+          SELECT golfer_6_id FROM picks WHERE tournament_id = ${tournamentId}
         ) s
         WHERE golfer_id IS NOT NULL
         GROUP BY golfer_id

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
 import { getLeagueBySlug } from '@/lib/db/queries';
 import { computeTopTierIds } from '@/lib/field-tiers';
+import { teamShapeFor } from '@/lib/team-shape';
 
 // Auth-gated, per-user — opt out of static analysis during build.
 export const dynamic = 'force-dynamic';
@@ -114,5 +115,13 @@ export async function GET(req: NextRequest) {
     existingPick,
     alreadyPickedIds,
     scores,
+    // Per-league rules for the scoring-rules card (migration 025).
+    rules: {
+      missedCutPenalty:      league.missed_cut_penalty,
+      missedDeadlinePenalty: league.missed_deadline_penalty,
+    },
+    // Team shape for this tournament — 6-man on majors when the league
+    // chose it (migration 026). Drives slot count + tiers in the UI.
+    teamShape: teamShapeFor(league, tournament),
   });
 }

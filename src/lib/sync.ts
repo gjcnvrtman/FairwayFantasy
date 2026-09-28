@@ -16,9 +16,10 @@ import { fetchLiveLeaderboard, fetchUpcomingEventField, parseESPNScore } from '.
 import {
   applyFantasyRules, computeLeagueResults,
   buildAutoLineup, computeFoursomeHash,
-  MISSED_DEADLINE_PENALTY_STROKES,
 } from './scoring';
 import { computeTopTierIds } from './field-tiers';
+import { autoLockSetupLeagues } from './league-setup';
+import { teamShapeFor, pickGolferIds } from './team-shape';
 // notifyFieldPublished used to route through dispatchReminder /
 // fieldPublishedMessage in src/lib/notifier.ts, but that pipeline has
 // no real email driver registered (only a consoleDriver fallback), so
@@ -642,6 +643,17 @@ async function recomputeResults(tournamentId: string) {
     byLeague.get(p.league_id)!.push(p);
   }
 
+  // Per-league rules: missed-cut penalty (migration 025; default 1)
+  // and team shape — 6-man on majors when the league chose it (026).
+  const [leagueRules, tournamentRow] = await Promise.all([
+    db.selectFrom('leagues')
+      .select(['id', 'missed_cut_penalty', 'major_team_size'])
+      .where('id', 'in', [...byLeague.keys()])
+      .execute(),
+    db.selectFrom('tournaments').select('type').where('id', '=', tournamentId).executeTakeFirst(),
+  ]);
+  const rulesByLeague = new Map(leagueRules.map(l => [l.id, l]));
+
   // Batched upsert (perf — was O(leagues × members) round-trips,
   // one per row, with fsync per commit). Collect every league's
   // result rows into a single INSERT ... ON CONFLICT statement.
@@ -649,8 +661,12 @@ async function recomputeResults(tournamentId: string) {
   // commits down to 1.
   const updated_at = new Date().toISOString();
   const allResultRows: Array<Omit<FantasyResult, 'id'> & { updated_at: string }> = [];
-  for (const [, picks] of byLeague) {
-    const results = computeLeagueResults(picks, scoreMap);
+  for (const [leagueId, picks] of byLeague) {
+    const rules = rulesByLeague.get(leagueId);
+    const results = computeLeagueResults(picks, scoreMap, {
+      missedCutPenalty: rules?.missed_cut_penalty,
+      shape: teamShapeFor(rules ?? {}, tournamentRow ?? {}),
+    });
     for (const r of results) {
       allResultRows.push({ ...r, updated_at });
     }
@@ -665,6 +681,8 @@ async function recomputeResults(tournamentId: string) {
           golfer_2_score:   eb.ref('excluded.golfer_2_score'),
           golfer_3_score:   eb.ref('excluded.golfer_3_score'),
           golfer_4_score:   eb.ref('excluded.golfer_4_score'),
+          golfer_5_score:   eb.ref('excluded.golfer_5_score'),
+          golfer_6_score:   eb.ref('excluded.golfer_6_score'),
           counting_golfers: eb.ref('excluded.counting_golfers'),
           total_score:      eb.ref('excluded.total_score'),
           rank:             eb.ref('excluded.rank'),
@@ -1207,6 +1225,20 @@ export async function notifyAdminsRosterSet(args: {
  * and assignment is bounded to ≤1 hour across the whole week.
  */
 async function sweepMissedPicks(): Promise<void> {
+  // Setup-mode leagues lock once any scheduled tournament hits its
+  // pick deadline (migration 025). Runs before the sweep so the
+  // missed-deadline penalty below uses the frozen league value.
+  try {
+    const locked = await autoLockSetupLeagues();
+    if (locked.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[league-setup] auto-locked ${locked.length} league(s): ${locked.join(', ')}`);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[league-setup] auto-lock failed:', err);
+  }
+
   try {
     const nowIso = new Date().toISOString();
 
@@ -1217,7 +1249,7 @@ async function sweepMissedPicks(): Promise<void> {
     // date-window-adjacent league.
     const candidates = await db.selectFrom('tournaments')
       .select([
-        'id', 'name', 'start_date', 'end_date',
+        'id', 'name', 'type', 'start_date', 'end_date',
         'pick_deadline', 'pick_deadline_override', 'status',
       ])
       .where('status', 'in', ['upcoming', 'active'])
@@ -1248,6 +1280,7 @@ async function sweepMissedPicksForTournament(
   t: {
     id: string;
     name: string;
+    type: string;
     start_date: string;
     end_date:   string;
     pick_deadline:          string | null;
@@ -1264,7 +1297,8 @@ async function sweepMissedPicksForTournament(
   const leagues = await db.selectFrom('leagues')
     .innerJoin('league_tournaments',
                'league_tournaments.league_id', 'leagues.id')
-    .select(['leagues.id', 'leagues.name', 'leagues.slug'])
+    .select(['leagues.id', 'leagues.name', 'leagues.slug',
+             'leagues.missed_deadline_penalty', 'leagues.major_team_size'])
     .where('league_tournaments.tournament_id', '=', t.id)
     .execute();
   if (leagues.length === 0) return;
@@ -1342,6 +1376,7 @@ async function sweepMissedPicksForTournament(
     const profile = profileById.get(m.user_id);
 
     const taken = takenHashByLeague.get(m.league_id)!;
+    const shape = teamShapeFor(league, t);
     const lineup = buildAutoLineup({
       fieldGolfers: fieldRows.map(r => ({
         id:        r.id,
@@ -1350,6 +1385,7 @@ async function sweepMissedPicksForTournament(
       })),
       topTierIds,
       takenHashes: taken,
+      shape,
     });
 
     if (!lineup.ok) {
@@ -1375,9 +1411,11 @@ async function sweepMissedPicksForTournament(
           golfer_2_id:      lineup.golferIds[1],
           golfer_3_id:      lineup.golferIds[2],
           golfer_4_id:      lineup.golferIds[3],
+          golfer_5_id:      lineup.golferIds[4] ?? null,   // 6-man majors only
+          golfer_6_id:      lineup.golferIds[5] ?? null,
           is_locked:        true,
           submitted_at:     nowIso,
-          penalty_strokes:  MISSED_DEADLINE_PENALTY_STROKES,
+          penalty_strokes:  league.missed_deadline_penalty,
         })
         // Idempotency belt: if a previous sweep pass already inserted
         // a row for this user+league+tournament, the (league_id,
@@ -1420,7 +1458,8 @@ async function sweepMissedPicksForTournament(
           leagueSlug:     league.slug,
           tournamentName: t.name,
           golfers:        lineupNamed,
-          penaltyStrokes: MISSED_DEADLINE_PENALTY_STROKES,
+          penaltyStrokes: league.missed_deadline_penalty,
+          topTierSlots:   shape.topTier,
           siteUrl,
         });
         const ok = await sendEmail({ to: profile.email, subject, text, html });
@@ -1625,11 +1664,19 @@ async function sendDailyScorecardForLeague(args: {
 
   // Pull par_by_hole once per league iteration. Course par is
   // tournament-wide so this is constant across all recipients.
-  const tRow = await db.selectFrom('tournaments')
-    .select(['par_by_hole'])
-    .where('id', '=', tournament.id)
-    .executeTakeFirst();
+  const [tRow, lRow] = await Promise.all([
+    db.selectFrom('tournaments')
+      .select(['par_by_hole', 'type'])
+      .where('id', '=', tournament.id)
+      .executeTakeFirst(),
+    db.selectFrom('leagues')
+      .select('major_team_size')
+      .where('id', '=', league.id)
+      .executeTakeFirst(),
+  ]);
   const parByHole = (tRow?.par_by_hole as number[] | null) ?? null;
+  // 6-man on majors when the league chose it (migration 026).
+  const shape = teamShapeFor(lRow ?? {}, tRow ?? {});
 
   // ── Dedup: reserve the (league, tournament, round) slot. If a
   //    concurrent sweep already inserted, this is a no-op and we
@@ -1671,6 +1718,7 @@ async function sendDailyScorecardForLeague(args: {
       .select([
         'user_id', 'penalty_strokes',
         'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
+        'golfer_5_id', 'golfer_6_id',
       ])
       .where('league_id', '=', league.id)
       .where('tournament_id', '=', tournament.id)
@@ -1678,6 +1726,7 @@ async function sendDailyScorecardForLeague(args: {
     db.selectFrom('fantasy_results')
       .select(['user_id', 'total_score', 'rank',
                'golfer_1_score', 'golfer_2_score', 'golfer_3_score', 'golfer_4_score',
+               'golfer_5_score', 'golfer_6_score',
                'counting_golfers'])
       .where('league_id', '=', league.id)
       .where('tournament_id', '=', tournament.id)
@@ -1739,9 +1788,7 @@ async function sendDailyScorecardForLeague(args: {
     const fr   = frByUser.get(m.user_id);
 
     // Build the foursome for this user's email body + PDF.
-    const slotGolferIds: Array<string | null> = [
-      pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id,
-    ];
+    const slotGolferIds: Array<string | null> = pickGolferIds(pick, shape);
     const countingSlots = new Set<number>(
       (fr?.counting_golfers ?? []) as number[],
     );
@@ -1782,7 +1829,7 @@ async function sendDailyScorecardForLeague(args: {
         : null;
       return {
         name:       s?.golfer_name ?? '(unknown)',
-        slotLabel:  idx < 2 ? `Top ${idx + 1}` : `DH ${idx - 1}`,
+        slotLabel:  idx < shape.topTier ? `Top ${idx + 1}` : `DH ${idx - shape.topTier + 1}`,
         strokes:    Array.isArray(arr) ? arr : [],
       };
     });
@@ -1817,6 +1864,7 @@ async function sendDailyScorecardForLeague(args: {
       dateLabel,
       leaderboard:    lbForRecipient,
       myFoursome,
+      topTierSlots:   shape.topTier,
       siteUrl,
     });
 
@@ -1955,7 +2003,8 @@ async function sendTournamentRecapForLeague(args: {
       .where('league_members.league_id', '=', league.id)
       .execute(),
     db.selectFrom('picks')
-      .select(['user_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id'])
+      .select(['user_id', 'golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
+               'golfer_5_id', 'golfer_6_id'])
       .where('league_id', '=', league.id)
       .where('tournament_id', '=', tournament.id)
       .execute(),
@@ -2041,7 +2090,9 @@ async function sendTournamentRecapForLeague(args: {
     let bestRound: TournamentRecapBestRound | null = null;
     const pick = pickByUser.get(m.user_id);
     if (pick) {
-      const golferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id];
+      // Slots 5/6 are only set on 6-man majors (migration 026).
+      const golferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id,
+                         pick.golfer_4_id, pick.golfer_5_id, pick.golfer_6_id];
       for (const gid of golferIds) {
         if (!gid) continue;
         const s = scoreByGolferId.get(gid);

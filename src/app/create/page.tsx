@@ -36,6 +36,17 @@ export default function CreateLeaguePage() {
   const [startDate, setStartDate]     = useState<string>(defaults.start);
   const [endDate, setEndDate]         = useState<string>(defaults.end);
   const [weeklyBetAmount, setWeeklyBetAmount] = useState<number>(LEAGUE_LIMITS.BET_DEFAULT);
+  // Setup-time rules (migration 025). Majors bet blank = same as weekly.
+  const [majorBetInput, setMajorBetInput] = useState<string>('');
+  const [payoutPcts, setPayoutPcts]       = useState<[number, number, number]>([100, 0, 0]);
+  const [missedCutPenalty, setMissedCutPenalty] =
+    useState<number>(LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT);
+  const [missedDeadlinePenalty, setMissedDeadlinePenalty] =
+    useState<number>(LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT);
+  const majorBetAmount: number | null =
+    majorBetInput.trim() === '' ? null : parseFloat(majorBetInput);
+  // Team size on majors (migration 026): 4 = same as regular events.
+  const [majorTeamSize, setMajorTeamSize] = useState<4 | 6>(4);
 
   const [touched, setTouched]         = useState<Set<keyof FieldErrors>>(new Set());
   const [submitting, setSubmitting]   = useState(false);
@@ -57,8 +68,12 @@ export default function CreateLeaguePage() {
   const clientErrors = useMemo(
     () => validateCreateLeague({
       name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
+      majorBetAmount,
+      payoutPct1: payoutPcts[0], payoutPct2: payoutPcts[1], payoutPct3: payoutPcts[2],
+      missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
     }),
-    [name, slug, maxPlayers, startDate, endDate, weeklyBetAmount]
+    [name, slug, maxPlayers, startDate, endDate, weeklyBetAmount,
+     majorBetAmount, payoutPcts, missedCutPenalty, missedDeadlinePenalty, majorTeamSize]
   );
 
   // Merge server errors over client errors so a server-side rejection
@@ -125,6 +140,7 @@ export default function CreateLeaguePage() {
     // mark all fields touched so any latent client errors show
     setTouched(new Set([
       'name', 'slug', 'maxPlayers', 'startDate', 'endDate', 'weeklyBetAmount',
+      'majorBetAmount', 'payout', 'missedCutPenalty', 'missedDeadlinePenalty',
     ]));
 
     if (Object.keys(clientErrors).length > 0) {
@@ -140,6 +156,9 @@ export default function CreateLeaguePage() {
         body: JSON.stringify({
           name: name.trim(), slug: slug.trim(), maxPlayers,
           startDate, endDate, weeklyBetAmount,
+          majorBetAmount,
+          payoutPct1: payoutPcts[0], payoutPct2: payoutPcts[1], payoutPct3: payoutPcts[2],
+          missedCutPenalty, missedDeadlinePenalty, majorTeamSize,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -188,6 +207,11 @@ export default function CreateLeaguePage() {
     setMaxPlayers(LEAGUE_LIMITS.MAX_PLAYERS_DEFAULT);
     setStartDate(d.start); setEndDate(d.end);
     setWeeklyBetAmount(LEAGUE_LIMITS.BET_DEFAULT);
+    setMajorBetInput('');
+    setPayoutPcts([100, 0, 0]);
+    setMissedCutPenalty(LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT);
+    setMissedDeadlinePenalty(LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT);
+    setMajorTeamSize(4);
     setTouched(new Set());
     setServerErrors({}); setGeneralError('');
     setCreated(null); setCopied(false);
@@ -425,14 +449,166 @@ export default function CreateLeaguePage() {
                 <p className="hint" style={{ color: 'var(--red)' }}>{errors.weeklyBetAmount}</p>
               ) : (
                 <p className="hint">
-                  After each completed tournament, every non-winner owes the winner this amount.
-                  Ties at #1 split the pot evenly. Default ${LEAGUE_LIMITS.BET_DEFAULT}.
+                  Each member&rsquo;s stake per regular tournament. The pot pays out
+                  using the split below. Default ${LEAGUE_LIMITS.BET_DEFAULT}.
                 </p>
               )}
             </div>
 
+            {/* ── Majors bet amount ─────────────────────── */}
+            <div className="field">
+              <label className="label" htmlFor="league-major-bet">Majors Bet Amount</label>
+              <input
+                id="league-major-bet"
+                className={`input ${shouldShow('majorBetAmount') && errors.majorBetAmount ? 'input-error' : ''}`}
+                type="number"
+                min={LEAGUE_LIMITS.BET_MIN}
+                max={LEAGUE_LIMITS.BET_MAX}
+                step="0.01"
+                inputMode="decimal"
+                placeholder={Number.isFinite(weeklyBetAmount) ? `Same as weekly ($${weeklyBetAmount})` : 'Same as weekly'}
+                value={majorBetInput}
+                onChange={e => setMajorBetInput(e.target.value)}
+                onBlur={() => markTouched('majorBetAmount')}
+                aria-invalid={!!(shouldShow('majorBetAmount') && errors.majorBetAmount)}
+              />
+              {shouldShow('majorBetAmount') && errors.majorBetAmount ? (
+                <p className="hint" style={{ color: 'var(--red)' }}>{errors.majorBetAmount}</p>
+              ) : (
+                <p className="hint">
+                  Stake for the four majors. Leave blank to use the weekly amount.
+                </p>
+              )}
+            </div>
+
+            {/* ── Majors team size ─────────────────────── */}
+            <div className="field">
+              <span className="label" id="league-team-size-label">Team Size for Majors</span>
+              <div role="radiogroup" aria-labelledby="league-team-size-label"
+                   style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                {([
+                  { v: 4 as const, title: '4 golfers', desc: '2 top tier + 2 dark horse · best 3 count' },
+                  { v: 6 as const, title: '6 golfers', desc: '3 top tier + 3 dark horse · best 4 count' },
+                ]).map(o => (
+                  <label key={o.v} style={{
+                    flex: '1 1 200px', display: 'flex', gap: '0.6rem', alignItems: 'flex-start',
+                    padding: '0.7rem 0.85rem', borderRadius: 'var(--radius)', cursor: 'pointer',
+                    border: `2px solid ${majorTeamSize === o.v ? 'var(--green-mid)' : 'var(--cream-dark)'}`,
+                    background: majorTeamSize === o.v ? 'var(--green-pale)' : 'white',
+                  }}>
+                    <input type="radio" name="major-team-size" value={o.v}
+                           checked={majorTeamSize === o.v}
+                           onChange={() => setMajorTeamSize(o.v)}
+                           style={{ marginTop: '0.2rem' }} />
+                    <span>
+                      <strong style={{ display: 'block' }}>{o.title}</strong>
+                      <span className="hint" style={{ margin: 0 }}>{o.desc}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="hint">
+                Regular tournaments always use 4-golfer teams. Six-golfer majors spread the
+                points out across more of the field.
+              </p>
+            </div>
+
+            {/* ── Payout split ─────────────────────────── */}
+            <div className="field">
+              <label className="label">Payout Split</label>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                {(['1st', '2nd', '3rd'] as const).map((place, i) => (
+                  <div key={place} style={{ flex: '1 1 90px' }}>
+                    <label htmlFor={`league-payout-${i}`} className="hint"
+                           style={{ display: 'block', fontWeight: 600, color: 'var(--slate)', marginBottom: '0.25rem' }}>
+                      {place} %
+                    </label>
+                    <input
+                      id={`league-payout-${i}`}
+                      className={`input ${shouldShow('payout') && errors.payout ? 'input-error' : ''}`}
+                      type="number" min={0} max={100} step={1} inputMode="numeric"
+                      value={Number.isFinite(payoutPcts[i]) ? payoutPcts[i] : ''}
+                      onChange={e => {
+                        const n = parseInt(e.target.value, 10);
+                        setPayoutPcts(prev => {
+                          const next = [...prev] as [number, number, number];
+                          next[i] = Number.isFinite(n) ? n : NaN;
+                          return next;
+                        });
+                      }}
+                      onBlur={() => markTouched('payout')}
+                    />
+                  </div>
+                ))}
+              </div>
+              {shouldShow('payout') && errors.payout ? (
+                <p className="hint" style={{ color: 'var(--red)' }}>{errors.payout}</p>
+              ) : (
+                <p className="hint">
+                  Must add up to 100. 100 / 0 / 0 is winner-take-all. Ties split the
+                  combined shares of the places they occupy.
+                </p>
+              )}
+            </div>
+
+            {/* ── Penalties ────────────────────────────── */}
+            <div className="field">
+              <label className="label">Penalties (strokes)</label>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label htmlFor="league-mc-penalty" className="hint"
+                         style={{ display: 'block', fontWeight: 600, color: 'var(--slate)', marginBottom: '0.25rem' }}>
+                    Missed cut (per golfer)
+                  </label>
+                  <input
+                    id="league-mc-penalty"
+                    className={`input ${shouldShow('missedCutPenalty') && errors.missedCutPenalty ? 'input-error' : ''}`}
+                    type="number" min={LEAGUE_LIMITS.PENALTY_MIN} max={LEAGUE_LIMITS.PENALTY_MAX}
+                    step={1} inputMode="numeric"
+                    value={Number.isFinite(missedCutPenalty) ? missedCutPenalty : ''}
+                    onChange={e => {
+                      const n = parseInt(e.target.value, 10);
+                      setMissedCutPenalty(Number.isFinite(n) ? n : NaN);
+                    }}
+                    onBlur={() => markTouched('missedCutPenalty')}
+                  />
+                </div>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label htmlFor="league-md-penalty" className="hint"
+                         style={{ display: 'block', fontWeight: 600, color: 'var(--slate)', marginBottom: '0.25rem' }}>
+                    Missed pick deadline
+                  </label>
+                  <input
+                    id="league-md-penalty"
+                    className={`input ${shouldShow('missedDeadlinePenalty') && errors.missedDeadlinePenalty ? 'input-error' : ''}`}
+                    type="number" min={LEAGUE_LIMITS.PENALTY_MIN} max={LEAGUE_LIMITS.PENALTY_MAX}
+                    step={1} inputMode="numeric"
+                    value={Number.isFinite(missedDeadlinePenalty) ? missedDeadlinePenalty : ''}
+                    onChange={e => {
+                      const n = parseInt(e.target.value, 10);
+                      setMissedDeadlinePenalty(Number.isFinite(n) ? n : NaN);
+                    }}
+                    onBlur={() => markTouched('missedDeadlinePenalty')}
+                  />
+                </div>
+              </div>
+              {(shouldShow('missedCutPenalty') && errors.missedCutPenalty) && (
+                <p className="hint" style={{ color: 'var(--red)' }}>{errors.missedCutPenalty}</p>
+              )}
+              {(shouldShow('missedDeadlinePenalty') && errors.missedDeadlinePenalty) && (
+                <p className="hint" style={{ color: 'var(--red)' }}>{errors.missedDeadlinePenalty}</p>
+              )}
+              <p className="hint">
+                Added to a player&rsquo;s total. Defaults: missed cut {LEAGUE_LIMITS.MISSED_CUT_PENALTY_DEFAULT},
+                missed deadline {LEAGUE_LIMITS.MISSED_DEADLINE_PENALTY_DEFAULT}.
+              </p>
+            </div>
+
             <div className="alert alert-info" style={{ marginTop: '0.5rem' }}>
-              💡 After creating, you&rsquo;ll get an invite link to share with your group.
+              💡 Your league starts in <strong>setup mode</strong>: you can adjust these rules
+              and prune the schedule from the Commissioner Admin page until you lock the
+              league. It locks automatically when picks lock for the first tournament.
+              You&rsquo;ll also get an invite link to share with your group.
             </div>
 
             <button

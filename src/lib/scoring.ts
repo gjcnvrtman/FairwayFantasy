@@ -34,6 +34,7 @@
 
 import type { Pick, Score, FantasyResult } from '@/types';
 import { parseESPNScore, mapESPNStatus } from './espn';
+import { TEAM_4, pickGolferIds, teamSlots, type TeamShape } from './team-shape';
 
 // ── Named constants ──────────────────────────────────────────
 /**
@@ -155,7 +156,11 @@ export function applyFantasyRules(params: {
  * are perfectly on-pace. Sum-of-scored gives an honest in-progress
  * estimate. Pinned by tests so any future change surfaces.
  */
-export function calculateTop3(scores: (number | null)[]): {
+export function calculateTop3(
+  scores: (number | null)[],
+  /** Best N count — 3 for 4-man teams, 4 for 6-man majors. */
+  countingCount: number = COUNTING_GOLFER_COUNT,
+): {
   countingIndices: number[];  // Which slots are counting (0-indexed)
   total: number | null;
 } {
@@ -168,7 +173,7 @@ export function calculateTop3(scores: (number | null)[]): {
   // Sort ascending (lower = better in golf)
   scored.sort((a, b) => a.score - b.score);
 
-  const top = scored.slice(0, COUNTING_GOLFER_COUNT);
+  const top = scored.slice(0, countingCount);
   const total = top.reduce((sum, x) => sum + x.score, 0);
 
   return {
@@ -206,14 +211,19 @@ export function calculateTop3(scores: (number | null)[]): {
 export function computeLeagueResults(
   picks: Pick[],
   scoreMap: Map<string, Score>, // keyed by golfer UUID
+  opts: {
+    /** Strokes per missed-cut golfer (leagues.missed_cut_penalty,
+     *  migration 025). Defaults to the pre-025 constant. */
+    missedCutPenalty?: number;
+    /** Team shape for this league + tournament (migration 026).
+     *  Defaults to 4-man: best 3 of 4. */
+    shape?: TeamShape;
+  } = {},
 ): Omit<FantasyResult, 'id' | 'updated_at'>[] {
+  const missedCutPenalty = opts.missedCutPenalty ?? MISSED_CUT_PENALTY_STROKES;
+  const shape = opts.shape ?? TEAM_4;
   const results = picks.map(pick => {
-    const golferIds = [
-      pick.golfer_1_id,
-      pick.golfer_2_id,
-      pick.golfer_3_id,
-      pick.golfer_4_id,
-    ];
+    const golferIds = pickGolferIds(pick, shape);
 
     const slotEntries = golferIds.map(id => {
       if (!id) return { fantasy: null as number | null, missedCut: false };
@@ -226,18 +236,22 @@ export function computeLeagueResults(
         ? scoreMap.get(score.replaced_by_golfer_id) ?? null
         : score;
       if (!effective) return { fantasy: null as number | null, missedCut: false };
+      const missedCut = effective.status === 'missed_cut';
+      // scores.fantasy_score is shared across leagues and holds the
+      // default penalty for MC golfers; show this league's penalty
+      // instead so the per-golfer column matches the total.
       return {
-        fantasy:   effective.fantasy_score,
-        missedCut: effective.status === 'missed_cut',
+        fantasy:   missedCut ? missedCutPenalty : effective.fantasy_score,
+        missedCut,
       };
     });
 
     // Top-3 pool: non-missed-cut only. A missed-cut golfer contributes
     // through the penalty bucket below, never through the pool.
     const top3Pool = slotEntries.map(e => e.missedCut ? null : e.fantasy);
-    const { countingIndices, total: top3Total } = calculateTop3(top3Pool);
+    const { countingIndices, total: top3Total } = calculateTop3(top3Pool, shape.counting);
     const missedCutCount = slotEntries.filter(e => e.missedCut).length;
-    const penaltyTotal   = missedCutCount * MISSED_CUT_PENALTY_STROKES;
+    const penaltyTotal   = missedCutCount * missedCutPenalty;
 
     // null total only when nothing has happened — no scored golfers
     // AND no missed cuts. Otherwise the penalty alone gives us a
@@ -265,6 +279,9 @@ export function computeLeagueResults(
       golfer_2_score:  slotEntries[1].fantasy,
       golfer_3_score:  slotEntries[2].fantasy,
       golfer_4_score:  slotEntries[3].fantasy,
+      // 6-man majors only; null for 4-man teams.
+      golfer_5_score:  slotEntries[4]?.fantasy ?? null,
+      golfer_6_score:  slotEntries[5]?.fantasy ?? null,
       counting_golfers: countingIndices.map(i => i + 1), // 1-indexed for display
       total_score:     totalScore,
       // Annotated as number|null so TS doesn't infer the literal `null`
@@ -317,6 +334,14 @@ export const DUPLICATE_FOURSOME_MESSAGE =
   'Another player in your league has already picked this exact ' +
   'combination of 4 golfers. Please choose a different lineup.';
 
+/** Duplicate-team message for any team size (6-man majors). */
+export function duplicateTeamMessage(size: number): string {
+  return size === 4
+    ? DUPLICATE_FOURSOME_MESSAGE
+    : 'Another player in your league has already picked this exact ' +
+      `combination of ${size} golfers. Please choose a different lineup.`;
+}
+
 /**
  * Validate a pick submission against all rules.
  * Returns array of error messages (empty = valid).
@@ -330,28 +355,33 @@ export function validatePick(params: {
   golferIds: (string | null)[];
   golfers: Array<{ id: string; owgr_rank: number | null; name: string }>;
   topTierIds: Set<string>;
-  existingPicks: Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
+  existingPicks: Array<{
+    golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string;
+    golfer_5_id?: string | null; golfer_6_id?: string | null;
+  }>;
+  /** Team shape (migration 026). Defaults to 4-man. */
+  shape?: TeamShape;
 }): string[] {
-  const { golferIds, golfers, topTierIds, existingPicks } = params;
+  const { golfers, topTierIds, existingPicks } = params;
+  const shape = params.shape ?? TEAM_4;
   const errors: string[] = [];
 
-  const [g1, g2, g3, g4] = golferIds;
+  const ids = teamSlots(shape).map(s => params.golferIds[s - 1] ?? null);
 
-  // ── All 4 must be selected ──
-  if (!g1 || !g2 || !g3 || !g4) {
-    errors.push('You must select all 4 golfers.');
+  // ── Every slot must be filled ──
+  if (ids.some(id => !id)) {
+    errors.push(`You must select all ${shape.size} golfers.`);
     return errors;
   }
+  const picked = ids as string[];
 
   // ── No duplicates within pick ──
-  const unique = new Set([g1, g2, g3, g4]);
-  if (unique.size < PICK_GOLFER_COUNT) {
+  if (new Set(picked).size < shape.size) {
     errors.push('You cannot pick the same golfer more than once.');
   }
 
-  // ── Slots 1-2 must be top tier (top 24 in this tournament's field) ──
-  const topTierSlots = [g1, g2];
-  topTierSlots.forEach((id, i) => {
+  // ── Top-tier slots (1..topTier) must be top tier (top 24 in this field) ──
+  picked.slice(0, shape.topTier).forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
     if (!golfer) return;
     if (!topTierIds.has(golfer.id)) {
@@ -364,32 +394,30 @@ export function validatePick(params: {
     }
   });
 
-  // ── Slots 3-4 must be dark horses (everyone else in the field) ──
-  const darkHorseSlots = [g3, g4];
-  darkHorseSlots.forEach((id, i) => {
+  // ── Remaining slots must be dark horses (everyone else in the field) ──
+  picked.slice(shape.topTier).forEach((id, i) => {
     const golfer = golfers.find(g => g.id === id);
     if (!golfer) return;
     if (topTierIds.has(golfer.id)) {
       errors.push(
-        `Slot ${i + 3} must be a dark horse (any golfer in the field outside the top ${topTierIds.size}). ${golfer.name} is ranked ${golfer.owgr_rank}.`
+        `Slot ${i + shape.topTier + 1} must be a dark horse (any golfer in the field outside the top ${topTierIds.size}). ${golfer.name} is ranked ${golfer.owgr_rank}.`
       );
     }
   });
 
-  // ── No two players in the league can pick the identical set of 4 ──
-  const newSet = new Set([g1, g2, g3, g4]);
+  // ── No two players in the league can pick the identical set ──
+  const newSet = new Set(picked);
   for (const existing of existingPicks) {
-    const existingSet = new Set([
-      existing.golfer_1_id,
-      existing.golfer_2_id,
-      existing.golfer_3_id,
-      existing.golfer_4_id,
-    ]);
+    const existingSet = new Set(
+      [existing.golfer_1_id, existing.golfer_2_id, existing.golfer_3_id,
+       existing.golfer_4_id, existing.golfer_5_id, existing.golfer_6_id]
+        .filter((id): id is string => !!id),
+    );
     if (
       newSet.size === existingSet.size &&
       [...newSet].every(id => existingSet.has(id))
     ) {
-      errors.push(DUPLICATE_FOURSOME_MESSAGE);
+      errors.push(duplicateTeamMessage(shape.size));
     }
   }
 
@@ -501,7 +529,9 @@ export const MISSED_DEADLINE_PENALTY_STROKES = 2;
  * Exported because the auto-lineup sweep needs to seed `takenHashes`
  * from existing picks BEFORE the trigger fires.
  */
-export function computeFoursomeHash(golferIds: [string, string, string, string]): string {
+export function computeFoursomeHash(golferIds: readonly string[]): string {
+  // Any team size — the trigger (migration 026) hashes all non-null
+  // slots the same way.
   return [...golferIds].sort().join('|');
 }
 
@@ -513,14 +543,29 @@ export function computeFoursomeHash(golferIds: [string, string, string, string])
 export type AutoLineupResult =
   | {
       ok: true;
-      golferIds: [string, string, string, string];
+      /** Slot order: top-tier golfers first, then dark horses. */
+      golferIds: string[];
       hash:      string;
-      // Slot 1 + 2 from this pool (top-tier minus excluded top-N).
-      topGolferIds:  [string, string];
-      // Slot 3 + 4 from this pool (dark-horse minus excluded top-N).
-      darkGolferIds: [string, string];
+      // Top-tier slots from this pool (top-tier minus excluded top-N).
+      topGolferIds:  string[];
+      // Dark-horse slots from this pool (dark-horse minus excluded top-N).
+      darkGolferIds: string[];
     }
   | { ok: false; reason: string };
+
+/** Lexicographic k-combinations of pool indices, generated lazily. */
+function* combinations(n: number, k: number): Generator<number[]> {
+  if (k > n) return;
+  const idx = Array.from({ length: k }, (_, i) => i);
+  while (true) {
+    yield [...idx];
+    let i = k - 1;
+    while (i >= 0 && idx[i] === n - k + i) i--;
+    if (i < 0) return;
+    idx[i] += 1;
+    for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+  }
+}
 
 /**
  * Build a random, valid, unique auto-lineup for a user who missed the
@@ -560,10 +605,15 @@ export function buildAutoLineup(args: {
   excludeTopN?:   number;
   attempts?:      number;
   rng?:           () => number;
+  /** Team shape (migration 026). Defaults to 4-man (2 + 2). */
+  shape?:         TeamShape;
 }): AutoLineupResult {
   const excludeTopN = args.excludeTopN ?? AUTO_LINEUP_EXCLUDE_TOP_N;
   const attempts    = args.attempts    ?? 50;
   const rng         = args.rng         ?? Math.random;
+  const shape       = args.shape       ?? TEAM_4;
+  const nTop        = shape.topTier;
+  const nDark       = shape.size - shape.topTier;
 
   // Split by per-tournament tier (see src/lib/field-tiers.ts).
   // Anything in topTierIds → top pool; everyone else in the field → dark.
@@ -580,81 +630,70 @@ export function buildAutoLineup(args: {
   const topPool  = [...topTierAll].sort(byRankNullsLast).slice(excludeTopN);
   const darkPool = [...darkHorseAll].sort(byRankNullsLast).slice(excludeTopN);
 
-  if (topPool.length < 2) {
+  if (topPool.length < nTop) {
     return {
       ok: false,
-      reason: `top-tier pool too small (have ${topPool.length} after excluding top ${excludeTopN}, need ≥2)`,
+      reason: `top-tier pool too small (have ${topPool.length} after excluding top ${excludeTopN}, need ≥${nTop})`,
     };
   }
-  if (darkPool.length < 2) {
+  if (darkPool.length < nDark) {
     return {
       ok: false,
-      reason: `dark-horse pool too small (have ${darkPool.length} after excluding top ${excludeTopN}, need ≥2)`,
+      reason: `dark-horse pool too small (have ${darkPool.length} after excluding top ${excludeTopN}, need ≥${nDark})`,
     };
   }
 
   // ── Strategy 1: random sampling, retry on collision ──
-  const pick2 = <T>(pool: T[]): [T, T] => {
-    // Reservoir-y unordered draw of 2 distinct indices via Fisher-Yates
-    // partial shuffle of {0..n-1} on the first 2 slots. Avoids the
-    // bias of "pick one, then pick another != first".
-    const i = Math.floor(rng() * pool.length);
-    let j = Math.floor(rng() * (pool.length - 1));
-    if (j >= i) j += 1;
-    return [pool[i], pool[j]];
+  // Unordered draw of k distinct pool members. For k=2 this keeps the
+  // original two-draw sequence exactly (tests pin it with a seeded rng);
+  // larger k uses a partial Fisher-Yates shuffle.
+  const pickK = <T>(pool: T[], k: number): T[] => {
+    if (k === 2) {
+      const i = Math.floor(rng() * pool.length);
+      let j = Math.floor(rng() * (pool.length - 1));
+      if (j >= i) j += 1;
+      return [pool[i], pool[j]];
+    }
+    const idx = pool.map((_, i) => i);
+    for (let s = 0; s < k; s++) {
+      const r = s + Math.floor(rng() * (idx.length - s));
+      [idx[s], idx[r]] = [idx[r], idx[s]];
+    }
+    return idx.slice(0, k).map(i => pool[i]);
   };
 
-  for (let tryNum = 0; tryNum < attempts; tryNum++) {
-    const [t1, t2] = pick2(topPool);
-    const [d1, d2] = pick2(darkPool);
-    const ids: [string, string, string, string] = [t1.id, t2.id, d1.id, d2.id];
+  const result = (top: string[], dark: string[]): AutoLineupResult | null => {
+    const ids = [...top, ...dark];
     // Distinctness across tiers — defensive. topPool and darkPool are
     // disjoint by construction (partition of the field on topTierIds
     // membership), so duplicates here would mean a caller bug.
-    if (new Set(ids).size !== 4) continue;
+    if (new Set(ids).size !== ids.length) return null;
     const hash = computeFoursomeHash(ids);
-    if (!args.takenHashes.has(hash)) {
-      return {
-        ok: true,
-        golferIds:     ids,
-        hash,
-        topGolferIds:  [t1.id, t2.id],
-        darkGolferIds: [d1.id, d2.id],
-      };
-    }
+    if (args.takenHashes.has(hash)) return null;
+    return { ok: true, golferIds: ids, hash, topGolferIds: top, darkGolferIds: dark };
+  };
+
+  for (let tryNum = 0; tryNum < attempts; tryNum++) {
+    const top  = pickK(topPool,  nTop).map(g => g.id);
+    const dark = pickK(darkPool, nDark).map(g => g.id);
+    const r = result(top, dark);
+    if (r) return r;
   }
 
   // ── Strategy 2: deterministic exhaustive search ──
-  // Iterate top-pair × dark-pair in input order. Guaranteed to find
-  // any unique combo that exists. Complexity is O((|top| C 2) × (|dark| C 2));
-  // with realistic pools (~30 top, ~100 dark post-exclusion) this is
-  // ~435 × 4950 ≈ 2M iterations worst case — well under 100ms.
-  for (let i = 0; i < topPool.length; i++) {
-    for (let j = i + 1; j < topPool.length; j++) {
-      for (let k = 0; k < darkPool.length; k++) {
-        for (let l = k + 1; l < darkPool.length; l++) {
-          const ids: [string, string, string, string] = [
-            topPool[i].id, topPool[j].id,
-            darkPool[k].id, darkPool[l].id,
-          ];
-          if (new Set(ids).size !== 4) continue;
-          const hash = computeFoursomeHash(ids);
-          if (!args.takenHashes.has(hash)) {
-            return {
-              ok: true,
-              golferIds:     ids,
-              hash,
-              topGolferIds:  [topPool[i].id, topPool[j].id],
-              darkGolferIds: [darkPool[k].id, darkPool[l].id],
-            };
-          }
-        }
-      }
+  // Lexicographic top-combos × dark-combos in input order, generated
+  // lazily — guaranteed to find any unique combo that exists, and
+  // stops at the first free one (the space is huge vs. a handful of
+  // taken teams, so this ends almost immediately in practice).
+  for (const tc of combinations(topPool.length, nTop)) {
+    for (const dc of combinations(darkPool.length, nDark)) {
+      const r = result(tc.map(i => topPool[i].id), dc.map(i => darkPool[i].id));
+      if (r) return r;
     }
   }
 
   return {
     ok: false,
-    reason: 'no unique foursome possible — every combination collides with an existing pick',
+    reason: `no unique ${shape.size === 4 ? 'foursome' : `${shape.size}-golfer team`} possible — every combination collides with an existing pick`,
   };
 }

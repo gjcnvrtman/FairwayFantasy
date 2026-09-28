@@ -8,12 +8,14 @@ import {
   getCompletedTournamentsInRange,
   getEffectiveBetsForTournaments,
   getEffectivePayoutsForTournaments,
+  betDefaultsFromLeague,
   getPicksForTournament,
   isoOrNull,
 } from '@/lib/db/queries';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
+import { teamShapeFor, teamSlots, isTopTierSlot } from '@/lib/team-shape';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -83,10 +85,10 @@ export default async function HistoryPage({ params }: Props) {
   // order as `withResults`. computeLeagueMoney excludes members who
   // joined after each tournament's pick-deadline and treats no-pick
   // members as losers (for tournaments they WERE eligible for).
-  // Per-tournament bet overrides (migration 010) resolved against the
-  // league default for any tournament without an explicit override.
+  // Per-tournament stake: override (migration 010) > majors bet
+  // (migration 025) > weekly bet.
   const effectiveBets = await getEffectiveBetsForTournaments(
-    league.id, withResults.map(t => t.tournament.id), betAmount,
+    league.id, withResults.map(t => t.tournament), betDefaultsFromLeague(league),
   );
   const effectivePayouts = await getEffectivePayoutsForTournaments(
     league.id, withResults.map(t => t.tournament.id), payoutFromLeague(league),
@@ -258,6 +260,13 @@ export default async function HistoryPage({ params }: Props) {
               {withResults.map(({ tournament: t, results, picksByUser }, tIdx) => {
                 const winner = results[0];
                 const isLatest = tIdx === 0; // most-recent first by query order
+                // 6-man majors (migration 026) add Golfer 5/6 columns.
+                const shape = teamShapeFor(league, t);
+                const slots = teamSlots(shape);
+                const slotTag = (slot: number) => isTopTierSlot(slot, shape)
+                  ? `T${slot}` : `DH${slot - shape.topTier}`;
+                const slotHeader = (slot: number) => isTopTierSlot(slot, shape)
+                  ? `Top Tier ${slot}` : `Dark Horse ${slot - shape.topTier}`;
                 return (
                   <details key={t.id} className="card" style={{ padding: 0, overflow: 'hidden' }} open={isLatest}>
                     {/* Summary (collapsed header — always visible) */}
@@ -303,10 +312,9 @@ export default async function HistoryPage({ params }: Props) {
                         <tr>
                           <th style={{ width: 48 }}>#</th>
                           <th>Player</th>
-                          <th className="hide-mobile">Golfer 1</th>
-                          <th className="hide-mobile">Golfer 2</th>
-                          <th className="hide-mobile">Golfer 3</th>
-                          <th className="hide-mobile">Golfer 4</th>
+                          {slots.map(s => (
+                            <th key={s} className="hide-mobile">Golfer {s}</th>
+                          ))}
                           <th>Total</th>
                           <th style={{ textAlign: 'right' }}>$ Net</th>
                         </tr>
@@ -317,7 +325,7 @@ export default async function HistoryPage({ params }: Props) {
                           const moneyCls = delta > 0 ? 'score-under'
                                          : delta < 0 ? 'score-over'
                                          : 'score-even';
-                          const slotScores = [r.golfer_1_score, r.golfer_2_score, r.golfer_3_score, r.golfer_4_score];
+                          const slotScores = slots.map(s => r[`golfer_${s}_score`] as number | null);
                           return (
                           <Fragment key={r.user_id}>
                           <tr className={`rank-${i + 1}`}>
@@ -368,7 +376,7 @@ export default async function HistoryPage({ params }: Props) {
                                       className="history-chip"
                                       style={{ opacity: isCounting ? 1 : 0.45 }}
                                     >
-                                      <span className="history-chip-label">{si < 2 ? `T${si + 1}` : `DH${si - 1}`}</span>
+                                      <span className="history-chip-label">{slotTag(si + 1)}</span>
                                       <span className={cls}>{formatScore(s)}</span>
                                     </span>
                                   );
@@ -396,10 +404,7 @@ export default async function HistoryPage({ params }: Props) {
                           <thead>
                             <tr>
                               <th>Player</th>
-                              <th>Top Tier 1</th>
-                              <th>Top Tier 2</th>
-                              <th>Dark Horse 1</th>
-                              <th>Dark Horse 2</th>
+                              {slots.map(s => <th key={s}>{slotHeader(s)}</th>)}
                             </tr>
                           </thead>
                           <tbody>
@@ -413,10 +418,7 @@ export default async function HistoryPage({ params }: Props) {
                                     <strong>{r.profile?.display_name}</strong>
                                     {isMe && <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: 'var(--brass)' }}>← you</span>}
                                   </td>
-                                  <td>{slotName(p?.golfer_1)}</td>
-                                  <td>{slotName(p?.golfer_2)}</td>
-                                  <td>{slotName(p?.golfer_3)}</td>
-                                  <td>{slotName(p?.golfer_4)}</td>
+                                  {slots.map(s => <td key={s}>{slotName(p?.[`golfer_${s}`])}</td>)}
                                 </tr>
                               );
                             })}

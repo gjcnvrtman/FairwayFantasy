@@ -1031,3 +1031,31 @@ describe('isReplacementEligible', () => {
     expect(isReplacementEligible({ status: 'active', round_1: 0 })).toBe(false);
   });
 });
+
+describe('computeLeagueResults — per-league missed-cut penalty (migration 025)', () => {
+  const scoreMap = () => buildScoreMap([
+    makeScore({ golfer_id: 'a', fantasy_score: -3 }),
+    makeScore({ golfer_id: 'b', fantasy_score: -1 }),
+    makeScore({ golfer_id: 'c', fantasy_score: 1, status: 'missed_cut' }),
+    makeScore({ golfer_id: 'd', fantasy_score: 1, status: 'missed_cut' }),
+  ]);
+  const picks = () => [makePick({ user_id: 'u1', g1: 'a', g2: 'b', g3: 'c', g4: 'd' })];
+
+  it('no option → default penalty of 1 per MC (existing leagues unchanged)', () => {
+    const r = computeLeagueResults(picks(), scoreMap());
+    expect(r[0].total_score).toBe(-4 + 2);
+  });
+
+  it('penalty 2 → 2 strokes per MC, and per-golfer column shows 2', () => {
+    const r = computeLeagueResults(picks(), scoreMap(), { missedCutPenalty: 2 });
+    expect(r[0].total_score).toBe(-4 + 4);
+    expect(r[0].golfer_3_score).toBe(2);
+    expect(r[0].golfer_4_score).toBe(2);
+  });
+
+  it('penalty 0 → MC golfers still excluded from top 3, add nothing', () => {
+    const r = computeLeagueResults(picks(), scoreMap(), { missedCutPenalty: 0 });
+    expect(r[0].total_score).toBe(-4);
+    expect(r[0].counting_golfers.sort()).toEqual([1, 2]);
+  });
+});

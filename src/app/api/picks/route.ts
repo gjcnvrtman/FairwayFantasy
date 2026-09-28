@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { db } from '@/lib/db';
-import { validatePick, isReplacementEligible, DUPLICATE_FOURSOME_MESSAGE } from '@/lib/scoring';
+import { validatePick, isReplacementEligible, duplicateTeamMessage } from '@/lib/scoring';
+import { teamShapeFor } from '@/lib/team-shape';
 import { computeTopTierIds } from '@/lib/field-tiers';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 import { requireSameOrigin } from '@/lib/same-origin';
@@ -63,11 +64,18 @@ export async function POST(req: NextRequest) {
 
   // Check tournament is still open
   const tournament = await db.selectFrom('tournaments')
-    .select(['pick_deadline', 'pick_deadline_override', 'status', 'name', 'field_published_at'])
+    .select(['pick_deadline', 'pick_deadline_override', 'status', 'name', 'field_published_at', 'type'])
     .where('id', '=', tournamentId)
     .where('hidden', '=', false)
     .executeTakeFirst();
   if (!tournament) return NextResponse.json({ error: 'Tournament not found.' }, { status: 404 });
+
+  // Team shape: 6-man on majors when the league chose it (migration 026).
+  const league = await db.selectFrom('leagues')
+    .select('major_team_size')
+    .where('id', '=', leagueId)
+    .executeTakeFirst();
+  const shape = teamShapeFor(league ?? {}, tournament);
   if (tournament.status !== 'upcoming')
     return NextResponse.json({ error: 'Picks are locked — this tournament has started.' }, { status: 403 });
   // Field-availability gate (Migration 007). When ESPN hasn't
@@ -101,7 +109,8 @@ export async function POST(req: NextRequest) {
 
   // Get other picks for duplicate check
   const existingPicks = await db.selectFrom('picks')
-    .select(['golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id'])
+    .select(['golfer_1_id', 'golfer_2_id', 'golfer_3_id', 'golfer_4_id',
+             'golfer_5_id', 'golfer_6_id'])
     .where('league_id',     '=',  leagueId)
     .where('tournament_id', '=',  tournamentId)
     .where('user_id',       '!=', user.id)
@@ -110,10 +119,17 @@ export async function POST(req: NextRequest) {
   // validatePick wants string FKs (not nullable) so filter only fully-formed rows.
   const eligible = existingPicks.filter(p =>
     p.golfer_1_id && p.golfer_2_id && p.golfer_3_id && p.golfer_4_id,
-  ) as Array<{ golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string }>;
+  ) as Array<{
+    golfer_1_id: string; golfer_2_id: string; golfer_3_id: string; golfer_4_id: string;
+    golfer_5_id: string | null; golfer_6_id: string | null;
+  }>;
 
-  const errors = validatePick({ golferIds, golfers, topTierIds, existingPicks: eligible });
+  const errors = validatePick({ golferIds, golfers, topTierIds, existingPicks: eligible, shape });
   if (errors.length > 0) return NextResponse.json({ errors }, { status: 400 });
+
+  // Slots 5/6 only exist on 6-man teams; always null otherwise.
+  const g5 = shape.size === 6 ? golferIds[4] : null;
+  const g6 = shape.size === 6 ? golferIds[5] : null;
 
   try {
     const pick = await db.insertInto('picks')
@@ -125,6 +141,8 @@ export async function POST(req: NextRequest) {
         golfer_2_id:   golferIds[1],
         golfer_3_id:   golferIds[2],
         golfer_4_id:   golferIds[3],
+        golfer_5_id:   g5,
+        golfer_6_id:   g6,
         is_locked:     false,
         submitted_at:  new Date().toISOString(),
       })
@@ -135,6 +153,8 @@ export async function POST(req: NextRequest) {
           golfer_2_id:  eb.ref('excluded.golfer_2_id'),
           golfer_3_id:  eb.ref('excluded.golfer_3_id'),
           golfer_4_id:  eb.ref('excluded.golfer_4_id'),
+          golfer_5_id:  eb.ref('excluded.golfer_5_id'),
+          golfer_6_id:  eb.ref('excluded.golfer_6_id'),
           is_locked:    eb.ref('excluded.is_locked'),
           submitted_at: eb.ref('excluded.submitted_at'),
         })),
@@ -154,7 +174,7 @@ export async function POST(req: NextRequest) {
       // in src/lib/scoring.ts) so the user sees the same wording
       // regardless of which layer caught the duplicate.
       return NextResponse.json(
-        { error: DUPLICATE_FOURSOME_MESSAGE },
+        { error: duplicateTeamMessage(shape.size) },
         { status: 409 },
       );
     }
@@ -179,7 +199,9 @@ export async function PUT(req: NextRequest) {
     .executeTakeFirst();
   if (!pick) return NextResponse.json({ error: 'Pick not found.' }, { status: 404 });
 
-  const pickGolferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id, pick.golfer_4_id];
+  // Slots 5/6 are only set on 6-man majors (migration 026).
+  const pickGolferIds = [pick.golfer_1_id, pick.golfer_2_id, pick.golfer_3_id,
+                         pick.golfer_4_id, pick.golfer_5_id, pick.golfer_6_id];
   if (!pickGolferIds.includes(withdrawnGolferId))
     return NextResponse.json({ error: 'That golfer is not in your pick.' }, { status: 400 });
 

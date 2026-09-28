@@ -11,6 +11,7 @@
 
 import { db } from './index';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
+import { resolveTournamentBet, type PayoutStructure } from '@/lib/money';
 
 // ── leagues ──────────────────────────────────────────────────
 
@@ -205,34 +206,48 @@ export async function getFantasyResultsForTournaments(
 
 /**
  * Return a `Map<tournament_id, effective_bet_amount>` for every
- * tournament in `tournamentIds`. Tournaments without an explicit
- * override resolve to the league's `weekly_bet_amount`. Returns an
- * empty map when `tournamentIds` is empty so the caller doesn't
- * have to gate. Money-math callers should consult this map to fill
- * the per-tournament `betAmount` field on `computeLeagueMoney`'s
- * tournaments input.
+ * tournament passed in, resolved by `resolveTournamentBet`:
+ * per-tournament override > majors bet (majors only) > weekly bet.
+ * Money-math callers use this map to fill the per-tournament
+ * `betAmount` field on `computeLeagueMoney`'s tournaments input.
  */
 export async function getEffectiveBetsForTournaments(
   leagueId: string,
-  tournamentIds: string[],
-  leagueDefaultBet: number,
+  tournaments: Array<{ id: string; type: string }>,
+  defaults: { weekly: number; major: number | null },
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
-  // Seed with the league default so the caller can read freely.
-  for (const tid of tournamentIds) out.set(tid, leagueDefaultBet);
-  if (tournamentIds.length === 0) return out;
+  if (tournaments.length === 0) return out;
   const rows = await db.selectFrom('league_tournament_bets')
     .select(['tournament_id', 'bet_amount'])
     .where('league_id', '=', leagueId)
-    .where('tournament_id', 'in', tournamentIds)
+    .where('tournament_id', 'in', tournaments.map(t => t.id))
     .execute();
-  for (const r of rows) out.set(r.tournament_id, Number(r.bet_amount));
+  const overrides = new Map(rows.map(r => [r.tournament_id, Number(r.bet_amount)]));
+  for (const t of tournaments) {
+    out.set(t.id, resolveTournamentBet({
+      override: overrides.get(t.id),
+      isMajor:  t.type === 'major',
+      weekly:   defaults.weekly,
+      major:    defaults.major,
+    }));
+  }
   return out;
+}
+
+/** League row → bet defaults for getEffectiveBetsForTournaments. */
+export function betDefaultsFromLeague(league: {
+  weekly_bet_amount: string | number | null;
+  major_bet_amount:  string | number | null;
+}): { weekly: number; major: number | null } {
+  return {
+    weekly: Number(league.weekly_bet_amount ?? 0),
+    major:  league.major_bet_amount == null ? null : Number(league.major_bet_amount),
+  };
 }
 
 // ── per-tournament payout snapshots (migration 024) ──────────
 
-import type { PayoutStructure } from '@/lib/money';
 
 /**
  * Return a `Map<tournament_id, PayoutStructure>` for every tournament
@@ -269,7 +284,8 @@ export async function getEffectivePayoutsForTournaments(
   return out;
 }
 
-// ── picks (with embedded golfer rows for all 4 slots) ────────
+// ── picks (with embedded golfer rows for every slot) ─────────
+// golfer_5 / golfer_6 are null except on 6-man majors (migration 026).
 
 export async function getPicksForTournament(leagueId: string, tournamentId: string) {
   return await db.selectFrom('picks')
@@ -295,6 +311,16 @@ export async function getPicksForTournament(leagueId: string, tournamentId: stri
           .selectAll('golfers')
           .whereRef('golfers.id', '=', 'picks.golfer_4_id'),
       ).as('golfer_4'),
+      jsonObjectFrom(
+        eb.selectFrom('golfers')
+          .selectAll('golfers')
+          .whereRef('golfers.id', '=', 'picks.golfer_5_id'),
+      ).as('golfer_5'),
+      jsonObjectFrom(
+        eb.selectFrom('golfers')
+          .selectAll('golfers')
+          .whereRef('golfers.id', '=', 'picks.golfer_6_id'),
+      ).as('golfer_6'),
     ])
     .where('league_id', '=', leagueId)
     .where('tournament_id', '=', tournamentId)

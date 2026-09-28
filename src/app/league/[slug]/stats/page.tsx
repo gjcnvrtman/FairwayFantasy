@@ -8,12 +8,14 @@ import {
   getCompletedTournamentsInRange,
   getEffectiveBetsForTournaments,
   getEffectivePayoutsForTournaments,
+  betDefaultsFromLeague,
   getPicksForTournament,
   isoOrNull,
 } from '@/lib/db/queries';
 import { jsonObjectFrom } from 'kysely/helpers/postgres';
 import { formatScore } from '@/lib/scoring';
 import { computeLeagueMoney, formatMoney, payoutFromLeague } from '@/lib/money';
+import { teamShapeFor, teamSlots, isTopTierSlot } from '@/lib/team-shape';
 import { effectivePickDeadline } from '@/lib/pick-deadline';
 import Nav from '@/components/layout/Nav';
 import type { Metadata } from 'next';
@@ -71,10 +73,10 @@ export default async function StatsPage({ params }: Props) {
   const withResults = perTournament.filter(t => t.results.length > 0);
 
   // ── Money totals (reuse the same helper as History) ─────────
-  // Per-tournament bet overrides (migration 010); fall back to the
-  // league default for any tournament without an explicit override.
+  // Per-tournament stake: override (migration 010) > majors bet
+  // (migration 025) > weekly bet.
   const effectiveBets = await getEffectiveBetsForTournaments(
-    league.id, withResults.map(t => t.tournament.id), betAmount,
+    league.id, withResults.map(t => t.tournament), betDefaultsFromLeague(league),
   );
   const effectivePayouts = await getEffectivePayoutsForTournaments(
     league.id, withResults.map(t => t.tournament.id), payoutFromLeague(league),
@@ -182,7 +184,9 @@ export default async function StatsPage({ params }: Props) {
   const darkHorseByUser: Map<string, PickCount> = new Map();
   let leagueScoreSum = 0;
   let leagueScoreEvents = 0;
-  for (const { results, picks } of withResults) {
+  for (const { tournament, results, picks } of withResults) {
+    // 6-man majors (migration 026): slots 1-3 top tier, 4-6 dark horse.
+    const shape = teamShapeFor(league, tournament);
     for (const p of picks as any[]) {
       const add = (m: PickCount, g: any) => {
         if (!g) return;
@@ -190,18 +194,15 @@ export default async function StatsPage({ params }: Props) {
         cur.count += 1;
         m.set(g.id, cur);
       };
-      // League-wide
-      add(topTierCount,  p.golfer_1);
-      add(topTierCount,  p.golfer_2);
-      add(darkHorseCount, p.golfer_3);
-      add(darkHorseCount, p.golfer_4);
       // Per-user — lazy-init the inner map on first sighting
       if (!topTierByUser.has(p.user_id))   topTierByUser.set(p.user_id, new Map());
       if (!darkHorseByUser.has(p.user_id)) darkHorseByUser.set(p.user_id, new Map());
-      add(topTierByUser.get(p.user_id)!,   p.golfer_1);
-      add(topTierByUser.get(p.user_id)!,   p.golfer_2);
-      add(darkHorseByUser.get(p.user_id)!, p.golfer_3);
-      add(darkHorseByUser.get(p.user_id)!, p.golfer_4);
+      for (const slot of teamSlots(shape)) {
+        const g = p[`golfer_${slot}`];
+        const top = isTopTierSlot(slot, shape);
+        add(top ? topTierCount : darkHorseCount, g);
+        add(top ? topTierByUser.get(p.user_id)! : darkHorseByUser.get(p.user_id)!, g);
+      }
     }
     for (const r of results) {
       if (r.total_score === null || r.total_score === undefined) continue;
