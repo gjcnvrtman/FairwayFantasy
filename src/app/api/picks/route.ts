@@ -7,6 +7,7 @@ import { computeTopTierIds } from '@/lib/field-tiers';
 import { checkRateLimit, clientIpFromHeaders } from '@/lib/rate-limit';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { isPickDeadlinePassed } from '@/lib/pick-deadline';
+import { autoLockSetupLeagues } from '@/lib/league-setup';
 
 // Per-IP rate limit on pick submission: 30 attempts per 10 min.
 // Legit users can iterate freely (edit picks multiple times before
@@ -92,6 +93,12 @@ export async function POST(req: NextRequest) {
   // Honor commissioner override (P1 — pick_deadline often wrong vs real tee time).
   if (isPickDeadlinePassed(tournament))
     return NextResponse.json({ error: 'The pick deadline has passed.' }, { status: 403 });
+
+  // Picks are open for this tournament, so a setup-mode league must be
+  // locked before anyone picks under its rules. Normally already done
+  // by the field sync; this is the backstop (idempotent, no-op for
+  // legacy / locked leagues).
+  await autoLockSetupLeagues(leagueId);
 
   // Pull the FULL tournament field so we can compute per-tournament
   // tiers (top 24 ranked in the field). The picked-golfer subset is

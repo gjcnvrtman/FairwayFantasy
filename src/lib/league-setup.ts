@@ -6,8 +6,15 @@
 //   locked → rules, bets, penalties, window and schedule are frozen.
 //
 // A setup league locks when the commissioner presses "Lock league
-// setup", or automatically 1 minute before any tournament on its
-// schedule locks picks — rules can never change after money is at stake.
+// setup", or automatically as soon as picks open for any tournament on
+// its schedule (Greg, 2026-09-28) — i.e. when ESPN publishes that
+// field, before anyone can pick — and in any case 1 minute before
+// picks lock. Rules (team size, penalties, bets) can never change after
+// a single pick has been made under them.
+//
+// Triggered by: runFieldSync right after it stamps field_published_at,
+// POST /api/picks before accepting a pick, the score-sync sweep, and
+// every admin request (resolveSetupStatus).
 // Auto-lock runs from the sync sweep and is also checked on every
 // admin request via resolveSetupStatus(), so there's no window between
 // the deadline and the next sweep where rules are still editable.
@@ -18,7 +25,8 @@ import { db } from './db';
 
 export type SetupStatus = 'legacy' | 'setup' | 'locked';
 
-// Auto-lock moment: 1 minute before picks lock (Greg, 2026-09-28) —
+// Backstop lock time (the field-published trigger normally fires days
+// earlier): 1 minute before picks lock (Greg, 2026-09-28) —
 // the effective pick deadline (override > computed, as in
 // effectivePickDeadline()), or the tournament start if that is earlier
 // or the deadline columns are empty. LEAST ignores NULLs. Rules can
@@ -27,8 +35,9 @@ const deadlineExpr = sql<Date>`(LEAST(COALESCE(t.pick_deadline_override, t.pick_
 
 /**
  * Lock every setup-mode league (or just `leagueId`) that has a
- * scheduled tournament whose deadline has passed. Idempotent.
- * Returns the ids of leagues locked by this call.
+ * scheduled tournament whose picks are open (field published) or whose
+ * lock time has passed. Idempotent. Returns the ids of leagues locked
+ * by this call.
  */
 export async function autoLockSetupLeagues(leagueId?: string): Promise<string[]> {
   const rows = await db.updateTable('leagues')
@@ -40,7 +49,10 @@ export async function autoLockSetupLeagues(leagueId?: string): Promise<string[]>
         .innerJoin('tournaments as t', 't.id', 'lt.tournament_id')
         .select(sql`1`.as('one'))
         .whereRef('lt.league_id', '=', 'leagues.id')
-        .where(deadlineExpr, '<=', sql<Date>`NOW()`),
+        .where(eb2 => eb2.or([
+          eb2('t.field_published_at', 'is not', null),      // picks are open
+          eb2(deadlineExpr, '<=', sql<Date>`NOW()`),
+        ])),
     ))
     .returning('id')
     .execute();
@@ -66,8 +78,9 @@ export async function resolveSetupStatus(league: {
 }
 
 /**
- * Earliest upcoming deadline on this league's schedule — when a setup
- * league will auto-lock. null when nothing is scheduled.
+ * First scheduled tournament still ahead, with its lock time — the
+ * latest a setup league can stay unlocked. It locks earlier, the moment
+ * that field is published (picks open). null when nothing is scheduled.
  */
 export async function nextAutoLock(leagueId: string): Promise<{
   tournamentName: string;

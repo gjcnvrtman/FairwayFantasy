@@ -10,6 +10,7 @@ import { isPlatformAdmin } from '@/lib/platform-admin';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { db } from '@/lib/db';
 import { createProductionQueries } from '@/lib/db/predictions-queries';
+import { listBacktestRuns } from '@/lib/db/predictions-views';
 import { runBacktest } from '@/lib/backtest-orchestrator';
 
 // Backtests across many events can take a while — each event runs the
@@ -57,10 +58,5 @@ export async function GET() {
   if (!user || !user.email || !isPlatformAdmin(user.email)) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
-  const rows = await db.selectFrom('backtest_runs')
-    .selectAll()
-    .orderBy('started_at', 'desc')
-    .limit(50)
-    .execute();
-  return NextResponse.json({ ok: true, runs: rows });
+  return NextResponse.json({ ok: true, runs: await listBacktestRuns(50) });
 }

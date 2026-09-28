@@ -4,7 +4,7 @@
 // if those query params are present (the /current page deep-links here).
 // ============================================================
 
-import { db } from '@/lib/db';
+import { listLinkableTournaments } from '@/lib/db/predictions-views';
 import CourseProfileForm, {
   type CourseProfileFormValues, type TournamentOption,
 } from '../CourseProfileForm';
@@ -14,18 +14,9 @@ interface Props {
 }
 
 async function loadTournamentOptions(): Promise<TournamentOption[]> {
-  const nowIso = new Date().toISOString();
-  // Upcoming + currently-active. Past complete events aren't useful to
-  // attach a NEW profile to (the run window is gone). Filter by 1 year
-  // ahead for the dropdown to stay short.
-  const yearFromNow = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
-  return await db.selectFrom('tournaments')
-    .select(['id', 'name', 'start_date'])
-    .where('start_date', '>=', nowIso)
-    .where('start_date', '<=', yearFromNow)
-    .where('type', 'in', ['regular', 'major'])
-    .orderBy('start_date', 'asc')
-    .execute();
+  // Upcoming only — past events aren't useful to attach a NEW profile
+  // to (the run window is gone). Hidden events excluded.
+  return await listLinkableTournaments(new Date());
 }
 
 export const dynamic = 'force-dynamic';

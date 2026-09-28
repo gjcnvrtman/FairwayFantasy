@@ -1,6 +1,6 @@
 // /predictions/weights — list + create + activate model weight configs.
 
-import { db } from '@/lib/db';
+import { listWeightConfigs } from '@/lib/db/predictions-views';
 import WeightsClient from './WeightsClient';
 
 export const dynamic = 'force-dynamic';
@@ -21,11 +21,7 @@ interface ConfigRow {
 }
 
 async function loadConfigs(): Promise<ConfigRow[]> {
-  return await db.selectFrom('model_weight_configs')
-    .selectAll()
-    .orderBy('is_active', 'desc')
-    .orderBy('created_at', 'desc')
-    .execute();
+  return await listWeightConfigs();
 }
 
 export default async function WeightsPage() {

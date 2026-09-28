@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/current-user';
 import { isPlatformAdmin } from '@/lib/platform-admin';
 import { db } from '@/lib/db';
+import { loadRunTeams } from '@/lib/db/predictions-views';
 
 interface Props { params: { id: string } }
 
@@ -24,10 +25,10 @@ export async function GET(_req: NextRequest, { params }: Props) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  // Per-golfer predictions + foursomes for this run, both keyed on
-  // run_id. Returned in display-useful order: composite DESC for
-  // golfers, rank ASC for foursomes.
-  const [golfers, foursomes] = await Promise.all([
+  // Per-golfer predictions + recommended teams for this run, both keyed
+  // on run_id. Returned in display-useful order: composite DESC for
+  // golfers; foursomes then six-man teams, rank ASC, for teams.
+  const [golfers, { teams: foursomes }] = await Promise.all([
     db.selectFrom('golfer_predictions')
       .innerJoin('golfers', 'golfers.id', 'golfer_predictions.golfer_id')
       .select([
@@ -48,11 +49,7 @@ export async function GET(_req: NextRequest, { params }: Props) {
       .where('golfer_predictions.run_id', '=', params.id)
       .orderBy('golfer_predictions.composite_score', 'desc')
       .execute(),
-    db.selectFrom('foursome_recommendations')
-      .selectAll()
-      .where('run_id', '=', params.id)
-      .orderBy('rank', 'asc')
-      .execute(),
+    loadRunTeams(params.id),
   ]);
 
   return NextResponse.json({ ok: true, run, golfers, foursomes });

@@ -969,6 +969,20 @@ async function checkAndPublishField(tournament: {
     .where('id', '=', id)
     .execute();
 
+  // Picks are now open for this tournament → lock the rules of any
+  // setup-mode league that has it on its schedule, BEFORE the "field
+  // set, make your picks" emails go out (Greg, 2026-09-28).
+  try {
+    const locked = await autoLockSetupLeagues();
+    if (locked.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[league-setup] picks opened for ${name}: locked ${locked.length} setup league(s): ${locked.join(', ')}`);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[league-setup] auto-lock on field publish failed:', err);
+  }
+
   // "Field is set" notifications — fire once, on the NULL → set
   // transition. Sent directly via sendEmail (see notifyFieldPublished).
   //
@@ -1268,8 +1282,8 @@ export async function notifyAdminsRosterSet(args: {
  * and assignment is bounded to ≤1 hour across the whole week.
  */
 async function sweepMissedPicks(): Promise<void> {
-  // Setup-mode leagues lock once any scheduled tournament hits its
-  // pick deadline (migration 025). Runs before the sweep so the
+  // Setup-mode leagues lock once picks open for a scheduled tournament
+  // (or at the latest just before its deadline). Runs before the sweep so the
   // missed-deadline penalty below uses the frozen league value.
   try {
     const locked = await autoLockSetupLeagues();

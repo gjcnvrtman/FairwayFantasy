@@ -1,7 +1,7 @@
 // /predictions/backtest — list past backtest runs + form to launch a new one.
 
 import Link from 'next/link';
-import { db } from '@/lib/db';
+import { listBacktestRuns, listBacktestableTournaments } from '@/lib/db/predictions-views';
 import LaunchBacktestForm from './LaunchBacktestForm';
 
 export const dynamic = 'force-dynamic';
@@ -29,34 +29,12 @@ interface ScoredTournamentRow {
 }
 
 async function loadRuns(): Promise<RunRow[]> {
-  return await db.selectFrom('backtest_runs')
-    .select([
-      'id', 'status', 'events_tested', 'events_with_complete_data',
-      'avg_projected_vs_actual', 'avg_best_foursome_rank',
-      'pct_beat_league_average', 'pct_beat_league_winner',
-      'avg_sleeper_accuracy', 'started_at', 'completed_at',
-    ])
-    .orderBy('started_at', 'desc')
-    .limit(50)
-    .execute();
+  return await listBacktestRuns(50);
 }
 
 async function loadScoredTournaments(): Promise<ScoredTournamentRow[]> {
-  // Tournaments that have scores rows AND have a course profile linked
-  // — those are the eligible backtest targets.
-  return await db.selectFrom('tournaments')
-    .innerJoin('scores', 'scores.tournament_id', 'tournaments.id')
-    .select([
-      'tournaments.id as id',
-      'tournaments.name as name',
-      'tournaments.start_date as start_date',
-      eb => eb.fn.count<number>('scores.id').as('scores_count'),
-    ])
-    .where('tournaments.status', 'in', ['complete', 'cut_made'])
-    .where('tournaments.course_profile_id', 'is not', null)
-    .groupBy(['tournaments.id', 'tournaments.name', 'tournaments.start_date'])
-    .orderBy('tournaments.start_date', 'desc')
-    .execute();
+  // Scored, course profile linked, not hidden — the eligible backtest targets.
+  return await listBacktestableTournaments();
 }
 
 function fmt(v: string | null, suffix = ''): string {

@@ -1,7 +1,6 @@
 // /predictions/stats — upload golfer stat snapshots + browse past uploads.
 
-import { db } from '@/lib/db';
-import { sql } from 'kysely';
+import { loadSnapshotGroups } from '@/lib/db/predictions-views';
 import UploadStatsForm from './UploadStatsForm';
 
 export const dynamic = 'force-dynamic';
@@ -16,25 +15,8 @@ interface SnapshotGroup {
 }
 
 async function loadGroups(): Promise<SnapshotGroup[]> {
-  const result = await sql<{
-    as_of_date: string;
-    total: string;
-    matched: string;
-    unmatched: string;
-    last_uploaded_at: string;
-  }>`
-    SELECT
-      as_of_date::text AS as_of_date,
-      COUNT(*)::text AS total,
-      COUNT(*) FILTER (WHERE golfer_id IS NOT NULL)::text AS matched,
-      COUNT(*) FILTER (WHERE golfer_id IS NULL)::text AS unmatched,
-      MAX(uploaded_at)::text AS last_uploaded_at
-    FROM golfer_stat_snapshots
-    GROUP BY as_of_date
-    ORDER BY as_of_date DESC
-    LIMIT 50
-  `.execute(db);
-  return result.rows.map(r => ({
+  const rows = await loadSnapshotGroups(50);
+  return rows.map(r => ({
     as_of_date: r.as_of_date,
     total: Number(r.total),
     matched: Number(r.matched),

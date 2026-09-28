@@ -2,6 +2,7 @@
 
 import { notFound } from 'next/navigation';
 import { db } from '@/lib/db';
+import { listLinkableTournaments } from '@/lib/db/predictions-views';
 import CourseProfileForm, {
   type CourseProfileFormValues, type TournamentOption,
 } from '../CourseProfileForm';
@@ -9,15 +10,8 @@ import CourseProfileForm, {
 interface Props { params: { id: string } }
 
 async function loadTournamentOptions(): Promise<TournamentOption[]> {
-  const yearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString();
-  const yearFromNow = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
-  return await db.selectFrom('tournaments')
-    .select(['id', 'name', 'start_date'])
-    .where('start_date', '>=', yearAgo)
-    .where('start_date', '<=', yearFromNow)
-    .where('type', 'in', ['regular', 'major'])
-    .orderBy('start_date', 'asc')
-    .execute();
+  // Past year too, so an existing profile's past link stays selectable.
+  return await listLinkableTournaments(new Date(Date.now() - 365 * 24 * 3600 * 1000));
 }
 
 async function loadProfile(id: string) {

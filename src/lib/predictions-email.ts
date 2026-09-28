@@ -27,6 +27,7 @@ import {
 } from './email';
 import { runPredictions, OrchestratorError } from './predictions-orchestrator';
 import { createProductionQueries } from './db/predictions-queries';
+import { loadRunTeams } from './db/predictions-views';
 
 const PLATFORM_ADMIN_EMAILS = [
   { name: 'Greg', email: 'gjcnvrtman@gmail.com' },
@@ -73,38 +74,11 @@ export async function emailPredictionsRun(runId: string): Promise<{
     throw new Error(`Run ${runId} not found or not complete (status=${run?.status})`);
   }
 
-  const foursomes = await db.selectFrom('foursome_recommendations')
-    .select([
-      'rank', 'team_size',
-      'top_tier_1_golfer_id', 'top_tier_2_golfer_id', 'top_tier_3_golfer_id',
-      'dark_horse_1_golfer_id', 'dark_horse_2_golfer_id', 'dark_horse_3_golfer_id',
-      'projected_fantasy_score', 'confidence_score',
-      'risk_level', 'estimated_ownership_pct',
-      'key_strengths', 'key_concerns', 'foursome_explanation',
-    ])
-    .where('run_id', '=', runId)
-    .orderBy('team_size', 'asc')
-    .orderBy('rank', 'asc')
-    .execute();
-
+  const { teams: foursomes, nameById } = await loadRunTeams(runId);
   if (foursomes.length === 0) {
     throw new Error(`Run ${runId} has no foursome rows`);
   }
-
-  // Resolve golfer names in one query.
-  const idSet = new Set<string>();
-  for (const f of foursomes) {
-    for (const id of [f.top_tier_1_golfer_id, f.top_tier_2_golfer_id, f.top_tier_3_golfer_id,
-                      f.dark_horse_1_golfer_id, f.dark_horse_2_golfer_id, f.dark_horse_3_golfer_id]) {
-      if (id) idSet.add(id);
-    }
-  }
-  const names = await db.selectFrom('golfers')
-    .select(['id', 'name'])
-    .where('id', 'in', Array.from(idSet))
-    .execute();
-  const nameMap = new Map(names.map(n => [n.id, n.name]));
-  const nm = (id: string): string => nameMap.get(id) ?? id;
+  const nm = (id: string): string => nameById.get(id) ?? id;
 
   const emailFoursomes: PredictionsEmailFoursome[] = foursomes.map(f => ({
     rank:           f.rank,

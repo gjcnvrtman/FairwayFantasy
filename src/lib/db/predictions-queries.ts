@@ -203,6 +203,55 @@ export interface BacktestAggregatePersist {
   avgSleeperAccuracy: number;
 }
 
+// ── Shared loaders (used by the factory and the predictions pages) ──
+
+/** model_weight_configs row → ScoringWeights (NUMERIC strings → numbers). */
+export function toWeights(row: {
+  course_fit_weight: string | number; recent_form_weight: string | number;
+  long_term_weight: string | number; course_history_weight: string | number;
+  cut_probability_weight: string | number; upside_weight: string | number;
+}): ScoringWeights {
+  return {
+    courseFit:      Number(row.course_fit_weight),
+    recentForm:     Number(row.recent_form_weight),
+    longTerm:       Number(row.long_term_weight),
+    courseHistory:  Number(row.course_history_weight),
+    cutProbability: Number(row.cut_probability_weight),
+    upside:         Number(row.upside_weight),
+  };
+}
+
+/**
+ * A golfer's most recent finished events, newest first — recent form
+ * (profileIds null), history at one course, or at comparable courses.
+ * Hidden (opposite-field) events are included on purpose: they're real
+ * results. Withdrawn / DQ count as missed cut for form purposes.
+ */
+async function loadFinishes(
+  db: Kysely<Database>, golferId: string, profileIds: string[] | null,
+  limit: number, asOfDate?: string,
+): Promise<Finish[]> {
+  let q = db.selectFrom('scores')
+    .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
+    .select([
+      'scores.position as position',
+      'scores.status as status',
+      'tournaments.end_date as endDate',
+    ])
+    .where('scores.golfer_id', '=', golferId)
+    .where('scores.status', 'in', ['complete', 'missed_cut', 'withdrawn', 'disqualified'])
+    .orderBy('tournaments.end_date', 'desc')
+    .limit(limit);
+  if (profileIds) q = q.where('tournaments.course_profile_id', 'in', profileIds);
+  if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
+  const rows = await q.execute();
+  return rows.map(r => ({
+    position: parsePosition(r.position),
+    missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
+    eventDate: typeof r.endDate === 'string' ? r.endDate : new Date(r.endDate as unknown as number).toISOString(),
+  }));
+}
+
 // ── Production factory ─────────────────────────────────────
 
 export function createProductionQueries(db: Kysely<Database>): PredictionsQueries {
@@ -212,18 +261,7 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
         .selectAll()
         .where('is_active', '=', true)
         .executeTakeFirst();
-      if (!row) return null;
-      return {
-        id: row.id,
-        weights: {
-          courseFit:      Number(row.course_fit_weight),
-          recentForm:     Number(row.recent_form_weight),
-          longTerm:       Number(row.long_term_weight),
-          courseHistory:  Number(row.course_history_weight),
-          cutProbability: Number(row.cut_probability_weight),
-          upside:         Number(row.upside_weight),
-        },
-      };
+      return row ? { id: row.id, weights: toWeights(row) } : null;
     },
 
     async loadWeightConfig(id) {
@@ -231,18 +269,7 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
         .selectAll()
         .where('id', '=', id)
         .executeTakeFirst();
-      if (!row) return null;
-      return {
-        id: row.id,
-        weights: {
-          courseFit:      Number(row.course_fit_weight),
-          recentForm:     Number(row.recent_form_weight),
-          longTerm:       Number(row.long_term_weight),
-          courseHistory:  Number(row.course_history_weight),
-          cutProbability: Number(row.cut_probability_weight),
-          upside:         Number(row.upside_weight),
-        },
-      };
+      return row ? { id: row.id, weights: toWeights(row) } : null;
     },
 
     async loadCourseProfile(tournamentId) {
@@ -340,86 +367,18 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       };
     },
 
-    async loadRecentFinishes(golferId, limit = 6, asOfDate) {
-      let q = db.selectFrom('scores')
-        .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
-        .select([
-          'scores.position as position',
-          'scores.status as status',
-          'tournaments.end_date as endDate',
-        ])
-        .where('scores.golfer_id', '=', golferId)
-        .where(eb => eb.or([
-          eb('scores.status', '=', 'complete'),
-          eb('scores.status', '=', 'missed_cut'),
-          eb('scores.status', '=', 'withdrawn'),
-          eb('scores.status', '=', 'disqualified'),
-        ]))
-        .orderBy('tournaments.end_date', 'desc')
-        .limit(limit);
-      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
-      const rows = await q.execute();
-      return rows.map(r => ({
-        position: parsePosition(r.position),
-        missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
-        eventDate: typeof r.endDate === 'string' ? r.endDate : new Date(r.endDate as unknown as number).toISOString(),
-      }));
+    loadRecentFinishes(golferId, limit = 6, asOfDate) {
+      return loadFinishes(db, golferId, null, limit, asOfDate);
     },
 
-    async loadCourseHistory(golferId, courseProfileId, limit = 5, asOfDate) {
+    loadCourseHistory(golferId, courseProfileId, limit = 5, asOfDate) {
       // Tournaments at this course = tournaments.course_profile_id matches.
-      let q = db.selectFrom('scores')
-        .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
-        .select([
-          'scores.position as position',
-          'scores.status as status',
-          'tournaments.end_date as endDate',
-        ])
-        .where('scores.golfer_id', '=', golferId)
-        .where('tournaments.course_profile_id', '=', courseProfileId)
-        .where(eb => eb.or([
-          eb('scores.status', '=', 'complete'),
-          eb('scores.status', '=', 'missed_cut'),
-          eb('scores.status', '=', 'withdrawn'),
-          eb('scores.status', '=', 'disqualified'),
-        ]))
-        .orderBy('tournaments.end_date', 'desc')
-        .limit(limit);
-      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
-      const rows = await q.execute();
-      return rows.map(r => ({
-        position: parsePosition(r.position),
-        missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
-        eventDate: typeof r.endDate === 'string' ? r.endDate : new Date(r.endDate as unknown as number).toISOString(),
-      }));
+      return loadFinishes(db, golferId, [courseProfileId], limit, asOfDate);
     },
 
     async loadComparableHistory(golferId, comparableProfileIds, limit = 5, asOfDate) {
       if (comparableProfileIds.length === 0) return [];
-      let q = db.selectFrom('scores')
-        .innerJoin('tournaments', 'tournaments.id', 'scores.tournament_id')
-        .select([
-          'scores.position as position',
-          'scores.status as status',
-          'tournaments.end_date as endDate',
-        ])
-        .where('scores.golfer_id', '=', golferId)
-        .where('tournaments.course_profile_id', 'in', comparableProfileIds)
-        .where(eb => eb.or([
-          eb('scores.status', '=', 'complete'),
-          eb('scores.status', '=', 'missed_cut'),
-          eb('scores.status', '=', 'withdrawn'),
-          eb('scores.status', '=', 'disqualified'),
-        ]))
-        .orderBy('tournaments.end_date', 'desc')
-        .limit(limit);
-      if (asOfDate) q = q.where('tournaments.end_date', '<', asOfDate);
-      const rows = await q.execute();
-      return rows.map(r => ({
-        position: parsePosition(r.position),
-        missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
-        eventDate: typeof r.endDate === 'string' ? r.endDate : new Date(r.endDate as unknown as number).toISOString(),
-      }));
+      return loadFinishes(db, golferId, comparableProfileIds, limit, asOfDate);
     },
 
     async loadOwnership(tournamentId) {

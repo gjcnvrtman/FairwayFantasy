@@ -9,6 +9,7 @@
 
 import Link from 'next/link';
 import { db } from '@/lib/db';
+import { loadCurrentOrNextTournament, loadRunTeams } from '@/lib/db/predictions-views';
 import RunButton from './RunButton';
 import EmailButton from './EmailButton';
 
@@ -61,25 +62,8 @@ interface FoursomeRow {
 }
 
 async function loadUpcomingTournament(): Promise<TournamentRow | null> {
-  const nowIso = new Date().toISOString();
-  const next = await db.selectFrom('tournaments')
-    .select(['id', 'name', 'start_date', 'end_date', 'status',
-             'course_name', 'course_profile_id'])
-    .where('hidden', '=', false)
-    .where('start_date', '>=', nowIso)
-    .where('type', 'in', ['regular', 'major'])
-    .orderBy('start_date', 'asc')
-    .limit(1)
-    .executeTakeFirst();
-  if (next) return next;
-  return await db.selectFrom('tournaments')
-    .select(['id', 'name', 'start_date', 'end_date', 'status',
-             'course_name', 'course_profile_id'])
-    .where('hidden', '=', false)
-    .where('status', '=', 'active')
-    .orderBy('start_date', 'desc')
-    .limit(1)
-    .executeTakeFirst() ?? null;
+  // Next to start, else the one in play (date-based, like runScoreSync).
+  return await loadCurrentOrNextTournament();
 }
 
 async function loadProfile(profileId: string): Promise<CourseProfileLite | null> {
@@ -104,35 +88,8 @@ async function loadLatestRun(tournamentId: string): Promise<{
     .executeTakeFirst();
   if (!run) return null;
 
-  const foursomes = await db.selectFrom('foursome_recommendations')
-    .select(['rank', 'team_size', 'top_tier_1_golfer_id', 'top_tier_2_golfer_id',
-             'dark_horse_1_golfer_id', 'dark_horse_2_golfer_id',
-             'top_tier_3_golfer_id', 'dark_horse_3_golfer_id',
-             'projected_fantasy_score', 'confidence_score', 'risk_level',
-             'estimated_ownership_pct', 'key_strengths', 'key_concerns',
-             'foursome_explanation'])
-    .where('run_id', '=', run.id)
-    .orderBy('team_size', 'asc')
-    .orderBy('rank', 'asc')
-    .execute();
-
-  // Resolve golfer names for display.
-  const ids = new Set<string>();
-  for (const f of foursomes) {
-    for (const id of [f.top_tier_1_golfer_id, f.top_tier_2_golfer_id, f.top_tier_3_golfer_id,
-                      f.dark_horse_1_golfer_id, f.dark_horse_2_golfer_id, f.dark_horse_3_golfer_id]) {
-      if (id) ids.add(id);
-    }
-  }
-  const names = ids.size > 0
-    ? await db.selectFrom('golfers')
-        .select(['id', 'name'])
-        .where('id', 'in', Array.from(ids))
-        .execute()
-    : [];
-  const nameMap = new Map(names.map(n => [n.id, n.name]));
-
-  return { run, foursomes, golferNames: nameMap };
+  const { teams, nameById } = await loadRunTeams(run.id);
+  return { run, foursomes: teams, golferNames: nameById };
 }
 
 // ── UI helpers ──────────────────────────────────────────────

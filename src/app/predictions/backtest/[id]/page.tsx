@@ -3,7 +3,7 @@
 
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { db } from '@/lib/db';
+import { loadBacktestDetail } from '@/lib/db/predictions-views';
 
 interface Props { params: { id: string } }
 
@@ -52,35 +52,9 @@ function fmt(v: string | null, suffix = ''): string {
 }
 
 export default async function BacktestDetailPage({ params }: Props) {
-  const run = await db.selectFrom('backtest_runs')
-    .selectAll()
-    .where('id', '=', params.id)
-    .executeTakeFirst();
-  if (!run) notFound();
-
-  const results = await db.selectFrom('backtest_results')
-    .innerJoin('tournaments', 'tournaments.id', 'backtest_results.tournament_id')
-    .select([
-      'backtest_results.id as id',
-      'backtest_results.tournament_id as tournament_id',
-      'tournaments.name as tournament_name',
-      'tournaments.start_date as start_date',
-      'backtest_results.prediction_run_id as prediction_run_id',
-      'backtest_results.projected_score as projected_score',
-      'backtest_results.actual_score as actual_score',
-      'backtest_results.best_recommended_rank_in_league as best_recommended_rank_in_league',
-      'backtest_results.beat_league_average as beat_league_average',
-      'backtest_results.beat_league_winner as beat_league_winner',
-      'backtest_results.avg_finish_recommended as avg_finish_recommended',
-      'backtest_results.made_cut_pct as made_cut_pct',
-      'backtest_results.top_10_pct as top_10_pct',
-      'backtest_results.top_20_pct as top_20_pct',
-      'backtest_results.regret_score as regret_score',
-      'backtest_results.sleeper_accuracy as sleeper_accuracy',
-    ])
-    .where('backtest_results.backtest_run_id', '=', params.id)
-    .orderBy('tournaments.start_date', 'asc')
-    .execute();
+  const detail = await loadBacktestDetail(params.id);
+  if (!detail) notFound();
+  const { run, results } = detail;
 
   const r = run as RunRow;
   return (

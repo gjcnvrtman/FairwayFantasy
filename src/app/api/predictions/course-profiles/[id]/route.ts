@@ -96,24 +96,17 @@ export async function PUT(req: NextRequest, { params }: Props) {
         .where('id', '=', params.id)
         .execute();
 
-      // Re-link tournament. We clear any other tournament currently
-      // pointing at this profile so the per-tournament-uniqueness rule
-      // holds (one tournament per profile in v1).
+      // Re-link tournament. Always clear any tournament currently
+      // pointing at this profile first (one tournament per profile in
+      // v1); if the caller cleared the link, that's all there is to do.
+      await trx.updateTable('tournaments')
+        .set({ course_profile_id: null })
+        .where('course_profile_id', '=', params.id)
+        .execute();
       if (tournamentId) {
-        await trx.updateTable('tournaments')
-          .set({ course_profile_id: null })
-          .where('course_profile_id', '=', params.id)
-          .execute();
         await trx.updateTable('tournaments')
           .set({ course_profile_id: params.id })
           .where('id', '=', tournamentId)
-          .execute();
-      } else {
-        // Caller cleared the link → unset any tournament currently
-        // pointing at this profile.
-        await trx.updateTable('tournaments')
-          .set({ course_profile_id: null })
-          .where('course_profile_id', '=', params.id)
           .execute();
       }
     });

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/current-user';
 import { isPlatformAdmin } from '@/lib/platform-admin';
 import { requireSameOrigin } from '@/lib/same-origin';
 import { db } from '@/lib/db';
+import { listWeightConfigs } from '@/lib/db/predictions-views';
 
 interface CreatePayload {
   name?: unknown;
@@ -39,11 +40,7 @@ async function requireAdmin() {
 export async function GET() {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
-  const rows = await db.selectFrom('model_weight_configs')
-    .selectAll()
-    .orderBy('created_at', 'desc')
-    .execute();
-  return NextResponse.json({ ok: true, configs: rows });
+  return NextResponse.json({ ok: true, configs: await listWeightConfigs() });
 }
 
 export async function POST(req: NextRequest) {
