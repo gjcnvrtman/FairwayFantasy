@@ -161,8 +161,8 @@ export default function LeagueSetupCard({ league, status, autoLock, isCommission
           <strong>Setup mode.</strong> Review the rules and prune the Schedule below, then lock
           the league. Nothing here can change after it locks.
           {autoLock && (
-            <> It locks automatically at <strong>{fmtDate(autoLock.at)}</strong> when picks lock
-            for {autoLock.tournamentName}.</>
+            <> It locks automatically at <strong>{fmtDate(autoLock.at)}</strong>, 1 minute before
+            picks lock for {autoLock.tournamentName}.</>
           )}
           {!autoLock && scheduleCount === 0 && (
             <> Your schedule is empty — import the ESPN calendar once it&rsquo;s published.</>

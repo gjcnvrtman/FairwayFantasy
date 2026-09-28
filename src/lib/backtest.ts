@@ -23,15 +23,20 @@
 //     finished in the field's top half
 //
 // All scoring follows the league rules in src/lib/scoring.ts:
-//   - best 3 of 4 golfer fantasy_scores
+//   - best 3 of 4 golfer fantasy_scores (best 4 of 6 on 6-man majors)
 //   - + MISSED_CUT_PENALTY_STROKES × missed-cut count
+//   - withdrawn / DQ golfers: left out, no penalty (dropout rule)
 //   - lower = better (golf)
+//
+// 6-man majors: each league is compared against the recommendation of
+// its own team size. The headline numbers (projected/actual/regret/
+// finish stats) use the team size most leagues played for the event.
 //
 // Pure functions — no DB, no clock. Callers (backtest-orchestrator.ts)
 // load the inputs from real tables, but the math here is independent.
 // ============================================================
 
-import { computeFoursomeHash, MISSED_CUT_PENALTY_STROKES } from './scoring';
+import { MISSED_CUT_PENALTY_STROKES } from './scoring';
 
 // ── Input types ─────────────────────────────────────────────
 
@@ -46,6 +51,8 @@ export interface ActualGolferResult {
   /** Finish position from the actual leaderboard. 1..N. 999 for MC. */
   finishPosition: number;
   missedCut: boolean;
+  /** Withdrew / DQ'd: left out of the team score with no penalty. */
+  withdrew?: boolean;
   isTopTier: boolean;
 }
 
@@ -53,19 +60,26 @@ export interface ActualGolferResult {
 export interface LeagueMemberOutcome {
   leagueId: string;
   userId: string;
-  /** The 4 golfer ids the member submitted, slot order irrelevant. */
-  golferIds: [string, string, string, string];
+  /** The golfer ids that counted (4, or 6 on a 6-man major), slot order irrelevant. */
+  golferIds: string[];
+  /** Default 4. */
+  teamSize?: 4 | 6;
   /** Final realized total per the league scoring rules. */
   totalScore: number;
 }
 
-/** One foursome the model recommended (rank 1..5). */
+/** One team the model recommended (rank 1..5 within its team size). */
 export interface RecommendedFoursome {
   rank: number;
+  /** Default 4. */
+  teamSize?: 4 | 6;
   topTier1Id: string;
   topTier2Id: string;
   darkHorse1Id: string;
   darkHorse2Id: string;
+  /** 6-man teams only. */
+  topTier3Id?: string | null;
+  darkHorse3Id?: string | null;
   projectedFantasyScore: number;
 }
 
@@ -82,6 +96,8 @@ export interface BacktestInputs {
 // ── Output type ─────────────────────────────────────────────
 
 export interface BacktestEventMetrics {
+  /** Team size the headline numbers below are for (4 or 6). */
+  teamSize: 4 | 6;
   /** Model's #1 foursome projected score (lower = better). */
   projectedScore: number;
   /** Model's #1 foursome ACTUAL realized score using the league rules. */
@@ -122,35 +138,41 @@ export interface BacktestEventMetrics {
 
 // ── Internal helpers ────────────────────────────────────────
 
-/** Apply the league total rule to a 4-golfer set's actual scores. */
-function scoreFoursome(scores: number[], cutCount: number): number {
-  if (scores.length === 0) return 0;
+/** Apply the league total rule: best `counting` of the made-cut scores
+ *  + penalty per missed cut. */
+function scoreFoursome(scores: number[], cutCount: number, counting = 3): number {
+  if (scores.length === 0) return cutCount * MISSED_CUT_PENALTY_STROKES;
   const sorted = [...scores].sort((a, b) => a - b);
-  // Best 3 of N (typically 3 of 4 when all 4 have data).
-  const take = Math.min(3, sorted.length);
-  const best3 = sorted.slice(0, take).reduce((a, b) => a + b, 0);
-  return best3 + cutCount * MISSED_CUT_PENALTY_STROKES;
+  // Best N of what's left (3 of 4, or 4 of 6 on 6-man majors).
+  const take = Math.min(counting, sorted.length);
+  const best = sorted.slice(0, take).reduce((a, b) => a + b, 0);
+  return best + cutCount * MISSED_CUT_PENALTY_STROKES;
 }
 
-/** Compute the realized league total for an arbitrary 4-golfer set
- *  using a precomputed map of golferId → actual fantasy_score. */
+/** Compute the realized league total for an arbitrary team using a
+ *  precomputed map of golferId → actual result. Withdrawn / DQ golfers
+ *  are left out with no penalty (dropout rule, 2026-09-28) — before
+ *  that fix a team with a WD came back null here and a #1 pick with a
+ *  WD was recorded as an actual score of 0. */
 function realizeFoursomeScore(
   golferIds: string[],
   byId: Map<string, ActualGolferResult>,
+  counting = 3,
 ): number | null {
   const looked = golferIds.map(id => byId.get(id));
-  if (looked.some(r => !r || r.fantasyScore == null)) return null;
+  if (looked.some(r => !r)) return null;
   const scores: number[] = [];
   let cuts = 0;
   for (const r of looked) {
-    if (!r) continue;
+    if (!r || r.withdrew) continue;       // dropout: no score, no penalty
     if (r.missedCut) {
       cuts++;
-      continue;        // missed-cut golfers excluded from top-3 pool
+      continue;        // missed-cut golfers excluded from the best-N pool
     }
-    if (r.fantasyScore != null) scores.push(r.fantasyScore);
+    if (r.fantasyScore == null) return null;   // no data for an active golfer
+    scores.push(r.fantasyScore);
   }
-  return scoreFoursome(scores, cuts);
+  return scoreFoursome(scores, cuts, counting);
 }
 
 /** Enumerate every legal (2 top × 2 dark) foursome over the actual
@@ -182,6 +204,54 @@ function findOptimalFoursomeScore(
   return best;
 }
 
+/**
+ * Best possible 6-man team (3 top + 3 dark, best 4 of 6) with hindsight.
+ * Exhaustive is ~700M teams, so reduce each tier first — exactly:
+ * made-cut golfers only help through their score (lower is better), so
+ * only the 3 lowest per tier can be in an optimal team; missed-cut
+ * golfers are interchangeable (each adds the penalty), as are dropouts
+ * (each adds nothing) — 3 of each suffice. ≤ 9 per tier → ≤ 7,056 teams.
+ * Golfers with no data are skipped (a team with one can't be scored).
+ */
+function findOptimalSixScore(actualResults: ActualGolferResult[]): number | null {
+  const byId = new Map<string, ActualGolferResult>(actualResults.map(r => [r.golferId, r]));
+  const reduce = (tier: ActualGolferResult[]) => {
+    const byIdOrder = (a: ActualGolferResult, b: ActualGolferResult) => a.golferId.localeCompare(b.golferId);
+    const made = tier.filter(r => !r.withdrew && !r.missedCut && r.fantasyScore != null)
+      .sort((a, b) => a.fantasyScore! - b.fantasyScore! || byIdOrder(a, b)).slice(0, 3);
+    const mc = tier.filter(r => !r.withdrew && r.missedCut).sort(byIdOrder).slice(0, 3);
+    const wd = tier.filter(r => r.withdrew).sort(byIdOrder).slice(0, 3);
+    return [...made, ...mc, ...wd];
+  };
+  const top = reduce(actualResults.filter(r => r.isTopTier));
+  const dark = reduce(actualResults.filter(r => !r.isTopTier));
+  if (top.length < 3 || dark.length < 3) return null;
+
+  const tri = (a: ActualGolferResult[]) => {
+    const out: string[][] = [];
+    for (let i = 0; i < a.length; i++) for (let j = i + 1; j < a.length; j++)
+      for (let l = j + 1; l < a.length; l++) out.push([a[i].golferId, a[j].golferId, a[l].golferId]);
+    return out;
+  };
+  let best: number | null = null;
+  for (const t of tri(top)) {
+    for (const d of tri(dark)) {
+      const score = realizeFoursomeScore([...t, ...d], byId, 4);
+      if (score != null && (best == null || score < best)) best = score;
+    }
+  }
+  return best;
+}
+
+const sizeOf = (x: { teamSize?: 4 | 6 }): 4 | 6 => x.teamSize ?? 4;
+const countingFor = (size: 4 | 6) => (size === 6 ? 4 : 3);
+const teamIds = (r: RecommendedFoursome): string[] => [
+  r.topTier1Id, r.topTier2Id, ...(r.topTier3Id ? [r.topTier3Id] : []),
+  r.darkHorse1Id, r.darkHorse2Id, ...(r.darkHorse3Id ? [r.darkHorse3Id] : []),
+];
+const darkIds = (r: RecommendedFoursome): string[] =>
+  [r.darkHorse1Id, r.darkHorse2Id, ...(r.darkHorse3Id ? [r.darkHorse3Id] : [])];
+
 // ── Public entry ────────────────────────────────────────────
 
 export function computeBacktestMetrics(inputs: BacktestInputs): BacktestEventMetrics {
@@ -189,14 +259,24 @@ export function computeBacktestMetrics(inputs: BacktestInputs): BacktestEventMet
     inputs.actualResults.map(r => [r.golferId, r]),
   );
 
-  // ── Pick the model's #1 foursome (rank 1) ──
-  const top1 = inputs.recommendations.find(r => r.rank === 1)
-            ?? inputs.recommendations[0]
-            ?? null;
+  // Headline team size: what most leagues played (ties → 4), provided
+  // the model produced that size.
+  const sixLeagueRows = inputs.leagueOutcomes.filter(m => sizeOf(m) === 6).length;
+  const fourLeagueRows = inputs.leagueOutcomes.length - sixLeagueRows;
+  const hasSix = inputs.recommendations.some(r => sizeOf(r) === 6);
+  const headline: 4 | 6 = hasSix && sixLeagueRows > fourLeagueRows ? 6 : 4;
+  const rank1Of = (size: 4 | 6) => {
+    const ofSize = inputs.recommendations.filter(r => sizeOf(r) === size);
+    return ofSize.find(r => r.rank === 1) ?? ofSize[0] ?? null;
+  };
+
+  // ── Pick the model's #1 team (rank 1) of the headline size ──
+  const top1 = rank1Of(headline);
   if (!top1) {
     // Degenerate: no recommendations. Return zeros so the caller
     // gets a clean row rather than NaN soup.
     return {
+      teamSize: headline,
       projectedScore: 0,
       actualScore: 0,
       bestRecommendedRankInLeague: null,
@@ -212,25 +292,34 @@ export function computeBacktestMetrics(inputs: BacktestInputs): BacktestEventMet
     };
   }
 
-  const top1Ids: [string, string, string, string] = [
-    top1.topTier1Id, top1.topTier2Id, top1.darkHorse1Id, top1.darkHorse2Id,
-  ];
-  const top1ActualScore = realizeFoursomeScore(top1Ids, byId) ?? 0;
+  const top1Ids = teamIds(top1);
+  const top1ActualScore = realizeFoursomeScore(top1Ids, byId, countingFor(headline)) ?? 0;
 
   // ── Per-recommended-golfer aggregates ──
   const recGolfers = top1Ids.map(id => byId.get(id)).filter(Boolean) as ActualGolferResult[];
+  const madeIt = (r: ActualGolferResult) => !r.missedCut && !r.withdrew;
   const avgFinish = recGolfers.length === 0
     ? 999
     : recGolfers.reduce((a, r) => a + r.finishPosition, 0) / recGolfers.length;
   const madeCutPct = recGolfers.length === 0
     ? 0
-    : 100 * recGolfers.filter(r => !r.missedCut).length / recGolfers.length;
+    : 100 * recGolfers.filter(madeIt).length / recGolfers.length;
   const top10Pct = recGolfers.length === 0
     ? 0
-    : 100 * recGolfers.filter(r => !r.missedCut && r.finishPosition <= 10).length / recGolfers.length;
+    : 100 * recGolfers.filter(r => madeIt(r) && r.finishPosition <= 10).length / recGolfers.length;
   const top20Pct = recGolfers.length === 0
     ? 0
-    : 100 * recGolfers.filter(r => !r.missedCut && r.finishPosition <= 20).length / recGolfers.length;
+    : 100 * recGolfers.filter(r => madeIt(r) && r.finishPosition <= 20).length / recGolfers.length;
+
+  // Each league is judged against the model's #1 of ITS team size.
+  const actualBySize = new Map<4 | 6, number | null>();
+  const modelActualFor = (size: 4 | 6): number | null => {
+    if (!actualBySize.has(size)) {
+      const rec = rank1Of(size);
+      actualBySize.set(size, rec ? realizeFoursomeScore(teamIds(rec), byId, countingFor(size)) ?? 0 : null);
+    }
+    return actualBySize.get(size)!;
+  };
 
   // ── League ranking ──
   let bestRecRank: number | null = null;
@@ -245,47 +334,49 @@ export function computeBacktestMetrics(inputs: BacktestInputs): BacktestEventMet
       arr.push(lm);
       byLeague.set(lm.leagueId, arr);
     }
-    const recHash = computeFoursomeHash(top1Ids);
     const ranksAcrossLeagues: number[] = [];
     let beatAvgAcrossLeagues = 0;
     let leaguesBeatenForWinner = 0;
+    let leaguesCompared = 0;
     for (const [, members] of byLeague) {
+      const modelScore = modelActualFor(sizeOf(members[0]));
+      if (modelScore == null) continue;        // model made no team of this league's size
+      leaguesCompared++;
       const scores = members.map(m => m.totalScore);
-      const memberHasModelPick = members.some(m =>
-        computeFoursomeHash(m.golferIds) === recHash,
-      );
-      // Model's would-be rank in this league. If a member submitted
-      // the same foursome, share the rank.
-      const lowerCount = scores.filter(s => s < top1ActualScore).length;
-      const tieCount = scores.filter(s => s === top1ActualScore).length;
-      const rank = lowerCount + 1 + (memberHasModelPick && tieCount > 0 ? 0 : 0);
-      ranksAcrossLeagues.push(rank);
+      // Model's would-be rank in this league (ties share the rank).
+      const lowerCount = scores.filter(s => s < modelScore).length;
+      ranksAcrossLeagues.push(lowerCount + 1);
 
       const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-      if (top1ActualScore < avg) beatAvgAcrossLeagues++;
+      if (modelScore < avg) beatAvgAcrossLeagues++;
       const winner = Math.min(...scores);
-      if (top1ActualScore < winner) leaguesBeatenForWinner++;
+      if (modelScore < winner) leaguesBeatenForWinner++;
     }
-    bestRecRank = ranksAcrossLeagues.reduce((a, b) => a + b, 0) / ranksAcrossLeagues.length;
-    // Strict majority — "tied in half the leagues" doesn't read as a
-    // win. With 2 leagues, model has to beat both for a TRUE here.
-    beatAverage = beatAvgAcrossLeagues > byLeague.size / 2;
-    beatWinner = leaguesBeatenForWinner > byLeague.size / 2;
+    if (leaguesCompared > 0) {
+      bestRecRank = ranksAcrossLeagues.reduce((a, b) => a + b, 0) / ranksAcrossLeagues.length;
+      // Strict majority — "tied in half the leagues" doesn't read as a
+      // win. With 2 leagues, model has to beat both for a TRUE here.
+      beatAverage = beatAvgAcrossLeagues > leaguesCompared / 2;
+      beatWinner = leaguesBeatenForWinner > leaguesCompared / 2;
+    }
   }
 
   // ── Regret score ──
-  const optimal = findOptimalFoursomeScore(inputs.actualResults);
+  const optimal = headline === 6
+    ? findOptimalSixScore(inputs.actualResults)
+    : findOptimalFoursomeScore(inputs.actualResults);
   const regret = optimal == null ? 0 : top1ActualScore - optimal;
 
   // ── Sleeper accuracy: dark-horse top-half rate ──
-  const darkHorses = [byId.get(top1.darkHorse1Id), byId.get(top1.darkHorse2Id)]
+  const darkHorses = darkIds(top1).map(id => byId.get(id))
     .filter(Boolean) as ActualGolferResult[];
   const fieldSize = inputs.actualResults.length || 1;
   const top_half_cutoff = Math.ceil(fieldSize / 2);
-  const sleeperHits = darkHorses.filter(r => !r.missedCut && r.finishPosition <= top_half_cutoff).length;
+  const sleeperHits = darkHorses.filter(r => madeIt(r) && r.finishPosition <= top_half_cutoff).length;
   const sleeperAccuracy = darkHorses.length === 0 ? 0 : sleeperHits / darkHorses.length;
 
   return {
+    teamSize:                     headline,
     projectedScore:               top1.projectedFantasyScore,
     actualScore:                  top1ActualScore,
     bestRecommendedRankInLeague:  bestRecRank,
@@ -300,6 +391,9 @@ export function computeBacktestMetrics(inputs: BacktestInputs): BacktestEventMet
     sleeperAccuracy,
   };
 }
+
+/** Internal helpers exposed for tests. */
+export const __test = { realizeFoursomeScore, findOptimalFoursomeScore, findOptimalSixScore };
 
 // ── Aggregator across many events ──────────────────────────
 

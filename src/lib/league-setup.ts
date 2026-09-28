@@ -6,8 +6,8 @@
 //   locked → rules, bets, penalties, window and schedule are frozen.
 //
 // A setup league locks when the commissioner presses "Lock league
-// setup", or automatically once any tournament on its schedule reaches
-// its pick deadline — rules can never change after money is at stake.
+// setup", or automatically 1 minute before any tournament on its
+// schedule locks picks — rules can never change after money is at stake.
 // Auto-lock runs from the sync sweep and is also checked on every
 // admin request via resolveSetupStatus(), so there's no window between
 // the deadline and the next sweep where rules are still editable.
@@ -18,10 +18,12 @@ import { db } from './db';
 
 export type SetupStatus = 'legacy' | 'setup' | 'locked';
 
-// Deadline used for auto-lock. Mirrors effectivePickDeadline() with a
-// start_date fallback so a tournament that has started always locks
-// the league even if its deadline columns are empty.
-const deadlineExpr = sql<Date>`COALESCE(t.pick_deadline_override, t.pick_deadline, t.start_date)`;
+// Auto-lock moment: 1 minute before picks lock (Greg, 2026-09-28) —
+// the effective pick deadline (override > computed, as in
+// effectivePickDeadline()), or the tournament start if that is earlier
+// or the deadline columns are empty. LEAST ignores NULLs. Rules can
+// never change once picks are locked.
+const deadlineExpr = sql<Date>`(LEAST(COALESCE(t.pick_deadline_override, t.pick_deadline), t.start_date) - INTERVAL '1 minute')`;
 
 /**
  * Lock every setup-mode league (or just `leagueId`) that has a

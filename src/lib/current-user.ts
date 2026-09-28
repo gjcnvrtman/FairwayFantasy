@@ -41,10 +41,3 @@ export async function getCurrentUser(): Promise<FairwayUser | null> {
     display_name: session.user.name ?? null,
   };
 }
-
-/**
- * Whether ANY user is signed in. Equivalent to `getCurrentUser() !== null`.
- */
-export async function hasSession(): Promise<boolean> {
-  return (await getCurrentUser()) !== null;
-}

@@ -75,14 +75,15 @@ export async function emailPredictionsRun(runId: string): Promise<{
 
   const foursomes = await db.selectFrom('foursome_recommendations')
     .select([
-      'rank',
-      'top_tier_1_golfer_id', 'top_tier_2_golfer_id',
-      'dark_horse_1_golfer_id', 'dark_horse_2_golfer_id',
+      'rank', 'team_size',
+      'top_tier_1_golfer_id', 'top_tier_2_golfer_id', 'top_tier_3_golfer_id',
+      'dark_horse_1_golfer_id', 'dark_horse_2_golfer_id', 'dark_horse_3_golfer_id',
       'projected_fantasy_score', 'confidence_score',
       'risk_level', 'estimated_ownership_pct',
       'key_strengths', 'key_concerns', 'foursome_explanation',
     ])
     .where('run_id', '=', runId)
+    .orderBy('team_size', 'asc')
     .orderBy('rank', 'asc')
     .execute();
 
@@ -93,10 +94,10 @@ export async function emailPredictionsRun(runId: string): Promise<{
   // Resolve golfer names in one query.
   const idSet = new Set<string>();
   for (const f of foursomes) {
-    idSet.add(f.top_tier_1_golfer_id);
-    idSet.add(f.top_tier_2_golfer_id);
-    idSet.add(f.dark_horse_1_golfer_id);
-    idSet.add(f.dark_horse_2_golfer_id);
+    for (const id of [f.top_tier_1_golfer_id, f.top_tier_2_golfer_id, f.top_tier_3_golfer_id,
+                      f.dark_horse_1_golfer_id, f.dark_horse_2_golfer_id, f.dark_horse_3_golfer_id]) {
+      if (id) idSet.add(id);
+    }
   }
   const names = await db.selectFrom('golfers')
     .select(['id', 'name'])
@@ -107,10 +108,13 @@ export async function emailPredictionsRun(runId: string): Promise<{
 
   const emailFoursomes: PredictionsEmailFoursome[] = foursomes.map(f => ({
     rank:           f.rank,
+    teamSize:       f.team_size === 6 ? 6 : 4,
     topTier1Name:   nm(f.top_tier_1_golfer_id),
     topTier2Name:   nm(f.top_tier_2_golfer_id),
+    topTier3Name:   f.top_tier_3_golfer_id ? nm(f.top_tier_3_golfer_id) : null,
     darkHorse1Name: nm(f.dark_horse_1_golfer_id),
     darkHorse2Name: nm(f.dark_horse_2_golfer_id),
+    darkHorse3Name: f.dark_horse_3_golfer_id ? nm(f.dark_horse_3_golfer_id) : null,
     projectedScore: Number(f.projected_fantasy_score),
     confidence:     Number(f.confidence_score),
     riskLevel:      f.risk_level,
@@ -133,7 +137,7 @@ export async function emailPredictionsRun(runId: string): Promise<{
       courseName:              run.course_name ?? null,
       asOfDate:                run.stat_as_of_date ?? 'n/a',
       foursomes:               emailFoursomes,
-      fieldSize:               run.field_size ?? emailFoursomes.length * 4,
+      fieldSize:               run.field_size ?? emailFoursomes.filter(f => f.teamSize === 4).length * 4,
       golfersWithMissingStats: run.golfers_with_missing_stats ?? 0,
       missingInputsByField,
       siteUrl:                 siteUrl(),

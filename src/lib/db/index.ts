@@ -109,14 +109,5 @@ export const db = new Proxy({} as Kysely<Database>, {
   },
 });
 
-/** Tear down the pool (used by tests / graceful shutdown). */
-export async function closeDb(): Promise<void> {
-  if (_pool) {
-    await _pool.end();
-    _pool = null;
-    _db = null;
-  }
-}
-
 // Re-export schema types for convenience.
 export type { Database } from './schema';

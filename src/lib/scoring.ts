@@ -451,13 +451,6 @@ export function formatScore(score: number | null): string {
   return score > 0 ? `+${score}` : `${score}`;
 }
 
-export function scoreColorClass(score: number | null): string {
-  if (score === null) return 'text-gray-400';
-  if (score < 0)  return 'text-red-500';
-  if (score === 0) return 'text-gray-900';
-  return 'text-blue-600';
-}
-
 // ── Thru indicator (leaderboard "right-of-score" cell) ───────
 /**
  * Format the "thru N / F / —" indicator that renders to the right of

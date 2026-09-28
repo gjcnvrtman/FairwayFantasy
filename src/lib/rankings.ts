@@ -100,13 +100,3 @@ export async function syncRankingsToDatabase(): Promise<{
 
   return { fetched: players.length, updated, skipped, errors };
 }
-
-// ── Dark-horse helpers (used at pick-validation time) ────────
-
-/** Players ranked 25 or beyond are dark horses. Unranked = dark horse too. */
-export const DARK_HORSE_CUTOFF = 25;
-
-export function isDarkHorse(owgrRank: number | null): boolean {
-  if (owgrRank === null) return true;
-  return owgrRank >= DARK_HORSE_CUTOFF;
-}

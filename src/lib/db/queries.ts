@@ -36,36 +36,6 @@ export async function getLeagueMembers(leagueId: string) {
     .execute();
 }
 
-// ── tournaments ──────────────────────────────────────────────
-
-export async function getActiveTournament() {
-  // Time-based, not status-based. The rankings sync was supposed to flip
-  // `upcoming` → `active` when start_date arrived, but if that timer
-  // hasn't run (or hasn't run yet today), the row is still `upcoming`
-  // even when play is live. Mirrors the filter `runScoreSync` already
-  // uses (`src/lib/sync.ts:60`) so the two helpers agree on what
-  // "active right now" means regardless of stored status drift.
-  const now       = new Date();
-  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  return await db.selectFrom('tournaments')
-    .selectAll()
-    .where('start_date', '<=', now.toISOString())
-    .where('end_date',   '>=', oneDayAgo.toISOString())
-    .where('status', '!=', 'complete')
-    .orderBy('start_date', 'asc')
-    .limit(1)
-    .executeTakeFirst() ?? null;
-}
-
-export async function getUpcomingTournaments(limit = 5) {
-  return await db.selectFrom('tournaments')
-    .selectAll()
-    .where('status', '=', 'upcoming')
-    .orderBy('start_date', 'asc')
-    .limit(limit)
-    .execute();
-}
-
 // ── Timestamp adapter ────────────────────────────────────────
 // pg-node returns TIMESTAMPTZ values as JavaScript `Date` objects
 // even though kysely's `Timestamp = string` type alias claims
@@ -415,22 +385,6 @@ export async function getFantasyLeaderboard(leagueId: string, tournamentId: stri
     ).as('profile'))
     .where('league_id', '=', leagueId)
     .where('tournament_id', '=', tournamentId)
-    .orderBy('rank', 'asc')
-    .execute();
-}
-
-// ── season_standings (with embedded profile) ─────────────────
-
-export async function getSeasonStandings(leagueId: string, season: number) {
-  return await db.selectFrom('season_standings')
-    .selectAll('season_standings')
-    .select(eb => jsonObjectFrom(
-      eb.selectFrom('profiles')
-        .selectAll('profiles')
-        .whereRef('profiles.id', '=', 'season_standings.user_id'),
-    ).as('profile'))
-    .where('league_id', '=', leagueId)
-    .where('season', '=', season)
     .orderBy('rank', 'asc')
     .execute();
 }

@@ -33,7 +33,7 @@ import {
   type GolferSubscores,
   type ScoringWeights,
 } from './course-fit';
-import { rankTop5, type OptimizerGolfer } from './lineup-optimizer';
+import { rankTop5, rankTop5Six, type OptimizerGolfer } from './lineup-optimizer';
 import { computeTopTierIds } from './field-tiers';
 import type {
   PredictionsQueries,
@@ -63,9 +63,8 @@ export interface OrchestrateResult {
   /** Golfers left out because their input load threw (also counted as
    *  missingInputsSummary.load_failed). Empty on a clean run. */
   droppedGolfers: Array<{ golferId: string; error: string }>;
-  /** Snapshot of the top-5 written, for the immediate caller's
-   *  convenience. The full read path goes through the
-   *  /api/predictions/runs/[id] endpoint. */
+  /** Snapshot of the rows written: the top-5 foursomes, then the top-5
+   *  six-man teams when the event needed them (teamSize 6). */
   topFoursomes: FoursomePersistRow[];
 }
 
@@ -255,16 +254,25 @@ export async function runPredictions(
     };
   });
 
-  // 7 — build optimizer inputs + rank
-  const ownership = await queries.loadOwnership(opts.tournamentId);
-  const topFiveOpt = rankTop5({
+  // 7 — build optimizer inputs + rank. Foursomes always; six-man teams
+  // too when a league with this event on its schedule plays 6-man
+  // majors (migration 026/029).
+  const [ownership, teamSizes] = await Promise.all([
+    queries.loadOwnership(opts.tournamentId),
+    queries.loadTeamSizes(opts.tournamentId),
+  ]);
+  const optimizerInputs = {
     golfers: scored.map<OptimizerGolfer>(s => ({
       id:         s.golferId,
       isTopTier:  s.isTopTier,
       subscores:  s.subscores,
     })),
     ownership,
-  });
+  };
+  const topFiveOpt = [
+    ...rankTop5(optimizerInputs),
+    ...(teamSizes.includes(6) ? rankTop5Six(optimizerInputs) : []),
+  ];
 
   // 8 — persist the run row first (so per-golfer + foursome inserts
   // have a parent to reference)
@@ -299,14 +307,18 @@ export async function runPredictions(
     explanation:            s.subscores.explanation,
   }));
 
-  // 8b — persist foursomes
-  const foursomeRows: FoursomePersistRow[] = topFiveOpt.map((f, idx) => ({
+  // 8b — persist foursomes (+ six-man teams). Ranks 1..5 per team size;
+  // each optimizer list is already in rank order.
+  const foursomeRows: FoursomePersistRow[] = topFiveOpt.map(f => ({
     runId,
-    rank:                     idx + 1,
+    teamSize:                 f.teamSize,
+    rank:                     topFiveOpt.filter(o => o.teamSize === f.teamSize).indexOf(f) + 1,
     topTier1Id:               f.topTier1Id,
     topTier2Id:               f.topTier2Id,
     darkHorse1Id:             f.darkHorse1Id,
     darkHorse2Id:             f.darkHorse2Id,
+    topTier3Id:               f.topTier3Id,
+    darkHorse3Id:             f.darkHorse3Id,
     foursomeHash:             f.foursomeHash,
     projectedFantasyScore:    f.projectedFantasyScore,
     confidenceScore:          f.confidenceScore,

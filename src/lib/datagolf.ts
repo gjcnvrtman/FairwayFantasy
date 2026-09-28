@@ -1,11 +1,11 @@
 // ============================================================
 // Datagolf API client — General Use (free tier) endpoints.
 //
-// Wraps the three endpoints we need for the course-fit prediction
-// system:
+// Wraps the endpoints we need for the course-fit prediction system:
 //   1. get-player-list           — canonical player roster + dg_id
-//   2. field-updates             — current week's tournament field
-//   3. preds/pre-tournament      — Datagolf's win / top-N / cut probs
+//   2. preds/pre-tournament      — Datagolf's win / top-N / cut probs
+// (The field comes from ESPN — see runFieldSync — so field-updates
+//  isn't used; its unused wrapper was removed 2026-09-28.)
 //
 // Reads DATAGOLF_API_KEY from process.env. Each call throws on
 // HTTP error so callers can wrap with try/catch + partial-success
@@ -13,7 +13,6 @@
 //
 // Endpoint reference (verify on first run with your General-tier key):
 //   https://feeds.datagolf.com/get-player-list
-//   https://feeds.datagolf.com/field-updates
 //   https://feeds.datagolf.com/preds/pre-tournament
 //
 // Datagolf returns percentages in [0..100] when odds_format=percent.
@@ -65,31 +64,6 @@ export async function getPlayerList(): Promise<DGPlayer[]> {
     throw new Error('Datagolf get-player-list: expected an array, got ' + typeof raw);
   }
   return raw as DGPlayer[];
-}
-
-// ── Endpoint: field-updates ────────────────────────────────────
-// Returns the current week's tournament field with WD/MC flags.
-export interface DGFieldEntry {
-  dg_id: number;
-  player_name: string;
-  am: 0 | 1;
-  country: string | null;
-  // Datagolf may include odds + projection columns here too; we only
-  // type the identity fields. Full row is in raw_json on the consumer.
-  [key: string]: unknown;
-}
-export interface DGFieldResponse {
-  event_name: string;
-  current_round: number;
-  field: DGFieldEntry[];
-}
-
-export async function getFieldUpdates(tour: 'pga' | 'euro' | 'kft' = 'pga'): Promise<DGFieldResponse> {
-  const json = await fetchJson<unknown>('/field-updates', { tour });
-  if (!json || typeof json !== 'object' || !Array.isArray((json as { field?: unknown }).field)) {
-    throw new Error('Datagolf field-updates: missing field array');
-  }
-  return json as DGFieldResponse;
 }
 
 // ── Endpoint: preds/pre-tournament ─────────────────────────────

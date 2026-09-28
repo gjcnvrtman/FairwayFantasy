@@ -1342,10 +1342,14 @@ ${body}
 
 export interface PredictionsEmailFoursome {
   rank:           number;
+  /** 4 = foursome, 6 = six-man major team. Default 4. */
+  teamSize?:      4 | 6;
   topTier1Name:   string;
   topTier2Name:   string;
+  topTier3Name?:  string | null;
   darkHorse1Name: string;
   darkHorse2Name: string;
+  darkHorse3Name?: string | null;
   projectedScore: number;
   confidence:     number;       // 0..1
   riskLevel:      'conservative' | 'balanced' | 'aggressive';
@@ -1372,15 +1376,24 @@ export function predictionsReadyEmail(params: {
   const { recipientName, tournamentName, courseName, asOfDate, foursomes,
           fieldSize, golfersWithMissingStats, missingInputsByField, siteUrl, runId } = params;
   const runUrl = `${siteUrl}/predictions/current`;
-  const subject = `Top 5 predicted foursomes — ${tournamentName}`;
+  // Six-man teams (6-man majors) come as a second section after the foursomes.
+  const fours = foursomes.filter(f => (f.teamSize ?? 4) === 4);
+  const sixes = foursomes.filter(f => f.teamSize === 6);
+  const subject = sixes.length > 0
+    ? `Top 5 predicted foursomes + six-man teams — ${tournamentName}`
+    : `Top 5 predicted foursomes — ${tournamentName}`;
+  const topNames  = (f: PredictionsEmailFoursome) =>
+    [f.topTier1Name, f.topTier2Name, f.topTier3Name].filter((n): n is string => !!n);
+  const darkNames = (f: PredictionsEmailFoursome) =>
+    [f.darkHorse1Name, f.darkHorse2Name, f.darkHorse3Name].filter((n): n is string => !!n);
 
   const fmtFoursomeText = (f: PredictionsEmailFoursome): string => {
     const own = f.ownership != null ? ` · ${f.ownership.toFixed(1)}% ownership` : '';
     const strengths = f.keyStrengths.length ? `\n   ✓ ${f.keyStrengths.join(' · ')}` : '';
     const concerns  = f.keyConcerns.length  ? `\n   ⚠ ${f.keyConcerns.join(' · ')}`  : '';
     return `#${f.rank}  Projected: ${f.projectedScore.toFixed(1)} vs par  ·  Conf: ${(f.confidence * 100).toFixed(0)}%  ·  ${f.riskLevel.toUpperCase()}${own}
-   Top-tier:   ${f.topTier1Name}, ${f.topTier2Name}
-   Dark horse: ${f.darkHorse1Name}, ${f.darkHorse2Name}${f.explanation ? `\n   ${f.explanation}` : ''}${strengths}${concerns}`;
+   Top-tier:   ${topNames(f).join(', ')}
+   Dark horse: ${darkNames(f).join(', ')}${f.explanation ? `\n   ${f.explanation}` : ''}${strengths}${concerns}`;
   };
 
   const missingNote = Object.keys(missingInputsByField).length > 0
@@ -1398,8 +1411,12 @@ Run as-of: ${asOfDate}   ·   Field: ${fieldSize} golfers${missingNote}
 
 TOP 5 FOURSOMES (lower projected score = better)
 ============================================================
-${foursomes.map(fmtFoursomeText).join('\n\n')}
-
+${fours.map(fmtFoursomeText).join('\n\n')}
+${sixes.length > 0 ? `
+TOP 5 SIX-MAN TEAMS — 6-man majors (3 top-tier + 3 dark horses, best 4 of 6 count)
+============================================================
+${sixes.map(fmtFoursomeText).join('\n\n')}
+` : ''}
 View on site:
 ${runUrl}
 
@@ -1417,9 +1434,8 @@ These are model predictions, not guarantees.
       <div style="border:1px solid #ddd; border-radius:8px; padding:14px; margin-bottom:12px;">
         <div>
           <span style="font-size:24px; font-weight:800; color:#888;">#${f.rank}</span>
-          <strong style="margin-left:8px;">${escapeHtml(f.topTier1Name)}</strong>,
-          <strong>${escapeHtml(f.topTier2Name)}</strong>
-          &nbsp;·&nbsp; ${escapeHtml(f.darkHorse1Name)}, ${escapeHtml(f.darkHorse2Name)}
+          <span style="margin-left:8px;">${topNames(f).map(n => `<strong>${escapeHtml(n)}</strong>`).join(', ')}</span>
+          &nbsp;·&nbsp; ${darkNames(f).map(escapeHtml).join(', ')}
         </div>
         <div style="margin-top:8px; font-size:13px; color:#444;">
           Proj <strong>${f.projectedScore.toFixed(1)}</strong> vs par
@@ -1440,7 +1456,13 @@ These are model predictions, not guarantees.
   <p style="margin:0 0 16px; color:#888; font-size:13px;">
     Run as-of ${escapeHtml(asOfDate)} · Field ${fieldSize} golfers · Lower projected score is better.
   </p>
-  ${foursomes.map(fmtFoursomeHtml).join('')}
+  ${fours.map(fmtFoursomeHtml).join('')}
+  ${sixes.length > 0 ? `
+  <h2 style="margin:24px 0 4px;">Top 5 six-man teams</h2>
+  <p style="margin:0 0 12px; color:#888; font-size:13px;">
+    For leagues that play 6-man majors: 3 top-tier + 3 dark horses, best 4 of 6 count.
+  </p>
+  ${sixes.map(fmtFoursomeHtml).join('')}` : ''}
   ${Object.keys(missingInputsByField).length > 0 ? `
     <p style="margin-top:16px; padding:10px 12px; background:#fff8e1; border:1px solid #f0c060; border-radius:4px; font-size:12px;">
       ${golfersWithMissingStats} of ${fieldSize} golfers on partial data.

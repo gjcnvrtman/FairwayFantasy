@@ -20,9 +20,6 @@ export interface TeamShape {
 export const TEAM_4: TeamShape = { size: 4, topTier: 2, counting: 3 };
 export const TEAM_6: TeamShape = { size: 6, topTier: 3, counting: 4 };
 
-/** Highest slot number any team can have. */
-export const MAX_TEAM_SLOTS = 6;
-
 export function teamShapeFor(
   league: { major_team_size?: number | null },
   tournament: { type?: string | null },

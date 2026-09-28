@@ -313,6 +313,7 @@ describe('aggregateBacktestMetrics', () => {
     sleep: number,
   ): BacktestEventMetrics {
     return {
+      teamSize: 4,
       projectedScore: proj, actualScore: actual,
       bestRecommendedRankInLeague: rank,
       beatLeagueAverage: beatAvg,

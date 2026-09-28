@@ -1629,23 +1629,20 @@ async function sendScorecardsForCompletedRounds(t: {
   if (leagues.length === 0) return;
 
   for (let roundNum = 1; roundNum <= 4; roundNum++) {
-    const holesCol = `round_${roundNum}_holes` as const;
-    // Filter to golfers expected to play this round: status active
-    // or complete. (Pre-cut: all are active. Post-cut: MC/WD/DQ
-    // are excluded.)
-    const expectedPlayers = fieldRows.filter(
-      r => r.status === 'active' || r.status === 'complete',
-    );
-    if (expectedPlayers.length === 0) continue;
-    // Fire ONLY when every expected player has an 18-hole scorecard
-    // for round N — i.e., the round is actually finished for them.
-    // See the block comment on this function for why we can't gate
-    // on `round_N != null`.
-    const allComplete = expectedPlayers.every(r => {
-      const holes = (r as Record<string, unknown>)[holesCol];
-      return Array.isArray(holes) && holes.length === 18;
+    const holesCol = `round_${roundNum}_holes` as
+      'round_1_holes' | 'round_2_holes' | 'round_3_holes' | 'round_4_holes';
+    // Fire ONLY when every golfer expected to play round N (active or
+    // complete — MC/WD/DQ excluded) has an 18-hole scorecard for it.
+    // The gate is the tested pure helper (tests/round-ready.test.ts);
+    // see the block comment on this function for why we can't gate on
+    // `round_N != null`.
+    const ready = isRoundReadyForScorecard({
+      expectedPlayers: fieldRows.map(r => ({
+        status:     r.status,
+        roundHoles: (r[holesCol] as number[] | null) ?? null,
+      })),
     });
-    if (!allComplete) continue;
+    if (!ready) continue;
 
     // Idempotent per (league, tournament, round) — re-runs of the
     // same day's sweep are cheap no-ops.
@@ -1670,8 +1667,8 @@ async function sendScorecardsForCompletedRounds(t: {
 
 /**
  * Pure helper for the "should we fire round N's scorecard yet?" gate.
- * Extracted from sendScorecardsForCompletedRounds so tests don't have
- * to spin up the DB.
+ * sendScorecardsForCompletedRounds calls this directly (until
+ * 2026-09-28 it ran an inline copy, so the tests didn't cover prod).
  *
  * Rewritten 2026-07-24: the signal is `roundHoles.length === 18` —
  * i.e., every cut survivor has walked the full 18 for the round.

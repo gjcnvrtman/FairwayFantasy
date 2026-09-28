@@ -102,7 +102,7 @@ export async function runBacktest(
           totalFantasyPoints:           outcome.metrics.totalFantasyPoints,
           regretScore:                  outcome.metrics.regretScore,
           sleeperAccuracy:              outcome.metrics.sleeperAccuracy,
-          details:                      { error: outcome.error },
+          details:                      { error: outcome.error, teamSize: outcome.metrics.teamSize },
         });
       }
     }
@@ -172,17 +172,21 @@ async function scoreOneEvent(
       fantasyScore:   r.fantasyScore,
       finishPosition: r.position,
       missedCut:      r.missedCut,
+      withdrew:       r.withdrew,
       isTopTier:      topTierIds.has(r.golferId),
     }));
 
-    // Translate the orchestrator's foursome rows into the
-    // RecommendedFoursome shape the metrics function expects.
+    // Translate the orchestrator's rows (foursomes, plus six-man teams
+    // on a 6-man major) into the shape the metrics function expects.
     const recommendations: RecommendedFoursome[] = predResult.topFoursomes.map(f => ({
       rank:                  f.rank,
+      teamSize:              f.teamSize,
       topTier1Id:            f.topTier1Id,
       topTier2Id:            f.topTier2Id,
       darkHorse1Id:          f.darkHorse1Id,
       darkHorse2Id:          f.darkHorse2Id,
+      topTier3Id:            f.topTier3Id,
+      darkHorse3Id:          f.darkHorse3Id,
       projectedFantasyScore: f.projectedFantasyScore,
     }));
 

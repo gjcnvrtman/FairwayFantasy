@@ -25,6 +25,11 @@
 // enabled"). The Monte-Carlo "best of 4 in distribution" approximation
 // is deliberately deferred to v2.
 //
+// 6-man majors (migration 026/029): rankTop5Six builds 3 top-tier +
+// 3 dark-horse teams scored on the best 4 of 6. Exhaustive search is
+// ~700M teams, so the field is first pruned by dominance (see
+// pruneDominated) — exact for the top 5 up to exact score ties.
+//
 // Pure — no I/O, no clock reads.
 // ============================================================
 
@@ -49,13 +54,18 @@ export interface OptimizerInputs {
 }
 
 export interface FoursomeCandidate {
+  /** 4 = 2+2 best 3 count; 6 = 3+3 best 4 count (6-man majors). */
+  teamSize: 4 | 6;
   topTier1Id: string;
   topTier2Id: string;
   darkHorse1Id: string;
   darkHorse2Id: string;
+  /** 6-man teams only; null for foursomes. */
+  topTier3Id: string | null;
+  darkHorse3Id: string | null;
   /** Order-independent set hash, computed via computeFoursomeHash. */
   foursomeHash: string;
-  /** Lower = better. Best-3 sum + expected missed-cut penalty. */
+  /** Lower = better. Best-N sum + expected missed-cut penalty. */
   projectedFantasyScore: number;
   confidenceScore: number;        // 0..1
   riskLevel: 'conservative' | 'balanced' | 'aggressive';
@@ -74,8 +84,15 @@ const TOP_K = 5;
  *  enabled" — Monte Carlo over per-golfer projected distributions
  *  is the obvious v2 upgrade, but we stay deterministic for v1. */
 function bestThreeOfFour(values: [number, number, number, number]): number {
+  return bestNOf(values, 3);
+}
+
+/** Sum of the `n` lowest (best) values. */
+function bestNOf(values: number[], n: number): number {
   const sorted = [...values].sort((a, b) => a - b);   // ascending = lower (better) first
-  return sorted[0] + sorted[1] + sorted[2];
+  let sum = 0;
+  for (let i = 0; i < Math.min(n, sorted.length); i++) sum += sorted[i];
+  return sum;
 }
 
 /** Continuous expected-missed-cut penalty across a 4-golfer set.
@@ -122,10 +139,11 @@ function classifyRisk(four: OptimizerGolfer[]): 'conservative' | 'balanced' | 'a
  * Mapped to [0, 1] with reasonable saturation.
  */
 function confidence(four: OptimizerGolfer[]): number {
-  const avgMissing = four.reduce((a, g) => a + g.subscores.missingInputs.length, 0) / 4;
+  const n = four.length;
+  const avgMissing = four.reduce((a, g) => a + g.subscores.missingInputs.length, 0) / n;
   const composites = four.map(g => g.subscores.composite);
-  const mean = composites.reduce((a, b) => a + b, 0) / 4;
-  const sd = Math.sqrt(composites.reduce((a, v) => a + (v - mean) ** 2, 0) / 4);
+  const mean = composites.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(composites.reduce((a, v) => a + (v - mean) ** 2, 0) / n);
 
   // missing>=3 → -0.30, sd>=20 → -0.30; saturate.
   const missingPenalty = Math.min(0.30, avgMissing * 0.10);
@@ -140,6 +158,12 @@ function projectedFantasyScore(four: OptimizerGolfer[]): number {
     [number, number, number, number];
   const cutProbs = four.map(g => g.subscores.projectedCutProb);
   return bestThreeOfFour(strokes) + expectedMissedCutPenalty(cutProbs);
+}
+
+/** 6-man: best 4 of 6 projected strokes + expected MC penalty over all 6. */
+function projectedSixScore(six: OptimizerGolfer[]): number {
+  return bestNOf(six.map(g => g.subscores.projectedStrokesToPar), 4)
+       + expectedMissedCutPenalty(six.map(g => g.subscores.projectedCutProb));
 }
 
 // ── Pair enumeration ────────────────────────────────────────
@@ -158,13 +182,14 @@ function pairs<T>(items: T[]): [T, T][] {
 
 function buildKeyStrengths(four: OptimizerGolfer[]): string[] {
   const out: string[] = [];
-  const cfMean = four.reduce((a, g) => a + g.subscores.courseFit, 0) / 4;
-  const cpMean = four.reduce((a, g) => a + g.subscores.cutProbability, 0) / 4;
-  const rfMean = four.reduce((a, g) => a + g.subscores.recentForm, 0) / 4;
+  const n = four.length;
+  const cfMean = four.reduce((a, g) => a + g.subscores.courseFit, 0) / n;
+  const cpMean = four.reduce((a, g) => a + g.subscores.cutProbability, 0) / n;
+  const rfMean = four.reduce((a, g) => a + g.subscores.recentForm, 0) / n;
   const upMax = Math.max(...four.map(g => g.subscores.upside));
   if (cfMean >= 70) out.push('Strong overall course fit');
   if (cpMean >= 85) out.push('High combined make-cut probability');
-  if (rfMean >= 75) out.push('All four golfers in hot recent form');
+  if (rfMean >= 75) out.push(`All ${four.length === 6 ? 'six' : 'four'} golfers in hot recent form`);
   if (upMax >= 80) out.push('High-upside ceiling on at least one dark horse');
   return out;
 }
@@ -185,7 +210,8 @@ function buildFoursomeExplanation(
   risk: 'conservative' | 'balanced' | 'aggressive',
 ): string {
   const strokes = score.toFixed(1);
-  return `Projected best-3 + cut penalty: ${strokes} strokes vs par. Risk profile: ${risk}.`;
+  const best = four.length === 6 ? 'best-4-of-6' : 'best-3';
+  return `Projected ${best} + cut penalty: ${strokes} strokes vs par. Risk profile: ${risk}.`;
 }
 
 // ── Main entry ──────────────────────────────────────────────
@@ -248,10 +274,13 @@ export function rankTopK(inputs: OptimizerInputs, k: number): FoursomeCandidate[
       }
 
       byHash.set(hash, {
+        teamSize: 4,
         topTier1Id: t1.id,
         topTier2Id: t2.id,
         darkHorse1Id: d1.id,
         darkHorse2Id: d2.id,
+        topTier3Id: null,
+        darkHorse3Id: null,
         foursomeHash: hash,
         projectedFantasyScore: score,
         confidenceScore: conf,
@@ -275,12 +304,134 @@ export function rankTopK(inputs: OptimizerInputs, k: number): FoursomeCandidate[
   return all.slice(0, k);
 }
 
+// ── 6-man majors: 3 top-tier + 3 dark-horse, best 4 of 6 ─────
+
+/** Safety cap on 3+3 teams scored after pruning. Real fields prune to
+ *  ~10–16 golfers per tier (≈75k teams, <50 ms); the cap only bites on
+ *  a pathological field, where it falls back to the best golfers by
+ *  individual value and logs that the result is approximate. */
+export const MAX_SIX_TEAMS = 3_000_000;
+
+/**
+ * Drop golfers who can't appear in the top-k teams.
+ *
+ * The 6-man objective only depends on each golfer's projected strokes
+ * (lower is better) and cut probability (higher is better), and it is
+ * monotone in both. If golfer d is at least as good as g on both and
+ * strictly better on one, swapping g → d in any team never makes it
+ * worse. So a golfer strictly dominated by ≥ slots + k − 1 others can be
+ * removed: any team containing it has ≥ k distinct swaps that are at
+ * least as good (at most slots − 1 of those dominators are already in
+ * the team). Exact up to exact score ties.
+ */
+export function pruneDominated(golfers: OptimizerGolfer[], slots: number, k: number): OptimizerGolfer[] {
+  const limit = slots + k - 1;
+  return golfers.filter(g => {
+    const gs = g.subscores.projectedStrokesToPar, gp = g.subscores.projectedCutProb;
+    let dominators = 0;
+    for (const o of golfers) {
+      if (o === g) continue;
+      const os = o.subscores.projectedStrokesToPar, op = o.subscores.projectedCutProb;
+      if (os <= gs && op >= gp && (os < gs || op > gp)) {
+        if (++dominators >= limit) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function triples<T>(items: T[]): [T, T, T][] {
+  const out: [T, T, T][] = [];
+  for (let i = 0; i < items.length; i++)
+    for (let j = i + 1; j < items.length; j++)
+      for (let l = j + 1; l < items.length; l++) out.push([items[i], items[j], items[l]]);
+  return out;
+}
+
+const choose3 = (n: number) => (n * (n - 1) * (n - 2)) / 6;
+
+/** Individual value used only for the pathological-field fallback. */
+const soloValue = (g: OptimizerGolfer) =>
+  g.subscores.projectedStrokesToPar + (1 - g.subscores.projectedCutProb) * MISSED_CUT_PENALTY_STROKES;
+
+/** Top 5 six-man teams (3 top-tier + 3 dark-horse, best 4 of 6 count). */
+export function rankTop5Six(inputs: OptimizerInputs): FoursomeCandidate[] {
+  return rankTopKSix(inputs, TOP_K);
+}
+
+export function rankTopKSix(inputs: OptimizerInputs, k: number): FoursomeCandidate[] {
+  if (k <= 0) return [];
+  const sortedById = [...inputs.golfers].sort((a, b) => a.id.localeCompare(b.id));
+  const allTop  = sortedById.filter(g => g.isTopTier);
+  const allDark = sortedById.filter(g => !g.isTopTier);
+  if (allTop.length < 3)  throw new Error(`Need >=3 top-tier golfers, got ${allTop.length}`);
+  if (allDark.length < 3) throw new Error(`Need >=3 dark-horse golfers, got ${allDark.length}`);
+
+  let top  = pruneDominated(allTop, 3, k);
+  let dark = pruneDominated(allDark, 3, k);
+  if (choose3(top.length) * choose3(dark.length) > MAX_SIX_TEAMS) {
+    const byValue = (a: OptimizerGolfer, b: OptimizerGolfer) =>
+      soloValue(a) - soloValue(b) || a.id.localeCompare(b.id);
+    top = [...top].sort(byValue);
+    dark = [...dark].sort(byValue);
+    while (choose3(top.length) * choose3(dark.length) > MAX_SIX_TEAMS) {
+      if (choose3(dark.length) >= choose3(top.length) && dark.length > 3) dark = dark.slice(0, -1);
+      else top = top.slice(0, -1);
+    }
+    top.sort((a, b) => a.id.localeCompare(b.id));
+    dark.sort((a, b) => a.id.localeCompare(b.id));
+    // eslint-disable-next-line no-console
+    console.warn(`[lineup-optimizer] 6-man search capped at ${top.length}+${dark.length} golfers — results approximate`);
+  }
+
+  // Score every pruned team; keep the best k (lower = better, hash tiebreak).
+  const topTriples = triples(top), darkTriples = triples(dark);
+  const kept: Array<{ six: OptimizerGolfer[]; score: number; hash: string }> = [];
+  for (const t of topTriples) {
+    for (const d of darkTriples) {
+      const six = [...t, ...d];
+      const score = projectedSixScore(six);
+      const worst = kept[kept.length - 1];
+      if (kept.length >= k && score > worst.score) continue;
+      const hash = computeFoursomeHash(six.map(g => g.id));
+      if (kept.length >= k && score === worst.score && hash >= worst.hash) continue;
+      kept.push({ six, score, hash });
+      kept.sort((a, b) => a.score - b.score || a.hash.localeCompare(b.hash));
+      if (kept.length > k) kept.pop();
+    }
+  }
+
+  return kept.map(({ six, score, hash }) => {
+    const risk = classifyRisk(six);
+    let ownership: number | null = null;
+    if (inputs.ownership && inputs.ownership.size > 0) {
+      const vals = six.map(g => inputs.ownership!.get(g.id) ?? 0);
+      ownership = (vals.reduce((a, b) => a + b, 0) / six.length) * 100;
+    }
+    return {
+      teamSize: 6 as const,
+      topTier1Id: six[0].id, topTier2Id: six[1].id, topTier3Id: six[2].id,
+      darkHorse1Id: six[3].id, darkHorse2Id: six[4].id, darkHorse3Id: six[5].id,
+      foursomeHash: hash,
+      projectedFantasyScore: score,
+      confidenceScore: confidence(six),
+      riskLevel: risk,
+      estimatedOwnershipPct: ownership,
+      keyStrengths: buildKeyStrengths(six),
+      keyConcerns: buildKeyConcerns(six),
+      foursomeExplanation: buildFoursomeExplanation(six, score, risk),
+    };
+  });
+}
+
 // ── Public helpers exposed for tests ────────────────────────
 export const __test = {
   bestThreeOfFour,
+  bestNOf,
   expectedMissedCutPenalty,
   classifyRisk,
   confidence,
   projectedFantasyScore,
+  projectedSixScore,
   pairs,
 };

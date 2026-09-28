@@ -560,15 +560,20 @@ export interface GolferPredictionsTable {
   explanation:                string | null;
 }
 
-// ── foursome_recommendations (migration 019) ─────────────────
+// ── foursome_recommendations (migration 019; 6-man teams 029) ──
 export interface FoursomeRecommendationsTable {
   id:                       Generated<string>;
   run_id:                   string;
+  /** 4 = foursome, 6 = six-man major team. Ranks are per team size. */
+  team_size:                Generated<number>;
   rank:                     number;
   top_tier_1_golfer_id:     string;
   top_tier_2_golfer_id:     string;
   dark_horse_1_golfer_id:   string;
   dark_horse_2_golfer_id:   string;
+  /** Set only when team_size = 6. */
+  top_tier_3_golfer_id:     string | null;
+  dark_horse_3_golfer_id:   string | null;
   foursome_hash:            string;
   projected_fantasy_score:  string;
   confidence_score:         string;

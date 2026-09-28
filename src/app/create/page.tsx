@@ -631,7 +631,7 @@ export default function CreateLeaguePage() {
             <div className="alert alert-info" style={{ marginTop: '0.5rem' }}>
               💡 Your league starts in <strong>setup mode</strong>: you can adjust these rules
               and prune the schedule from the Commissioner Admin page until you lock the
-              league. It locks automatically when picks lock for the first tournament.
+              league. It locks automatically 1 minute before picks lock for the first tournament.
               You&rsquo;ll also get an invite link to share with your group.
             </div>
 

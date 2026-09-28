@@ -23,6 +23,7 @@ import type {
   CourseProfile, ScoringWeights, Finish,
   GolferStatRow, DatagolfPredsRow,
 } from '@/lib/course-fit';
+import { teamShapeFor } from '@/lib/team-shape';
 
 // ── Number coercion helpers ────────────────────────────────
 
@@ -81,11 +82,17 @@ export interface GolferPredictionPersistRow {
 
 export interface FoursomePersistRow {
   runId: string;
+  /** 4 = foursome (2+2); 6 = six-man major team (3+3), migration 029.
+   *  Ranks 1..5 are per team size. */
+  teamSize: 4 | 6;
   rank: number;
   topTier1Id: string;
   topTier2Id: string;
   darkHorse1Id: string;
   darkHorse2Id: string;
+  /** 6-man teams only. */
+  topTier3Id: string | null;
+  darkHorse3Id: string | null;
   foursomeHash: string;
   projectedFantasyScore: number;
   confidenceScore: number;
@@ -119,6 +126,10 @@ export interface PredictionsQueries {
   loadCourseHistory(golferId: string, courseProfileId: string, limit?: number, asOfDate?: string): Promise<Finish[]>;
   loadComparableHistory(golferId: string, comparableProfileIds: string[], limit?: number, asOfDate?: string): Promise<Finish[]>;
   loadOwnership(tournamentId: string): Promise<Map<string, number>>;
+  /** Team sizes in play for this tournament across the leagues that
+   *  have it on their schedule: [4], or [4, 6] / [6] when it's a major
+   *  and some league plays 6-man majors. [4] when no league has it. */
+  loadTeamSizes(tournamentId: string): Promise<Array<4 | 6>>;
   insertRun(input: RunPersistInput): Promise<string>;
   insertGolferPredictions(rows: GolferPredictionPersistRow[]): Promise<void>;
   insertFoursomes(rows: FoursomePersistRow[]): Promise<void>;
@@ -139,14 +150,21 @@ export interface BacktestActualRow {
   golferId: string;
   owgrRank: number | null;
   position: number;
+  /** status = missed_cut. */
   missedCut: boolean;
+  /** status = withdrawn / disqualified — scored like a missed cut
+   *  WITHOUT the penalty (dropout rule, 2026-09-28). */
+  withdrew: boolean;
   fantasyScore: number | null;
 }
 
 export interface BacktestLeagueOutcomeRow {
   leagueId: string;
   userId: string;
-  golferIds: [string, string, string, string];
+  /** Effective golfers (the member's own WD swaps applied): 4, or 6 on
+   *  a 6-man major. */
+  golferIds: string[];
+  teamSize: 4 | 6;
   totalScore: number;
 }
 
@@ -485,11 +503,14 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
       await db.insertInto('foursome_recommendations')
         .values(rows.map(r => ({
           run_id:                   r.runId,
+          team_size:                r.teamSize,
           rank:                     r.rank,
           top_tier_1_golfer_id:     r.topTier1Id,
           top_tier_2_golfer_id:     r.topTier2Id,
           dark_horse_1_golfer_id:   r.darkHorse1Id,
           dark_horse_2_golfer_id:   r.darkHorse2Id,
+          top_tier_3_golfer_id:     r.topTier3Id,
+          dark_horse_3_golfer_id:   r.darkHorse3Id,
           foursome_hash:            r.foursomeHash,
           projected_fantasy_score:  r.projectedFantasyScore.toString(),
           confidence_score:         r.confidenceScore.toString(),
@@ -545,38 +566,69 @@ export function createProductionQueries(db: Kysely<Database>): PredictionsQuerie
         golferId: r.golferId,
         owgrRank: r.owgrRank,
         position: parsePosition(r.position),
-        missedCut: r.status === 'missed_cut' || r.status === 'withdrawn' || r.status === 'disqualified',
+        missedCut: r.status === 'missed_cut',
+        withdrew: r.status === 'withdrawn' || r.status === 'disqualified',
         fantasyScore: r.fantasyScore,
       }));
     },
 
     async loadLeagueOutcomes(tournamentId) {
       // fantasy_results carries the final realized league total per
-      // member; picks carries which 4 golfers they submitted.
+      // member; picks carries which golfers they submitted. Team shape
+      // per league (6-man majors, migration 026) and each member's own
+      // WD swaps (migration 028) give the golfers that actually counted.
+      const t = await db.selectFrom('tournaments').select('type')
+        .where('id', '=', tournamentId).executeTakeFirst();
       const rows = await db.selectFrom('fantasy_results')
         .innerJoin('picks',
           jb => jb.onRef('picks.league_id', '=', 'fantasy_results.league_id')
             .onRef('picks.user_id', '=', 'fantasy_results.user_id')
             .onRef('picks.tournament_id', '=', 'fantasy_results.tournament_id'))
+        .innerJoin('leagues', 'leagues.id', 'fantasy_results.league_id')
         .select([
           'fantasy_results.league_id as leagueId',
           'fantasy_results.user_id as userId',
-          'picks.golfer_1_id as g1',
-          'picks.golfer_2_id as g2',
-          'picks.golfer_3_id as g3',
-          'picks.golfer_4_id as g4',
+          'picks.id as pickId',
+          'picks.golfer_1_id as g1', 'picks.golfer_2_id as g2',
+          'picks.golfer_3_id as g3', 'picks.golfer_4_id as g4',
+          'picks.golfer_5_id as g5', 'picks.golfer_6_id as g6',
+          'leagues.major_team_size as majorTeamSize',
           'fantasy_results.total_score as totalScore',
         ])
         .where('fantasy_results.tournament_id', '=', tournamentId)
         .execute();
-      return rows
-        .filter(r => r.g1 && r.g2 && r.g3 && r.g4 && r.totalScore != null)
-        .map(r => ({
-          leagueId: r.leagueId,
-          userId: r.userId,
-          golferIds: [r.g1!, r.g2!, r.g3!, r.g4!] as [string, string, string, string],
-          totalScore: r.totalScore!,
-        }));
+      const pickIds = rows.map(r => r.pickId);
+      const swaps = pickIds.length === 0 ? [] : await db.selectFrom('pick_replacements')
+        .select(['pick_id', 'slot', 'replacement_golfer_id'])
+        .where('pick_id', 'in', pickIds)
+        .execute();
+      const swapFor = new Map(swaps.map(s => [`${s.pick_id}:${s.slot}`, s.replacement_golfer_id]));
+      const out: BacktestLeagueOutcomeRow[] = [];
+      for (const r of rows) {
+        if (r.totalScore == null) continue;
+        const shape = teamShapeFor({ major_team_size: r.majorTeamSize }, { type: t?.type });
+        const ids = [r.g1, r.g2, r.g3, r.g4, r.g5, r.g6].slice(0, shape.size)
+          .map((id, i) => (id ? swapFor.get(`${r.pickId}:${i + 1}`) ?? id : null));
+        if (ids.some(id => !id)) continue;
+        out.push({
+          leagueId: r.leagueId, userId: r.userId,
+          golferIds: ids as string[], teamSize: shape.size, totalScore: r.totalScore,
+        });
+      }
+      return out;
+    },
+
+    async loadTeamSizes(tournamentId) {
+      const t = await db.selectFrom('tournaments').select('type')
+        .where('id', '=', tournamentId).executeTakeFirst();
+      const leagues = await db.selectFrom('leagues')
+        .innerJoin('league_tournaments', 'league_tournaments.league_id', 'leagues.id')
+        .select('leagues.major_team_size')
+        .where('league_tournaments.tournament_id', '=', tournamentId)
+        .execute();
+      const sizes = new Set(leagues.map(l => teamShapeFor(l, { type: t?.type }).size));
+      if (sizes.size === 0) sizes.add(4);
+      return [...sizes].sort() as Array<4 | 6>;
     },
 
     async insertBacktestRun(input) {

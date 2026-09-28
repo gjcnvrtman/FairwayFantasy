@@ -43,10 +43,14 @@ interface RunRow {
 
 interface FoursomeRow {
   rank: number;
+  /** 4 = foursome, 6 = six-man major team (migration 029). */
+  team_size: number;
   top_tier_1_golfer_id: string;
   top_tier_2_golfer_id: string;
   dark_horse_1_golfer_id: string;
   dark_horse_2_golfer_id: string;
+  top_tier_3_golfer_id: string | null;
+  dark_horse_3_golfer_id: string | null;
   projected_fantasy_score: string;
   confidence_score: string;
   risk_level: 'conservative' | 'balanced' | 'aggressive';
@@ -101,22 +105,24 @@ async function loadLatestRun(tournamentId: string): Promise<{
   if (!run) return null;
 
   const foursomes = await db.selectFrom('foursome_recommendations')
-    .select(['rank', 'top_tier_1_golfer_id', 'top_tier_2_golfer_id',
+    .select(['rank', 'team_size', 'top_tier_1_golfer_id', 'top_tier_2_golfer_id',
              'dark_horse_1_golfer_id', 'dark_horse_2_golfer_id',
+             'top_tier_3_golfer_id', 'dark_horse_3_golfer_id',
              'projected_fantasy_score', 'confidence_score', 'risk_level',
              'estimated_ownership_pct', 'key_strengths', 'key_concerns',
              'foursome_explanation'])
     .where('run_id', '=', run.id)
+    .orderBy('team_size', 'asc')
     .orderBy('rank', 'asc')
     .execute();
 
   // Resolve golfer names for display.
   const ids = new Set<string>();
   for (const f of foursomes) {
-    ids.add(f.top_tier_1_golfer_id);
-    ids.add(f.top_tier_2_golfer_id);
-    ids.add(f.dark_horse_1_golfer_id);
-    ids.add(f.dark_horse_2_golfer_id);
+    for (const id of [f.top_tier_1_golfer_id, f.top_tier_2_golfer_id, f.top_tier_3_golfer_id,
+                      f.dark_horse_1_golfer_id, f.dark_horse_2_golfer_id, f.dark_horse_3_golfer_id]) {
+      if (id) ids.add(id);
+    }
   }
   const names = ids.size > 0
     ? await db.selectFrom('golfers')
@@ -249,28 +255,42 @@ export default async function CurrentPredictionsPage() {
               </div>
             ) : (
               <div style={{ color: '#888', fontSize: '14px' }}>
-                No runs yet. Click &ldquo;Run predictions&rdquo; above to produce the top 5 foursomes.
+                No runs yet. Click &ldquo;Run predictions&rdquo; above to produce the top 5 foursomes
+                (plus top 5 six-man teams when a 6-man league plays this major).
               </div>
             )}
           </div>
 
-          {/* Top 5 foursomes */}
+          {/* Top 5 foursomes (+ top 5 six-man teams on a 6-man major) */}
           {latest?.run.status === 'complete' && latest.foursomes.length > 0 && (
             <>
-              <h2 style={{ marginTop: '32px' }}>Top 5 foursomes</h2>
-              <p style={{ color: '#666', fontSize: '14px', marginTop: 0 }}>
-                Lower projected score = better (it&apos;s golf). These are model
-                predictions, not guarantees.
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {latest.foursomes.map(f => (
-                  <FoursomeCard
-                    key={f.rank}
-                    f={f}
-                    nameMap={latest.golferNames}
-                  />
-                ))}
-              </div>
+              {[4, 6].map(size => {
+                const rows = latest.foursomes.filter(f => f.team_size === size);
+                if (rows.length === 0) return null;
+                return (
+                  <div key={size}>
+                    <h2 style={{ marginTop: '32px' }}>
+                      {size === 6 ? 'Top 5 six-man teams (6-man majors)' : 'Top 5 foursomes'}
+                    </h2>
+                    <p style={{ color: '#666', fontSize: '14px', marginTop: 0 }}>
+                      {size === 6
+                        ? <>For leagues that play 6-man majors: 3 top-tier + 3 dark horses, best 4 of 6 count. </>
+                        : null}
+                      Lower projected score = better (it&apos;s golf). These are model
+                      predictions, not guarantees.
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {rows.map(f => (
+                        <FoursomeCard
+                          key={`${size}-${f.rank}`}
+                          f={f}
+                          nameMap={latest.golferNames}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </>
           )}
         </>
@@ -318,18 +338,16 @@ function FoursomeCard({ f, nameMap }: {
           gap: '8px',
           marginBottom: '12px',
         }}>
-          <span style={{ ...golferPill(true) }}>
-            {nameMap.get(f.top_tier_1_golfer_id) ?? f.top_tier_1_golfer_id}
-          </span>
-          <span style={{ ...golferPill(true) }}>
-            {nameMap.get(f.top_tier_2_golfer_id) ?? f.top_tier_2_golfer_id}
-          </span>
-          <span style={{ ...golferPill(false) }}>
-            {nameMap.get(f.dark_horse_1_golfer_id) ?? f.dark_horse_1_golfer_id}
-          </span>
-          <span style={{ ...golferPill(false) }}>
-            {nameMap.get(f.dark_horse_2_golfer_id) ?? f.dark_horse_2_golfer_id}
-          </span>
+          {[f.top_tier_1_golfer_id, f.top_tier_2_golfer_id, f.top_tier_3_golfer_id]
+            .filter((id): id is string => !!id)
+            .map(id => (
+              <span key={id} style={{ ...golferPill(true) }}>{nameMap.get(id) ?? id}</span>
+            ))}
+          {[f.dark_horse_1_golfer_id, f.dark_horse_2_golfer_id, f.dark_horse_3_golfer_id]
+            .filter((id): id is string => !!id)
+            .map(id => (
+              <span key={id} style={{ ...golferPill(false) }}>{nameMap.get(id) ?? id}</span>
+            ))}
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', fontSize: '13px', color: '#444' }}>

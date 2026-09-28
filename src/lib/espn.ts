@@ -3,7 +3,7 @@
 // Unofficial public endpoints — no API key required
 // ============================================================
 
-import type { ESPNLeaderboard, ESPNCompetitor } from '@/types';
+import type { ESPNCompetitor } from '@/types';
 
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/golf';
 const ESPN_WEB  = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
@@ -403,31 +403,6 @@ export async function fetchUpcomingEventField(
   return rawCompetitors
     .map(normalizeScoreboardCompetitor)
     .filter((c: ESPNCompetitor | null): c is ESPNCompetitor => c !== null);
-}
-
-// ── All Players in Field ─────────────────────────────────────
-export async function fetchEventField(espnEventId: string): Promise<Array<{
-  espn_id: string;
-  name: string;
-  headshot_url: string | null;
-  status: string;
-  tee_time?: string;
-}>> {
-  const res = await fetch(
-    `${ESPN_WEB}/pga/leaderboard?event=${espnEventId}`,
-    { cache: 'force-cache' } as RequestInit
-  );
-  if (!res.ok) return [];
-  const data: ESPNLeaderboard = await res.json();
-
-  const competitors = data.events?.[0]?.competitions?.[0]?.competitors ?? [];
-
-  return competitors.map((c: ESPNCompetitor) => ({
-    espn_id:     c.id,
-    name:        c.displayName,
-    headshot_url: c.headshot?.href ?? null,
-    status:      c.status?.type?.name ?? 'active',
-  }));
 }
 
 // ── Parse score string to integer ───────────────────────────

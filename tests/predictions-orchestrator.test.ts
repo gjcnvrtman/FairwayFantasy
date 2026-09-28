@@ -5,7 +5,7 @@
 // both the result AND the insert/mark calls the orchestrator made.
 // No real DB, no Kysely — just typed inputs in, typed assertions out.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { runPredictions, OrchestratorError, mapBounded } from '../src/lib/predictions-orchestrator';
 import type {
   PredictionsQueries,
@@ -92,6 +92,7 @@ interface StubOpts {
   ownership?: Map<string, number>;
   throwOnLoadFor?: string[];      // golfer ids whose load throws
   throwOnInsertGolfers?: boolean;
+  teamSizes?: Array<4 | 6>;       // default [4]
 }
 
 function makeStubQueries(opts: StubOpts = {}): {
@@ -148,6 +149,9 @@ function makeStubQueries(opts: StubOpts = {}): {
     },
     async loadOwnership(_tournamentId) {
       return opts.ownership ?? new Map();
+    },
+    async loadTeamSizes(_tournamentId) {
+      return opts.teamSizes ?? [4];
     },
     async insertRun(input) {
       const id = 'run-1';
@@ -303,6 +307,10 @@ describe('runPredictions — preconditions', () => {
 // ── Resilience: per-golfer load failure ────────────────────
 
 describe('runPredictions — per-golfer load failures', () => {
+  // Drops are logged by design; keep the test output readable.
+  beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => {}); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it('drops the failing golfer and continues if field stays >= 4', async () => {
     const stub = makeStubQueries({ throwOnLoadFor: ['d-A'] });
     const result = await runPredictions({ tournamentId: 't-1' }, stub.queries);
@@ -341,6 +349,37 @@ describe('runPredictions — per-golfer load failures', () => {
     const stub = makeStubQueries({ throwOnLoadFor: allIds.slice(3) });
     await expect(runPredictions({ tournamentId: 't-1' }, stub.queries))
       .rejects.toMatchObject({ code: 'FIELD_TOO_SMALL' });
+  });
+});
+
+// ── 6-man majors ───────────────────────────────────────────
+
+describe('runPredictions — six-man teams (6-man majors)', () => {
+  it('default (no 6-man league on the schedule) → only the 5 foursomes, teamSize 4', async () => {
+    const stub = makeStubQueries();
+    const result = await runPredictions({ tournamentId: 't-1' }, stub.queries);
+    expect(stub.captured.foursomes.map(f => f.teamSize)).toEqual([4, 4, 4, 4, 4]);
+    expect(stub.captured.foursomes.every(f => f.topTier3Id === null && f.darkHorse3Id === null)).toBe(true);
+    expect(result.foursomesProduced).toBe(5);
+  });
+
+  it('a 6-man league plays this major → also 5 six-man teams, ranked 1..5 on their own', async () => {
+    const stub = makeStubQueries({ teamSizes: [4, 6] });
+    const result = await runPredictions({ tournamentId: 't-1' }, stub.queries);
+    const fours = stub.captured.foursomes.filter(f => f.teamSize === 4);
+    const sixes = stub.captured.foursomes.filter(f => f.teamSize === 6);
+    expect(fours.map(f => f.rank)).toEqual([1, 2, 3, 4, 5]);
+    expect(sixes.map(f => f.rank)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.foursomesProduced).toBe(10);
+    for (const f of sixes) {
+      const ids = [f.topTier1Id, f.topTier2Id, f.topTier3Id, f.darkHorse1Id, f.darkHorse2Id, f.darkHorse3Id];
+      expect(new Set(ids).size).toBe(6);
+      expect([f.topTier1Id, f.topTier2Id, f.topTier3Id].every(id => id!.startsWith('t-'))).toBe(true);
+      expect([f.darkHorse1Id, f.darkHorse2Id, f.darkHorse3Id].every(id => id!.startsWith('d-'))).toBe(true);
+    }
+    for (let i = 1; i < sixes.length; i++) {
+      expect(sixes[i].projectedFantasyScore).toBeGreaterThanOrEqual(sixes[i - 1].projectedFantasyScore);
+    }
   });
 });
 

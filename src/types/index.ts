@@ -19,15 +19,6 @@ export interface Profile {
   created_at: string;
 }
 
-export interface LeagueMember {
-  id: string;
-  league_id: string;
-  user_id: string;
-  role: 'commissioner' | 'member';
-  joined_at: string;
-  profile?: Profile;
-}
-
 export interface Tournament {
   id: string;
   espn_event_id: string;
@@ -134,19 +125,6 @@ export interface FantasyResult {
   pick?: Pick;
 }
 
-export interface SeasonStanding {
-  id: string;
-  league_id: string;
-  user_id: string;
-  season: number;
-  total_score: number;
-  tournaments_played: number;
-  best_finish: number | null;
-  rank: number | null;
-  // Joined
-  profile?: Profile;
-}
-
 // ESPN API response types
 export interface ESPNCompetitor {
   id: string;
@@ -181,32 +159,3 @@ export interface ESPNCompetitor {
   relByRound: Array<number[] | null>;
 }
 
-export interface ESPNLeaderboard {
-  events: Array<{
-    id: string;
-    name: string;
-    shortName: string;
-    competitions: Array<{
-      id: string;
-      status: {
-        type: { name: string; completed: boolean };
-        period: number;
-      };
-      competitors: ESPNCompetitor[];
-      situation?: { cutLine?: { value: number } };
-    }>;
-  }>;
-}
-
-// ESPN Rankings types (used by rankings sync)
-export interface ESPNRankingAthlete {
-  id: string;
-  displayName: string;
-  flag?: { alt?: string };
-  headshot?: { href: string };
-}
-
-export interface ESPNRankingEntry {
-  current: number;
-  athlete: ESPNRankingAthlete;
-}

@@ -13,14 +13,10 @@ import { getCurrentUser } from './current-user';
 import { db } from './db';
 
 // Pure decision helpers live in auth-decisions.ts so unit tests can
-// import them without pulling in NextAuth / pg. Re-export here so
-// existing callers don't change.
+// import them without pulling in NextAuth / pg. Re-export the ones
+// callers import through this module.
 export {
-  decideCommissionerAuth,
-  decideCoCommissionerOrAboveAuth,
-  decideMemberAuth,
   wouldOrphanLeague,
-  type AuthDecision,
   type Role,
 } from './auth-decisions';
 
